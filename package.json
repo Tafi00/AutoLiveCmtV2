@@ -1,0 +1,27 @@
+{
+  "name": "live-comment-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Desktop multi-account comment assistant for Gosh and Loco",
+  "main": "src/desktop.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "electron .",
+    "web": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "lucide": "^1.34.0",
+    "playwright": "^1.62.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  }
+}

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Live Comment</title>
+    <link rel="stylesheet" href="/styles.css?v=8" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <header class="titlebar">
+        <strong>Live Comment</strong>
+      </header>
+
+      <div class="app-body">
+        <nav class="app-nav" aria-label="Điều hướng">
+          <div class="nav-items">
+            <button class="nav-item active" type="button" data-view="live"><span class="nav-icon" data-icon="radio" aria-hidden="true"></span><span>Live</span></button>
+            <button class="nav-item" type="button" data-view="accounts"><span class="nav-icon" data-icon="users" aria-hidden="true"></span><span>Tài khoản</span><span id="nav-account-count" class="nav-count">1</span></button>
+            <button class="nav-item" type="button" data-view="health"><span class="nav-icon" data-icon="activity" aria-hidden="true"></span><span>Kiểm tra API</span><span id="nav-health-count" class="nav-count"></span></button>
+            <button class="nav-item" type="button" data-view="settings"><span class="nav-icon" data-icon="settings" aria-hidden="true"></span><span>Thiết lập</span></button>
+          </div>
+
+          <div class="nav-footer">
+            <span id="nav-status-dot" class="status-dot"></span>
+            <div>
+              <strong id="nav-ready-count">0/1 sẵn sàng</strong>
+              <small id="nav-running-count">0 Chrome đang mở</small>
+            </div>
+            <button id="refresh-status" class="icon-button" type="button" aria-label="Làm mới trạng thái" title="Làm mới"><span data-icon="refresh-cw" aria-hidden="true"></span></button>
+          </div>
+        </nav>
+
+        <main class="content-area">
+          <section id="notice" class="notice" hidden></section>
+
+          <section id="view-live" class="view active" data-view-panel="live">
+            <header class="view-header live-header">
+              <div><h1>Live</h1><p id="live-summary">1 bình luận · 1 tài khoản</p></div>
+              <div class="room-control">
+                <select id="platform-select" aria-label="Nền tảng"><option value="gosh">Gosh</option><option value="loco">Loco</option></select>
+                <input id="channel-url" type="url" placeholder="URL phòng live…" autocomplete="off" />
+                <span id="room-save-state" class="save-state">Đã lưu</span>
+              </div>
+            </header>
+
+            <div class="live-workspace">
+              <section class="queue-pane">
+                <div class="section-heading"><h2>Bình luận</h2><span id="message-count" class="muted-count">0</span></div>
+
+                <form id="message-form" class="composer">
+                  <input id="message-content" type="text" maxlength="300" aria-label="Nội dung bình luận" placeholder="Thêm bình luận…" autocomplete="off" />
+                  <button class="secondary compact" type="submit">Thêm</button>
+                </form>
+
+                <div class="message-region">
+                  <ol id="message-list" class="message-list"></ol>
+                  <p id="empty-state" class="empty-state">Chưa có bình luận</p>
+                </div>
+
+                <div class="send-dock">
+                  <div class="next-message"><small>Tiếp theo</small><p id="next-message">Kho bình luận đang trống.</p></div>
+                  <div id="bulk-progress" class="bulk-progress" hidden aria-live="polite">
+                    <div class="progress-heading"><span id="bulk-status">Đang chuẩn bị…</span><strong id="bulk-count">0/0</strong></div>
+                    <div class="progress-track"><span id="bulk-progress-bar"></span></div>
+                    <p id="bulk-error" class="bulk-error" hidden></p>
+                  </div>
+                  <div class="send-actions">
+                    <div class="send-meta"><span id="cooldown">Sẵn sàng</span><span id="send-scope">1 tài khoản</span></div>
+                    <button id="send-next" class="secondary" type="button" disabled>Gửi một</button>
+                    <button id="send-all" class="primary" type="button" disabled>Chạy tất cả</button>
+                    <button id="stop-bulk" class="danger-button" type="button" hidden>Dừng</button>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="live-account-pane">
+                <div class="section-heading"><h2>Đang tham gia</h2><button class="text-button" type="button" data-go-view="accounts">Quản lý</button></div>
+                <ol id="live-account-list" class="live-account-list"></ol>
+              </aside>
+            </div>
+          </section>
+
+          <section id="view-accounts" class="view" data-view-panel="accounts" hidden>
+            <header class="view-header">
+              <div><h1>Tài khoản</h1><p id="account-summary">1 tài khoản</p></div>
+              <div class="header-actions"><select id="account-platform" aria-label="Nền tảng tài khoản"><option value="gosh">Gosh</option><option value="loco">Loco</option></select><button id="add-account" class="primary" type="button">Thêm tài khoản</button></div>
+            </header>
+
+            <div class="account-workspace">
+              <section class="account-table-pane">
+                <div class="account-table-header" aria-hidden="true"><span>Tài khoản</span><span>Nền tảng</span><span>Trạng thái</span><span>Sử dụng</span><span></span></div>
+                <ol id="account-list" class="account-list"></ol>
+              </section>
+              <aside id="account-inspector" class="account-inspector"><div class="inspector-empty">Chọn một tài khoản</div></aside>
+            </div>
+          </section>
+
+          <section id="view-health" class="view" data-view-panel="health" hidden>
+            <header class="view-header">
+              <div><h1>Kiểm tra API</h1><p id="health-summary">Chưa kiểm tra</p></div>
+              <button id="check-health" class="primary" type="button">Kiểm tra lại</button>
+            </header>
+            <div class="health-layout">
+              <div class="health-table-header" aria-hidden="true"><span>Dịch vụ</span><span>Endpoint</span><span>HTTP</span><span>Phản hồi</span><span>Trạng thái</span></div>
+              <ol id="health-list" class="health-list"></ol>
+              <p id="health-empty" class="empty-state">Bấm “Kiểm tra lại” để bắt đầu</p>
+            </div>
+          </section>
+
+          <section id="view-settings" class="view" data-view-panel="settings" hidden>
+            <header class="view-header">
+              <div><h1>Thiết lập</h1><p>Áp dụng cho mọi tài khoản đang bật</p></div>
+              <span id="settings-save-state" class="save-state">Đã lưu</span>
+            </header>
+
+            <div class="settings-layout">
+              <section class="settings-section">
+                <div class="setting-copy"><h2>Gửi bình luận</h2><p>Khoảng nghỉ được tính giữa hai mẫu, sau khi đã gửi qua toàn bộ tài khoản.</p></div>
+                <div class="setting-control"><label for="delay-seconds">Khoảng nghỉ</label><div class="input-suffix"><input id="delay-seconds" type="number" min="0" step="1" value="30" /><span>giây</span></div></div>
+              </section>
+
+              <section class="settings-section">
+                <div class="setting-copy"><h2>Tên hiển thị tự động</h2><p>Chỉ áp dụng cho tài khoản Gosh. Loco vẫn tự đọc tên sau khi đăng nhập.</p></div>
+                <div class="setting-control wide-control">
+                  <label for="display-names">Danh sách tên</label>
+                  <textarea id="display-names" rows="5" placeholder="Mỗi dòng một tên"></textarea>
+                  <label for="rename-every-comments">Đổi tên sau</label>
+                  <div class="input-suffix"><input id="rename-every-comments" type="number" min="1" step="1" value="1" /><span>mẫu</span></div>
+                </div>
+              </section>
+
+              <section class="settings-section data-section">
+                <div class="setting-copy"><h2>Dữ liệu cục bộ</h2><p>Mỗi tài khoản có một hồ sơ Chrome riêng. Phiên đăng nhập không được xuất khỏi máy.</p></div>
+                <div class="setting-control data-value"><strong id="profile-count">1 hồ sơ Chrome</strong><small>Được quản lý trong thư mục data</small></div>
+              </section>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+    <script type="module" src="/app.js?v=9"></script>
+  </body>
+</html>

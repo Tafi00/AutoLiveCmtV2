@@ -1,0 +1,479 @@
+import express from "express";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { AccountSessionManager } from "./session-manager.js";
+import { JsonStore } from "./store.js";
+import { checkApiHealth, healthTargets } from "./api-health.js";
+import { PLATFORMS } from "./platforms.js";
+
+const currentDirectory = dirname(fileURLToPath(import.meta.url));
+const rootDirectory = dirname(currentDirectory);
+const dataDirectory = process.env.DATA_DIRECTORY
+  ? resolve(process.env.DATA_DIRECTORY)
+  : join(rootDirectory, "data");
+const publicDirectory = join(rootDirectory, "public");
+const lucideDirectory = join(rootDirectory, "node_modules", "lucide", "dist", "esm");
+const port = Number(process.env.PORT || 4317);
+
+const store = new JsonStore(dataDirectory);
+await store.init();
+
+const sessions = new AccountSessionManager({ dataDirectory });
+
+const bulkSend = {
+  running: false,
+  stopRequested: false,
+  total: 0,
+  sent: 0,
+  failed: 0,
+  totalMessages: 0,
+  completedMessages: 0,
+  startedAt: null,
+  completedAt: null,
+  error: null,
+  failures: [],
+  currentAccount: "",
+  phase: "idle",
+  wakeWaiter: null,
+};
+let manualSendRunning = false;
+const displayNameUpdates = new Set();
+let apiHealth = healthTargets().map((target) => ({ ...target, status: "unknown", httpStatus: null, latencyMs: null, checkedAt: null, error: "" }));
+
+const app = express();
+app.disable("x-powered-by");
+app.use(express.json({ limit: "32kb" }));
+app.use("/vendor/lucide", express.static(lucideDirectory));
+app.use(express.static(publicDirectory));
+
+function asyncRoute(handler) {
+  return (request, response, next) => Promise.resolve(handler(request, response)).catch(next);
+}
+
+function bulkSendState() {
+  return {
+    running: bulkSend.running,
+    stopRequested: bulkSend.stopRequested,
+    total: bulkSend.total,
+    sent: bulkSend.sent,
+    failed: bulkSend.failed,
+    totalMessages: bulkSend.totalMessages,
+    completedMessages: bulkSend.completedMessages,
+    startedAt: bulkSend.startedAt,
+    completedAt: bulkSend.completedAt,
+    error: bulkSend.error,
+    failures: bulkSend.failures.slice(-30),
+    currentAccount: bulkSend.currentAccount,
+    phase: bulkSend.phase,
+  };
+}
+
+async function dashboardState() {
+  let state = store.snapshot();
+  const accountStatuses = await sessions.statuses(state.accounts);
+  for (const account of accountStatuses) {
+    const detectedName = account.session?.identity?.displayName;
+    if (detectedName && detectedName !== account.profileName) {
+      await store.updateAccountProfileName(account.id, detectedName);
+    }
+  }
+  state = store.snapshot();
+  const sessionsById = new Map(accountStatuses.map((account) => [account.id, account.session]));
+  return {
+    ...state,
+    accounts: state.accounts.map((account) => ({ ...account, session: sessionsById.get(account.id) })),
+    nextMessage: store.getNextMessage(),
+    cooldown: store.cooldown(),
+    bulkSend: bulkSendState(),
+    platforms: Object.values(PLATFORMS).map(({ id, name, homeUrl }) => ({ id, name, homeUrl })),
+  };
+}
+
+function rejectDuringBulk(response) {
+  if (!bulkSend.running) return false;
+  response.status(409).json({ error: "Hãy dừng lượt gửi hàng loạt trước khi thay đổi dữ liệu." });
+  return true;
+}
+
+function accountOrThrow(accountId) {
+  const account = store.getAccount(accountId);
+  if (!account) {
+    const error = new Error("Không tìm thấy tài khoản.");
+    error.status = 404;
+    throw error;
+  }
+  return account;
+}
+
+function waitForBulk(milliseconds) {
+  if (milliseconds <= 0 || bulkSend.stopRequested) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, milliseconds);
+    function finish() {
+      clearTimeout(timer);
+      if (bulkSend.wakeWaiter === finish) bulkSend.wakeWaiter = null;
+      resolve();
+    }
+    bulkSend.wakeWaiter = finish;
+  });
+}
+
+async function updateDisplayName(accountId, displayName) {
+  const account = accountOrThrow(accountId);
+  if (displayNameUpdates.has(accountId)) {
+    throw new Error("Tài khoản này đang được đổi tên.");
+  }
+  displayNameUpdates.add(accountId);
+  try {
+    const result = await sessions.updateDisplayName(accountId, displayName, account.platform);
+    await store.updateAccountProfileName(accountId, result.displayName);
+    return result;
+  } finally {
+    displayNameUpdates.delete(accountId);
+  }
+}
+
+async function updateAutomaticDisplayNames(accounts) {
+  const displayName = store.getPendingDisplayName();
+  if (!displayName) return null;
+  if (bulkSend.running) bulkSend.phase = "renaming";
+
+  const results = [];
+  for (const account of accounts) {
+    try {
+      await updateDisplayName(account.id, displayName);
+      results.push({ accountId: account.id, accountName: account.profileName || account.name, ok: true });
+    } catch (error) {
+      results.push({ accountId: account.id, accountName: account.profileName || account.name, ok: false, error: error.message });
+    }
+  }
+
+  if (results.some((result) => result.ok)) await store.markDisplayNameUpdated();
+  return { displayName, results };
+}
+
+async function sendNextCommentToAccounts() {
+  const state = store.snapshot();
+  const message = store.getNextMessage();
+  const accounts = store.getEnabledAccounts(state.settings.platform);
+  if (!message) throw new Error("Kho bình luận đang trống.");
+  if (!state.settings.channelUrl) throw new Error("Hãy lưu URL phòng live trước.");
+  if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản để gửi.");
+
+  const results = [];
+  for (const account of accounts) {
+    if (bulkSend.running && bulkSend.stopRequested) break;
+    const accountName = account.profileName || account.name;
+    if (bulkSend.running) bulkSend.currentAccount = accountName;
+    try {
+      const result = await sessions.sendComment(account.id, {
+        channelUrl: state.settings.channelUrl,
+        content: message.content,
+      }, account.platform);
+      results.push({ accountId: account.id, accountName, ok: true, result });
+    } catch (error) {
+      results.push({
+        accountId: account.id,
+        accountName,
+        ok: false,
+        error: error.message || "Không thể gửi bình luận.",
+      });
+    }
+  }
+
+  const sent = results.filter((result) => result.ok);
+  const failed = results.filter((result) => !result.ok);
+  if (!sent.length) {
+    const detail = failed.map((result) => `${result.accountName}: ${result.error}`).join("; ");
+    const error = new Error(detail || "Không tài khoản nào gửi được bình luận.");
+    error.results = results;
+    throw error;
+  }
+
+  await store.markSent();
+  const rename = await updateAutomaticDisplayNames(accounts);
+  return {
+    message,
+    attempted: results.length,
+    totalAccounts: accounts.length,
+    successCount: sent.length,
+    failureCount: failed.length,
+    results,
+    rename,
+  };
+}
+
+async function runBulkSend() {
+  try {
+    while (!bulkSend.stopRequested && bulkSend.completedMessages < bulkSend.totalMessages) {
+      const cooldown = store.cooldown();
+      if (!cooldown.ready) {
+        bulkSend.phase = "waiting";
+        bulkSend.currentAccount = "";
+        await waitForBulk(cooldown.remainingSeconds * 1000);
+        continue;
+      }
+
+      bulkSend.phase = "sending";
+      const result = await sendNextCommentToAccounts();
+      bulkSend.sent += result.successCount;
+      bulkSend.failed += result.failureCount;
+      bulkSend.completedMessages += 1;
+      bulkSend.failures.push(...result.results
+        .filter((item) => !item.ok)
+        .map((item) => ({
+          accountId: item.accountId,
+          accountName: item.accountName,
+          message: result.message.content,
+          error: item.error,
+        })));
+    }
+  } catch (error) {
+    bulkSend.error = error.message || "Không thể tiếp tục gửi hàng loạt.";
+    if (Array.isArray(error.results)) {
+      const failures = error.results.filter((item) => !item.ok);
+      bulkSend.failed += failures.length;
+      bulkSend.failures.push(...failures.map((item) => ({
+        accountId: item.accountId,
+        accountName: item.accountName,
+        message: store.getNextMessage()?.content || "",
+        error: item.error,
+      })));
+    }
+  } finally {
+    bulkSend.phase = bulkSend.stopRequested
+      ? "stopped"
+      : bulkSend.error
+        ? "failed"
+        : bulkSend.failed
+          ? "completed_with_errors"
+          : "completed";
+    bulkSend.running = false;
+    bulkSend.stopRequested = false;
+    bulkSend.completedAt = new Date().toISOString();
+    bulkSend.currentAccount = "";
+    bulkSend.wakeWaiter = null;
+  }
+}
+
+app.get("/api/state", asyncRoute(async (_request, response) => {
+  response.json(await dashboardState());
+}));
+
+app.post("/api/accounts", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  await store.addAccount(request.body?.name, request.body?.platform);
+  response.status(201).json(await dashboardState());
+}));
+
+app.patch("/api/accounts/:id", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  const account = await store.updateAccount(request.params.id, request.body || {});
+  if (!account) return response.status(404).json({ error: "Không tìm thấy tài khoản." });
+  response.json(await dashboardState());
+}));
+
+app.delete("/api/accounts/:id", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  const account = accountOrThrow(request.params.id);
+  if (store.snapshot().accounts.length === 1) {
+    return response.status(400).json({ error: "Không thể xóa tài khoản cuối cùng." });
+  }
+  await sessions.deleteSession(account.id);
+  await store.deleteAccount(account.id);
+  response.json(await dashboardState());
+}));
+
+app.post("/api/accounts/:id/browser/open", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi mở trình duyệt." });
+  }
+  const account = accountOrThrow(request.params.id);
+  const state = store.snapshot();
+  const targetUrl = state.settings.platform === account.platform
+    ? request.body?.targetUrl || state.settings.channelUrl || undefined
+    : undefined;
+  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: false });
+  response.json({ account: { ...account, session } });
+}));
+
+app.post("/api/accounts/:id/browser/login", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi đăng nhập." });
+  }
+  const account = accountOrThrow(request.params.id);
+  const state = store.snapshot();
+  const targetUrl = state.settings.platform === account.platform
+    ? request.body?.targetUrl || state.settings.channelUrl || undefined
+    : undefined;
+  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: true });
+  response.json({ account: { ...account, session } });
+}));
+
+app.post("/api/accounts/:id/browser/profile", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi mở hồ sơ." });
+  }
+  const account = accountOrThrow(request.params.id);
+  const session = await sessions.openProfile(account.id, account.platform, { autoCloseOnLogin: false });
+  response.json({ account: { ...account, session } });
+}));
+
+app.post("/api/accounts/:id/display-name", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi đổi tên." });
+  }
+  const result = await updateDisplayName(request.params.id, request.body?.displayName);
+  response.json({ result, bulkSend: bulkSendState() });
+}));
+
+// Backward-compatible routes for clients cached from the single-account version.
+app.get("/api/browser/status", asyncRoute(async (_request, response) => {
+  const accounts = await sessions.statuses(store.snapshot().accounts);
+  response.json({ accounts, browser: accounts[0]?.session || null });
+}));
+
+app.post("/api/browser/open", asyncRoute(async (request, response) => {
+  const state = store.snapshot();
+  const account = store.getEnabledAccounts(state.settings.platform)[0];
+  if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
+  const targetUrl = request.body?.targetUrl || store.snapshot().settings.channelUrl || undefined;
+  response.json({ browser: await sessions.open(account.id, targetUrl, account.platform) });
+}));
+
+app.post("/api/browser/profile", asyncRoute(async (_request, response) => {
+  const account = store.getEnabledAccounts(store.snapshot().settings.platform)[0];
+  if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
+  response.json({ browser: await sessions.openProfile(account.id, account.platform) });
+}));
+
+app.post("/api/profile/display-name", asyncRoute(async (request, response) => {
+  const account = store.getEnabledAccounts()[0];
+  if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
+  const result = await updateDisplayName(account.id, request.body?.displayName);
+  response.json({ result, bulkSend: bulkSendState() });
+}));
+
+app.post("/api/messages", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  await store.addMessage(request.body?.content);
+  response.status(201).json(await dashboardState());
+}));
+
+app.delete("/api/messages/:id", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  const deleted = await store.deleteMessage(request.params.id);
+  if (!deleted) return response.status(404).json({ error: "Không tìm thấy bình luận." });
+  response.json(await dashboardState());
+}));
+
+app.put("/api/settings", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  await store.updateSettings(request.body || {});
+  response.json(await dashboardState());
+}));
+
+app.get("/api/health", (_request, response) => {
+  response.json({ checks: apiHealth });
+});
+
+app.post("/api/health/check", asyncRoute(async (_request, response) => {
+  apiHealth = await checkApiHealth(store.snapshot().settings.channelUrl);
+  response.json({ checks: apiHealth });
+}));
+
+app.post("/api/comments/send-next", asyncRoute(async (_request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Một lượt gửi hàng loạt đang chạy." });
+  }
+  if (manualSendRunning) {
+    return response.status(409).json({ error: "Một bình luận khác đang được gửi." });
+  }
+
+  const state = store.snapshot();
+  if (!store.getNextMessage()) return response.status(400).json({ error: "Kho bình luận đang trống." });
+  if (!state.settings.channelUrl) {
+    return response.status(400).json({ error: "Hãy lưu URL phòng live trước." });
+  }
+
+  const cooldown = store.cooldown();
+  if (!cooldown.ready) {
+    return response.status(429).json({
+      error: `Vui lòng chờ thêm ${cooldown.remainingSeconds} giây trước lần gửi tiếp theo.`,
+      cooldown,
+    });
+  }
+
+  manualSendRunning = true;
+  try {
+    const result = await sendNextCommentToAccounts();
+    response.json({ ...(await dashboardState()), result });
+  } finally {
+    manualSendRunning = false;
+  }
+}));
+
+app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Một lượt gửi hàng loạt đang chạy." });
+  }
+  if (manualSendRunning) {
+    return response.status(409).json({ error: "Hãy chờ bình luận hiện tại gửi xong." });
+  }
+
+  const state = store.snapshot();
+  const accounts = store.getEnabledAccounts(state.settings.platform);
+  if (!state.messages.length) return response.status(400).json({ error: "Kho bình luận đang trống." });
+  if (!state.settings.channelUrl) {
+    return response.status(400).json({ error: "Hãy lưu URL phòng live trước." });
+  }
+  if (!accounts.length) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
+
+  Object.assign(bulkSend, {
+    running: true,
+    stopRequested: false,
+    total: state.messages.length * accounts.length,
+    sent: 0,
+    failed: 0,
+    totalMessages: state.messages.length,
+    completedMessages: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    error: null,
+    failures: [],
+    currentAccount: "",
+    phase: "starting",
+    wakeWaiter: null,
+  });
+  void runBulkSend();
+  response.status(202).json(await dashboardState());
+}));
+
+app.post("/api/comments/send-all/stop", asyncRoute(async (_request, response) => {
+  if (bulkSend.running) {
+    bulkSend.stopRequested = true;
+    bulkSend.phase = "stopping";
+    bulkSend.wakeWaiter?.();
+  }
+  response.json(await dashboardState());
+}));
+
+app.use((error, _request, response, _next) => {
+  const status = error.status || (error.code === "LOGIN_REQUIRED" ? 401 : 400);
+  response.status(status).json({ error: error.message || "Đã có lỗi xảy ra." });
+});
+
+const server = app.listen(port, "127.0.0.1", () => {
+  console.log(`Live Comment: http://127.0.0.1:${port}`);
+});
+
+async function shutdown() {
+  bulkSend.stopRequested = true;
+  bulkSend.wakeWaiter?.();
+  server.close();
+  await sessions.closeAll();
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
