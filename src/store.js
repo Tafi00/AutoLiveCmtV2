@@ -74,11 +74,21 @@ export function normalizeAccountName(value) {
   return name;
 }
 
-function normalizeMessage(content) {
-  const value = String(content ?? "").trim();
-  if (!value) throw new Error("Nội dung tin nhắn không được để trống.");
-  if (value.length > 300) throw new Error("Tin nhắn không được vượt quá 300 ký tự.");
-  return value;
+export function normalizeMessages(content) {
+  const lines = Array.isArray(content)
+    ? content
+    : String(content ?? "").split(/\r?\n/);
+  const items = lines.map((item) => String(item).trim()).filter(Boolean);
+  if (!items.length) throw new Error("Nội dung tin nhắn không được để trống.");
+  for (const item of items) {
+    if (item.length > 300) throw new Error("Mỗi tin nhắn không được vượt quá 300 ký tự.");
+  }
+  return items;
+}
+
+export function normalizeMessage(content) {
+  const [first] = normalizeMessages(content);
+  return first;
 }
 
 function normalizeAccounts(value) {
@@ -292,14 +302,20 @@ export class JsonStore {
   }
 
   async addMessage(content) {
-    const message = {
-      id: randomUUID(),
-      content: normalizeMessage(content),
-      createdAt: new Date().toISOString(),
-    };
-    this.state.messages.push(message);
+    const items = normalizeMessages(content);
+    const now = new Date().toISOString();
+    const created = [];
+    for (const text of items) {
+      const message = {
+        id: randomUUID(),
+        content: text,
+        createdAt: now,
+      };
+      this.state.messages.push(message);
+      created.push(message);
+    }
     await this.persist();
-    return message;
+    return created.length === 1 ? created[0] : created;
   }
 
   async deleteMessage(id) {

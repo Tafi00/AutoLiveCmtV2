@@ -713,12 +713,21 @@ for (const button of document.querySelectorAll("[data-go-view]")) {
 
 elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const raw = elements.messageContent.value.trim();
+  if (!raw) return;
   try {
-    state = await api("/api/messages", { method: "POST", body: JSON.stringify({ content: elements.messageContent.value }) });
+    state = await api("/api/messages", { method: "POST", body: JSON.stringify({ content: raw }) });
     elements.messageContent.value = "";
     render();
   } catch (error) {
     showNotice(error.message);
+  }
+});
+
+elements.messageContent.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    elements.messageForm.requestSubmit();
   }
 });
 

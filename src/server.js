@@ -356,11 +356,11 @@ app.post("/api/profile/display-name", asyncRoute(async (request, response) => {
   response.json({ result, bulkSend: bulkSendState() });
 }));
 
-app.post("/api/messages", asyncRoute(async (request, response) => {
-  if (rejectDuringBulk(response)) return;
-  await store.addMessage(request.body?.content);
-  response.status(201).json(await dashboardState());
-}));
+  app.post("/api/messages", asyncRoute(async (request, response) => {
+    if (rejectDuringBulk(response)) return;
+    await store.addMessage(request.body?.content ?? request.body?.messages);
+    response.status(201).json(await dashboardState());
+  }));
 
 app.delete("/api/messages/:id", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;

@@ -11,6 +11,7 @@ import {
   normalizeChannelUrl,
   normalizeAccountName,
   normalizeRenameEveryComments,
+  normalizeMessages,
 } from "../src/store.js";
 
 test("chỉ chấp nhận URL HTTPS của gosh6.app", () => {
@@ -189,3 +190,26 @@ test("sau mỗi mẫu thành công thì đổi tên ngay và khóa gửi theo de
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("nhập nhiều bình luận cùng lúc (mỗi dòng 1 bình luận)", async () => {
+  assert.deepEqual(normalizeMessages("  Chào shop \n \n Shop ơi  \nCho em xin giá "), [
+    "Chào shop",
+    "Shop ơi",
+    "Cho em xin giá",
+  ]);
+
+  const directory = await mkdtemp(join(tmpdir(), "gosh-comment-multi-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    const added = await store.addMessage("Bình luận 1\nBình luận 2\n\nBình luận 3");
+    assert.equal(added.length, 3);
+    assert.equal(store.snapshot().messages.length, 3);
+    assert.equal(store.snapshot().messages[0].content, "Bình luận 1");
+    assert.equal(store.snapshot().messages[1].content, "Bình luận 2");
+    assert.equal(store.snapshot().messages[2].content, "Bình luận 3");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
