@@ -297,7 +297,7 @@ function renderBulkSend() {
   elements.bulkError.textContent = failures.length ? `${failures.at(-1).accountName}: ${failures.at(-1).error}` : "";
 
   elements.sendScope.textContent = `${accountCount} tài khoản`;
-  elements.sendNext.textContent = accountCount > 1 ? `Gửi một ×${accountCount}` : "Gửi một";
+  elements.sendNext.textContent = "Gửi một";
   elements.sendNext.disabled = running || !state.nextMessage || !accountCount;
   elements.sendAll.disabled = running || !state.messages.length || !accountCount;
   elements.stopBulk.hidden = !running;
@@ -796,7 +796,7 @@ elements.sendNext.addEventListener("click", async () => {
     state = await api("/api/comments/send-next", { method: "POST" });
     render();
     const result = state.result;
-    showNotice(`Đã gửi từ ${result.successCount}/${result.totalAccounts} tài khoản${result.failureCount ? ` · ${result.failureCount} lỗi` : ""}.`, result.failureCount ? "warning" : "success");
+    showNotice(`Đã gửi bình luận từ ${result?.account?.name || "tài khoản"}.`, "success");
   } catch (error) {
     showNotice(error.message);
   } finally {

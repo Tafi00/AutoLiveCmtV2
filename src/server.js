@@ -179,101 +179,99 @@ async function updateAutomaticDisplayNames(accounts) {
   return { displayName: chosenNames[0] || null, displayNames: chosenNames, results };
 }
 
-async function sendNextCommentToAccounts() {
+let accountCursor = 0;
+
+async function sendNextComment() {
   const state = store.snapshot();
   const accounts = store.getEnabledAccounts(state.settings.platform);
-  if (!store.getNextMessage()) throw new Error("Kho bình luận đang trống.");
+  const message = store.getNextMessage();
+  if (!message) throw new Error("Kho bình luận đang trống.");
   if (!state.settings.channelUrl) throw new Error("Hãy lưu URL phòng live trước.");
   if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản để gửi.");
 
-  const results = [];
-  const sentMessages = [];
+  const account = accounts[accountCursor % accounts.length];
+  accountCursor++;
 
-  for (const account of accounts) {
-    if (bulkSend.running && bulkSend.stopRequested) break;
-    const message = store.getNextMessage();
-    if (!message) break;
-
-    const accountName = account.profileName || account.name;
-    if (bulkSend.running) bulkSend.currentAccount = accountName;
-    try {
-      const result = await sessions.sendComment(account.id, {
-        channelUrl: state.settings.channelUrl,
-        content: message.content,
-      }, account.platform);
-      await store.markSent();
-      sentMessages.push(message);
-      results.push({ accountId: account.id, accountName, ok: true, result, message: message.content });
-    } catch (error) {
-      results.push({
-        accountId: account.id,
-        accountName,
-        ok: false,
-        error: error.message || "Không thể gửi bình luận.",
-        message: message.content,
-      });
-    }
+  const accountName = account.profileName || account.name;
+  let result;
+  try {
+    result = await sessions.sendComment(account.id, {
+      channelUrl: state.settings.channelUrl,
+      content: message.content,
+    }, account.platform);
+  } catch (error) {
+    throw new Error(`${accountName}: ${error.message || "Không thể gửi bình luận."}`);
   }
 
-  const sent = results.filter((result) => result.ok);
-  const failed = results.filter((result) => !result.ok);
-  if (!sent.length) {
-    const detail = failed.map((result) => `${result.accountName}: ${result.error}`).join("; ");
-    const error = new Error(detail || "Không tài khoản nào gửi được bình luận.");
-    error.results = results;
-    throw error;
+  await store.markSent();
+
+  let rename = null;
+  if (store.shouldRename()) {
+    rename = await updateAutomaticDisplayNames([account]);
   }
 
-  const rename = await updateAutomaticDisplayNames(accounts);
   return {
-    message: sentMessages[0] || store.getNextMessage(),
-    messages: sentMessages,
-    attempted: results.length,
-    totalAccounts: accounts.length,
-    successCount: sent.length,
-    failureCount: failed.length,
-    results,
+    message,
+    account: { id: account.id, name: accountName },
+    result,
     rename,
+    successCount: 1,
+    failureCount: 0,
+    totalAccounts: accounts.length,
   };
 }
 
 async function runBulkSend() {
   try {
+    let bulkAccountCursor = 0;
     while (!bulkSend.stopRequested && bulkSend.completedMessages < bulkSend.totalMessages) {
       const cooldown = store.cooldown();
       if (!cooldown.ready) {
         bulkSend.phase = "waiting";
         bulkSend.currentAccount = "";
         await waitForBulk(cooldown.remainingSeconds * 1000);
-        continue;
+        if (bulkSend.stopRequested) break;
       }
 
+      const state = store.snapshot();
+      const accounts = store.getEnabledAccounts(state.settings.platform);
+      if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản.");
+      const message = store.getNextMessage();
+      if (!message) break;
+
+      const account = accounts[bulkAccountCursor % accounts.length];
+      bulkAccountCursor++;
+      const accountName = account.profileName || account.name;
+
       bulkSend.phase = "sending";
-      const result = await sendNextCommentToAccounts();
-      bulkSend.sent += result.successCount;
-      bulkSend.failed += result.failureCount;
-      bulkSend.completedMessages += result.successCount;
-      bulkSend.failures.push(...result.results
-        .filter((item) => !item.ok)
-        .map((item) => ({
-          accountId: item.accountId,
-          accountName: item.accountName,
-          message: item.message,
-          error: item.error,
-        })));
+      bulkSend.currentAccount = accountName;
+
+      try {
+        await sessions.sendComment(account.id, {
+          channelUrl: state.settings.channelUrl,
+          content: message.content,
+        }, account.platform);
+
+        await store.markSent();
+        bulkSend.sent += 1;
+        bulkSend.completedMessages += 1;
+
+        if (store.shouldRename()) {
+          bulkSend.phase = "renaming";
+          await updateAutomaticDisplayNames([account]);
+        }
+      } catch (error) {
+        bulkSend.failed += 1;
+        bulkSend.failures.push({
+          accountId: account.id,
+          accountName,
+          message: message.content,
+          error: error.message || "Không thể gửi bình luận.",
+        });
+      }
     }
   } catch (error) {
     bulkSend.error = error.message || "Không thể tiếp tục gửi hàng loạt.";
-    if (Array.isArray(error.results)) {
-      const failures = error.results.filter((item) => !item.ok);
-      bulkSend.failed += failures.length;
-      bulkSend.failures.push(...failures.map((item) => ({
-        accountId: item.accountId,
-        accountName: item.accountName,
-        message: item.message || store.getNextMessage()?.content || "",
-        error: item.error,
-      })));
-    }
   } finally {
     bulkSend.phase = bulkSend.stopRequested
       ? "stopped"
@@ -440,7 +438,7 @@ app.post("/api/comments/send-next", asyncRoute(async (_request, response) => {
 
   manualSendRunning = true;
   try {
-    const result = await sendNextCommentToAccounts();
+    const result = await sendNextComment();
     response.json({ ...(await dashboardState()), result });
   } finally {
     manualSendRunning = false;
