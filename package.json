@@ -30,11 +30,16 @@
   "build": {
     "appId": "com.tafi.autolivecmt",
     "productName": "AutoLiveCmtV2",
+    "compression": "maximum",
     "asar": true,
     "files": [
       "src/**/*",
       "public/**/*",
-      "package.json"
+      "package.json",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin"
     ],
     "win": {
       "target": [
@@ -50,7 +55,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": true
     },
     "publish": {
       "provider": "github",

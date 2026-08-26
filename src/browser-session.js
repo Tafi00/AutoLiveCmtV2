@@ -1211,19 +1211,19 @@ export class BrowserSession {
         throw error;
       }
 
-      const transportDeadline = Date.now() + 15_000;
+      const transportDeadline = Date.now() + 8_000;
       do {
         directResult = await this.commentPage.evaluate(sendCommentViaLocoTransport, {
           content: cleanContent,
           streamId: getLocoStreamId(safeUrl),
-          timeoutMs: 12_000,
+          timeoutMs: 6_000,
         }).catch(() => ({
           status: "failed",
-          attempted: true,
+          attempted: false,
           reason: "page_evaluate_failed",
         }));
-        if (directResult.status === "sent" || directResult.attempted || Date.now() >= transportDeadline) break;
-        await this.commentPage.waitForTimeout(500);
+        if (directResult.status === "sent" || Date.now() >= transportDeadline) break;
+        await this.commentPage.waitForTimeout(400);
       } while (true);
 
       if (directResult.status === "sent") {
@@ -1235,66 +1235,62 @@ export class BrowserSession {
           providerMessageId: directResult.providerMessageId,
         };
       }
-      if (directResult.attempted) {
-        throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason || "không rõ nguyên nhân"}`);
-      }
     }
 
     const textBox = this.commentPage
-      .getByPlaceholder(this.platform === "loco"
-        ? /Slow mode|Send a message|Chat|Say something/i
-        : /Nói gì đó|Say something|Write a message/i)
+      .locator(this.platform === "loco"
+        ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
+        : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea')
       .first();
-    await textBox.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
+    await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
+      if (directResult?.attempted && directResult?.reason) {
+        throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason}`);
+      }
       throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
     });
 
     await textBox.fill(cleanContent);
-    const sendButton = this.commentPage.getByRole("button", { name: /^(Gửi|Send)$/i }).first();
-    await sendButton.waitFor({ state: "visible", timeout: 10_000 });
-    if (!(await sendButton.isEnabled())) {
-      throw new Error("Nút gửi đang bị vô hiệu hóa. Tin nhắn có thể không hợp lệ hoặc phòng không cho chat.");
-    }
 
-    directResult ??= await this.commentPage.evaluate(
-      this.platform === "loco" ? sendCommentViaLocoTransport : sendCommentViaWebsiteTransport,
-      this.platform === "loco" ? {
+    if (this.platform === "gosh") {
+      directResult = await this.commentPage.evaluate(sendCommentViaWebsiteTransport, {
         content: cleanContent,
-        streamId: getLocoStreamId(safeUrl),
-        timeoutMs: 12_000,
-      } : {
-        content: cleanContent,
-        timeoutMs: 12_000,
-      },
-    ).catch(() => ({
-      status: "failed",
-      attempted: true,
-      reason: "page_evaluate_failed",
-    }));
+        timeoutMs: 10_000,
+      }).catch(() => ({
+        status: "failed",
+        attempted: false,
+        reason: "page_evaluate_failed",
+      }));
 
-    if (directResult.status === "sent") {
-      await textBox.fill("").catch(() => {});
-      return {
-        sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-        url: this.commentPage.url(),
-        transport: this.platform === "loco" ? "https" : "websocket",
-        provider: directResult.provider,
-        providerMessageId: directResult.providerMessageId,
-      };
+      if (directResult.status === "sent") {
+        await textBox.fill("").catch(() => {});
+        return {
+          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
+          url: this.commentPage.url(),
+          transport: "websocket",
+          provider: directResult.provider,
+          providerMessageId: directResult.providerMessageId,
+        };
+      }
     }
 
-    if (directResult.attempted) {
-      const transportName = this.platform === "loco" ? "HTTPS" : "kết nối realtime";
-      throw new Error(`Gửi qua ${transportName} thất bại: ${directResult.reason || "không rõ nguyên nhân"}`);
+    await textBox.press("Enter");
+
+    const sendButton = this.commentPage.locator(
+      'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
+    ).first();
+
+    if (await sendButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+      if (await sendButton.isEnabled().catch(() => false)) {
+        await sendButton.click().catch(() => {});
+      }
     }
 
-    await sendButton.click();
     await this.commentPage.waitForTimeout(500);
     return {
       sentAt: new Date().toISOString(),
       url: this.commentPage.url(),
-      transport: "browser-ui-fallback",
-      fallbackReason: directResult.reason,
+      transport: "browser-ui",
+      provider: this.platform,
     };
   }
 

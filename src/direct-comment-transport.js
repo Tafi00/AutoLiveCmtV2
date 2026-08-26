@@ -318,13 +318,14 @@ export async function sendCommentViaLocoTransport(input) {
         && source.includes("/chat/?send=true")
         && source.includes("X-CLIENT-ID")
         && source.includes(".post(");
+    }).sort((a, b) => {
+      const srcA = functionSource(a);
+      const srcB = functionSource(b);
+      const scoreA = srcA.includes("params") ? 2 : (srcA.includes("body") ? 1 : 0);
+      const scoreB = srcB.includes("params") ? 2 : (srcB.includes("body") ? 1 : 0);
+      return scoreB - scoreA;
     });
-    // The current Loco bundle exposes both { streamId, body } and
-    // { streamId, params } variants for this endpoint. Chat composition uses
-    // the params variant; calling the body variant with params silently posts
-    // an empty payload and returns the generic "try again later" error.
-    const send = sendCandidates.find((value) => functionSource(value).includes("params"))
-      || sendCandidates[0];
+    const send = sendCandidates[0];
     const getFingerprint = Object.values(fingerprintModule || {}).find((value) => {
       const source = functionSource(value);
       return typeof value === "function"
@@ -341,7 +342,7 @@ export async function sendCommentViaLocoTransport(input) {
     const appStore = findStore(appModule, ["sessionUid", "appLanguage", "requestCountryCode"]);
 
     if (!send || !getFingerprint || !userStore || !streamStore || !appStore) return null;
-    return { send, getFingerprint, userStore, streamStore, appStore };
+    return { send, sendCandidates, getFingerprint, userStore, streamStore, appStore };
   }
 
   let bridge = pageGlobal[bridgeCacheKey];
@@ -406,31 +407,56 @@ export async function sendCommentViaLocoTransport(input) {
   let timeoutId;
   try {
     attempted = true;
-    const result = await Promise.race([
-      bridge.send({ streamId, params }),
-      new Promise((_, reject) => {
-        timeoutId = pageGlobal.setTimeout(
-          () => reject(new Error("website_transport_timeout")),
-          timeoutMs,
-        );
-      }),
-    ]);
-    pageGlobal.clearTimeout(timeoutId);
+    const payload = {
+      streamId,
+      params,
+      body: params,
+      data: params,
+    };
+    let result = null;
+    let lastReason = "website_transport_failed";
+    const candidates = bridge.sendCandidates?.length
+      ? bridge.sendCandidates
+      : [bridge.send].filter(Boolean);
 
-    const statusCode = Number(result?.statusCode || 200);
-    if (statusCode !== 200 || result?.code !== "C10") {
+    for (const sendFn of candidates) {
+      try {
+        const candidateResult = await Promise.race([
+          sendFn(payload),
+          new Promise((_, reject) => {
+            timeoutId = pageGlobal.setTimeout(
+              () => reject(new Error("website_transport_timeout")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        pageGlobal.clearTimeout(timeoutId);
+        const statusCode = Number(candidateResult?.statusCode || (candidateResult?.code === "C10" ? 200 : 0));
+        if (candidateResult?.code === "C10" || (statusCode >= 200 && statusCode < 300 && !candidateResult?.error && !candidateResult?.error_code && !candidateResult?.message)) {
+          result = candidateResult;
+          break;
+        }
+        lastReason = String(candidateResult?.message || candidateResult?.error_code || candidateResult?.error || `loco_chat_${statusCode}`).slice(0, 240);
+      } catch (error) {
+        pageGlobal.clearTimeout(timeoutId);
+        lastReason = String(error?.message || error || "website_transport_failed").slice(0, 240);
+      }
+    }
+
+    if (result && (result.code === "C10" || Number(result.statusCode || 200) === 200)) {
       return {
-        status: "failed",
+        status: "sent",
         attempted: true,
-        reason: String(result?.message || result?.error_code || `loco_chat_${statusCode}`).slice(0, 240),
+        provider: "loco-chat-v2",
+        providerMessageId: String(result?.data?.id || result?.data?.msgId || params.msgId),
+        sentAt: Date.now(),
       };
     }
+
     return {
-      status: "sent",
+      status: "failed",
       attempted: true,
-      provider: "loco-chat-v2",
-      providerMessageId: String(result?.data?.id || result?.data?.msgId || params.msgId),
-      sentAt: Date.now(),
+      reason: lastReason,
     };
   } catch (error) {
     pageGlobal.clearTimeout(timeoutId);
