@@ -1,9 +1,8 @@
 import { app, BrowserWindow, Menu, shell, ipcMain } from "electron";
 import electronUpdaterPkg from "electron-updater";
-import { spawn } from "node:child_process";
-import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startServer } from "./server.js";
 
 const autoUpdater = electronUpdaterPkg.autoUpdater ?? electronUpdaterPkg.default?.autoUpdater ?? electronUpdaterPkg;
 
@@ -12,7 +11,7 @@ const rootDirectory = dirname(currentDirectory);
 const port = 4317;
 const appUrl = `http://127.0.0.1:${port}`;
 
-let serverProcess = null;
+let serverInstance = null;
 let mainWindow = null;
 
 function sendUpdaterStatus(status, details = {}) {
@@ -49,48 +48,15 @@ autoUpdater.on("download-progress", (progress) => sendUpdaterStatus("downloading
 autoUpdater.on("update-downloaded", (info) => sendUpdaterStatus("downloaded", { version: info.version }));
 autoUpdater.on("error", (error) => sendUpdaterStatus("error", { message: error.message }));
 
-function stopServer() {
-  if (!serverProcess) return;
-  serverProcess.kill("SIGTERM");
-  serverProcess = null;
-}
-
-function waitForServer(attempts = 80) {
-  return new Promise((resolve, reject) => {
-    const check = (remaining) => {
-      const request = http.get(`${appUrl}/api/state`, (response) => {
-        response.resume();
-        if (response.statusCode && response.statusCode < 500) return resolve();
-        retry(remaining);
-      });
-      request.on("error", () => retry(remaining));
-      request.setTimeout(500, () => request.destroy());
-    };
-
-    const retry = (remaining) => {
-      if (remaining <= 0) return reject(new Error("Không thể khởi động dịch vụ cục bộ."));
-      setTimeout(() => check(remaining - 1), 125);
-    };
-
-    check(attempts);
-  });
-}
-
-function startServer() {
-  serverProcess = spawn(process.execPath, [join(currentDirectory, "server.js")], {
-    cwd: rootDirectory,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      ELECTRON_RUN_AS_NODE: "1",
-    },
-    stdio: "inherit",
-  });
-
-  serverProcess.once("exit", (code) => {
-    serverProcess = null;
-    if (code && !app.isQuitting) app.quit();
-  });
+async function stopServer() {
+  if (!serverInstance) return;
+  const instance = serverInstance;
+  serverInstance = null;
+  try {
+    await instance.close();
+  } catch (error) {
+    console.error("Lỗi khi dừng server:", error);
+  }
 }
 
 async function createWindow() {
@@ -124,25 +90,28 @@ async function createWindow() {
 app.isQuitting = false;
 app.on("before-quit", () => {
   app.isQuitting = true;
-  stopServer();
+  void stopServer();
 });
 
 process.once("SIGINT", () => {
-  stopServer();
-  app.quit();
+  void stopServer().finally(() => app.quit());
 });
 
 process.once("SIGTERM", () => {
-  stopServer();
-  app.quit();
+  void stopServer().finally(() => app.quit());
 });
 
-process.once("exit", stopServer);
+process.once("exit", () => {
+  void stopServer();
+});
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
-  startServer();
-  await waitForServer();
+  const dataDirectory = app.isPackaged
+    ? join(app.getPath("userData"), "data")
+    : join(rootDirectory, "data");
+
+  serverInstance = await startServer({ port, dataDirectory });
   await createWindow();
 
   app.on("activate", () => {

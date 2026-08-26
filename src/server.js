@@ -8,17 +8,18 @@ import { PLATFORMS } from "./platforms.js";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const rootDirectory = dirname(currentDirectory);
-const dataDirectory = process.env.DATA_DIRECTORY
-  ? resolve(process.env.DATA_DIRECTORY)
-  : join(rootDirectory, "data");
-const publicDirectory = join(rootDirectory, "public");
-const lucideDirectory = join(rootDirectory, "node_modules", "lucide", "dist", "esm");
-const port = Number(process.env.PORT || 4317);
 
-const store = new JsonStore(dataDirectory);
-await store.init();
+export async function createServerApp({
+  dataDirectory = process.env.DATA_DIRECTORY
+    ? resolve(process.env.DATA_DIRECTORY)
+    : join(rootDirectory, "data"),
+  publicDirectory = join(rootDirectory, "public"),
+  lucideDirectory = join(rootDirectory, "node_modules", "lucide", "dist", "esm"),
+} = {}) {
+  const store = new JsonStore(dataDirectory);
+  await store.init();
 
-const sessions = new AccountSessionManager({ dataDirectory });
+  const sessions = new AccountSessionManager({ dataDirectory });
 
 const bulkSend = {
   running: false,
@@ -459,22 +460,62 @@ app.post("/api/comments/send-all/stop", asyncRoute(async (_request, response) =>
   response.json(await dashboardState());
 }));
 
-app.use((error, _request, response, _next) => {
-  const status = error.status || (error.code === "LOGIN_REQUIRED" ? 401 : 400);
-  response.status(status).json({ error: error.message || "Đã có lỗi xảy ra." });
-});
+  app.use((error, _request, response, _next) => {
+    const status = error.status || (error.code === "LOGIN_REQUIRED" ? 401 : 400);
+    response.status(status).json({ error: error.message || "Đã có lỗi xảy ra." });
+  });
 
-const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`Live Comment: http://127.0.0.1:${port}`);
-});
-
-async function shutdown() {
-  bulkSend.stopRequested = true;
-  bulkSend.wakeWaiter?.();
-  server.close();
-  await sessions.closeAll();
-  process.exit(0);
+  return {
+    app,
+    store,
+    sessions,
+    bulkSend,
+    close: async () => {
+      bulkSend.stopRequested = true;
+      bulkSend.wakeWaiter?.();
+      await sessions.closeAll();
+    },
+  };
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+export async function startServer({
+  port = Number(process.env.PORT || 4317),
+  dataDirectory = process.env.DATA_DIRECTORY
+    ? resolve(process.env.DATA_DIRECTORY)
+    : join(rootDirectory, "data"),
+  host = "127.0.0.1",
+} = {}) {
+  const { app, store, sessions, bulkSend, close: closeSessions } = await createServerApp({ dataDirectory });
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const server = app.listen(port, host, () => {
+      console.log(`Live Comment: http://${host}:${port}`);
+      resolvePromise({
+        app,
+        server,
+        store,
+        sessions,
+        bulkSend,
+        close: async () => {
+          await new Promise((res) => server.close(res));
+          await closeSessions();
+        },
+      });
+    });
+    server.once("error", rejectPromise);
+  });
+}
+
+const isDirectRun = process.argv[1] && (
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+);
+
+if (isDirectRun) {
+  const instance = await startServer();
+  const shutdown = async () => {
+    await instance.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}

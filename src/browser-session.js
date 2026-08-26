@@ -20,7 +20,38 @@ import {
 chromium.use(StealthPlugin());
 
 const CONFIRM_BUTTON_NAME = /^(Xác nhận(?: thay đổi)?|Đồng ý|Có|Tiếp tục|Confirm(?: change)?|Agree|Yes|Continue|OK)$/i;
-const CHROME_PATHS = [
+export function getChromeCandidatePaths() {
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA || "";
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+    const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    return [
+      join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+      join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+      localAppData ? join(localAppData, "Google", "Chrome", "Application", "chrome.exe") : "",
+      join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+      join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+      localAppData ? join(localAppData, "Microsoft", "Edge", "Application", "msedge.exe") : "",
+    ].filter(Boolean);
+  }
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+  }
+  return [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+  ];
+}
+
+export const CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
 ];
@@ -417,9 +448,9 @@ async function availableLocalPort() {
 }
 
 async function findChrome() {
-  for (const path of CHROME_PATHS) {
+  for (const path of getChromeCandidatePaths()) {
     try {
-      await access(path, constants.X_OK);
+      await access(path, constants.F_OK);
       return path;
     } catch {
       // Try the next known Chrome installation.
@@ -499,7 +530,7 @@ export class BrowserSession {
   async #launch() {
     const executablePath = await findChrome();
     if (!executablePath) {
-      throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
+      throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
     }
 
     await mkdir(this.profileDirectory, { recursive: true });
@@ -550,7 +581,7 @@ export class BrowserSession {
     const safeUrl = assertPlatformUrl(targetUrl || this.definition.homeUrl, this.platform);
     const executablePath = await findChrome();
     if (!executablePath) {
-      throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
+      throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
     }
 
     if (isBrowserProcessRunning(this.manualLoginProcess)) {
@@ -898,7 +929,7 @@ export class BrowserSession {
 
       if (!context) {
         const executablePath = await findChrome();
-        if (!executablePath) throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
+        if (!executablePath) throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
         await mkdir(this.profileDirectory, { recursive: true });
         await waitForProfileUnlock(this.profileDirectory);
         context = await chromium.launchPersistentContext(this.profileDirectory, {
@@ -1060,7 +1091,7 @@ export class BrowserSession {
 
     if (!context) {
       const executablePath = await findChrome();
-      if (!executablePath) throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
+      if (!executablePath) throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
       await mkdir(this.profileDirectory, { recursive: true });
       await waitForProfileUnlock(this.profileDirectory);
       try {
