@@ -369,10 +369,28 @@ export class JsonStore {
     await this.persist();
   }
 
-  getPendingDisplayName() {
+  shouldRename() {
     const { displayNames, renameEveryComments } = this.state.settings;
-    if (!displayNames.length || this.state.commentsSinceRename < renameEveryComments) return null;
-    return displayNames[this.state.displayNameCursor % displayNames.length];
+    if (!displayNames.length) return false;
+    const threshold = Math.max(1, Number(renameEveryComments) || 1);
+    return this.state.commentsSinceRename >= threshold;
+  }
+
+  getRandomDisplayName(excludeName = "") {
+    const { displayNames } = this.state.settings;
+    if (!displayNames.length) return null;
+    if (displayNames.length === 1) return displayNames[0];
+
+    const cleanExclude = String(excludeName || "").trim().toLowerCase();
+    const candidates = displayNames.filter((name) => name.trim().toLowerCase() !== cleanExclude);
+    const pool = candidates.length > 0 ? candidates : displayNames;
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    return pool[randomIndex];
+  }
+
+  getPendingDisplayName(excludeName = "") {
+    if (!this.shouldRename()) return null;
+    return this.getRandomDisplayName(excludeName);
   }
 
   async markDisplayNameUpdated() {

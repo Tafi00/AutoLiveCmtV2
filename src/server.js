@@ -145,22 +145,38 @@ async function updateDisplayName(accountId, displayName) {
 }
 
 async function updateAutomaticDisplayNames(accounts) {
-  const displayName = store.getPendingDisplayName();
-  if (!displayName) return null;
+  if (!store.shouldRename()) return null;
   if (bulkSend.running) bulkSend.phase = "renaming";
 
   const results = [];
+  const chosenNames = [];
+
   for (const account of accounts) {
+    const currentName = account.profileName || account.name;
+    const displayName = store.getRandomDisplayName(currentName);
+    if (!displayName) continue;
+
     try {
       await updateDisplayName(account.id, displayName);
-      results.push({ accountId: account.id, accountName: account.profileName || account.name, ok: true });
+      chosenNames.push(displayName);
+      results.push({
+        accountId: account.id,
+        accountName: account.profileName || account.name,
+        newName: displayName,
+        ok: true,
+      });
     } catch (error) {
-      results.push({ accountId: account.id, accountName: account.profileName || account.name, ok: false, error: error.message });
+      results.push({
+        accountId: account.id,
+        accountName: account.profileName || account.name,
+        ok: false,
+        error: error.message,
+      });
     }
   }
 
   if (results.some((result) => result.ok)) await store.markDisplayNameUpdated();
-  return { displayName, results };
+  return { displayName: chosenNames[0] || null, displayNames: chosenNames, results };
 }
 
 async function sendNextCommentToAccounts() {

@@ -133,7 +133,7 @@ test("xóa tin đứng trước con trỏ không làm bỏ qua tin kế tiếp",
   }
 });
 
-test("đổi tên đúng chu kỳ và xoay vòng danh sách", async () => {
+test("đổi tên đúng chu kỳ và chọn ngẫu nhiên từ danh sách", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gosh-comment-assistant-"));
   try {
     const store = new JsonStore(directory);
@@ -146,14 +146,18 @@ test("đổi tên đúng chu kỳ và xoay vòng danh sách", async () => {
     });
 
     await store.markSent();
+    assert.equal(store.shouldRename(), false);
     assert.equal(store.getPendingDisplayName(), null);
     await store.markSent();
-    assert.equal(store.getPendingDisplayName(), "Tên một");
+    assert.equal(store.shouldRename(), true);
+    assert.ok(["Tên một", "Tên hai"].includes(store.getPendingDisplayName()));
     await store.markDisplayNameUpdated();
+    assert.equal(store.shouldRename(), false);
     assert.equal(store.getPendingDisplayName(), null);
     await store.markSent();
     await store.markSent();
-    assert.equal(store.getPendingDisplayName(), "Tên hai");
+    assert.equal(store.shouldRename(), true);
+    assert.ok(["Tên một", "Tên hai"].includes(store.getPendingDisplayName()));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -178,14 +182,14 @@ test("sau mỗi mẫu thành công thì đổi tên ngay và khóa gửi theo de
 
     await store.markSent();
     assert.equal(store.getNextMessage().id, second.id);
-    assert.equal(store.getPendingDisplayName(), "Tên một");
+    assert.equal(store.shouldRename(), true);
+    assert.ok(["Tên một", "Tên hai"].includes(store.getPendingDisplayName()));
     assert.equal(store.cooldown().ready, false);
     assert.ok(store.cooldown().remainingSeconds > 0);
 
     await store.markDisplayNameUpdated();
     assert.equal(store.getPendingDisplayName(), null);
     assert.equal(store.snapshot().commentsSinceRename, 0);
-    assert.equal(store.snapshot().displayNameCursor, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
