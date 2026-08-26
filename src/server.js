@@ -165,15 +165,19 @@ async function updateAutomaticDisplayNames(accounts) {
 
 async function sendNextCommentToAccounts() {
   const state = store.snapshot();
-  const message = store.getNextMessage();
   const accounts = store.getEnabledAccounts(state.settings.platform);
-  if (!message) throw new Error("Kho bình luận đang trống.");
+  if (!store.getNextMessage()) throw new Error("Kho bình luận đang trống.");
   if (!state.settings.channelUrl) throw new Error("Hãy lưu URL phòng live trước.");
   if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản để gửi.");
 
   const results = [];
+  const sentMessages = [];
+
   for (const account of accounts) {
     if (bulkSend.running && bulkSend.stopRequested) break;
+    const message = store.getNextMessage();
+    if (!message) break;
+
     const accountName = account.profileName || account.name;
     if (bulkSend.running) bulkSend.currentAccount = accountName;
     try {
@@ -181,13 +185,16 @@ async function sendNextCommentToAccounts() {
         channelUrl: state.settings.channelUrl,
         content: message.content,
       }, account.platform);
-      results.push({ accountId: account.id, accountName, ok: true, result });
+      await store.markSent();
+      sentMessages.push(message);
+      results.push({ accountId: account.id, accountName, ok: true, result, message: message.content });
     } catch (error) {
       results.push({
         accountId: account.id,
         accountName,
         ok: false,
         error: error.message || "Không thể gửi bình luận.",
+        message: message.content,
       });
     }
   }
@@ -201,10 +208,10 @@ async function sendNextCommentToAccounts() {
     throw error;
   }
 
-  await store.markSent();
   const rename = await updateAutomaticDisplayNames(accounts);
   return {
-    message,
+    message: sentMessages[0] || store.getNextMessage(),
+    messages: sentMessages,
     attempted: results.length,
     totalAccounts: accounts.length,
     successCount: sent.length,
@@ -229,13 +236,13 @@ async function runBulkSend() {
       const result = await sendNextCommentToAccounts();
       bulkSend.sent += result.successCount;
       bulkSend.failed += result.failureCount;
-      bulkSend.completedMessages += 1;
+      bulkSend.completedMessages += result.successCount;
       bulkSend.failures.push(...result.results
         .filter((item) => !item.ok)
         .map((item) => ({
           accountId: item.accountId,
           accountName: item.accountName,
-          message: result.message.content,
+          message: item.message,
           error: item.error,
         })));
     }
@@ -247,7 +254,7 @@ async function runBulkSend() {
       bulkSend.failures.push(...failures.map((item) => ({
         accountId: item.accountId,
         accountName: item.accountName,
-        message: store.getNextMessage()?.content || "",
+        message: item.message || store.getNextMessage()?.content || "",
         error: item.error,
       })));
     }
@@ -443,7 +450,7 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
   Object.assign(bulkSend, {
     running: true,
     stopRequested: false,
-    total: state.messages.length * accounts.length,
+    total: state.messages.length,
     sent: 0,
     failed: 0,
     totalMessages: state.messages.length,

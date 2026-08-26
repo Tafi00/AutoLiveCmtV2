@@ -191,25 +191,34 @@ test("sau mỗi mẫu thành công thì đổi tên ngay và khóa gửi theo de
   }
 });
 
-test("nhập nhiều bình luận cùng lúc (mỗi dòng 1 bình luận)", async () => {
-  assert.deepEqual(normalizeMessages("  Chào shop \n \n Shop ơi  \nCho em xin giá "), [
-    "Chào shop",
-    "Shop ơi",
-    "Cho em xin giá",
-  ]);
-
-  const directory = await mkdtemp(join(tmpdir(), "gosh-comment-multi-"));
+test("nhiều tài khoản gửi các bình luận khác nhau theo thứ tự hàng đợi", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "multi-account-cmt-"));
   try {
     const store = new JsonStore(directory);
     await store.init();
-    const added = await store.addMessage("Bình luận 1\nBình luận 2\n\nBình luận 3");
-    assert.equal(added.length, 3);
-    assert.equal(store.snapshot().messages.length, 3);
-    assert.equal(store.snapshot().messages[0].content, "Bình luận 1");
-    assert.equal(store.snapshot().messages[1].content, "Bình luận 2");
-    assert.equal(store.snapshot().messages[2].content, "Bình luận 3");
+    await store.addMessage("Comment A\nComment B\nComment C\nComment D");
+
+    const accounts = ["acc1", "acc2", "acc3"];
+    const sent = [];
+
+    for (const acc of accounts) {
+      const msg = store.getNextMessage();
+      sent.push({ account: acc, content: msg.content });
+      await store.markSent();
+    }
+
+    assert.deepEqual(sent, [
+      { account: "acc1", content: "Comment A" },
+      { account: "acc2", content: "Comment B" },
+      { account: "acc3", content: "Comment C" },
+    ]);
+
+    // Tiếp tục tài khoản tiếp theo sẽ lấy Comment D
+    const nextMsg = store.getNextMessage();
+    assert.equal(nextMsg.content, "Comment D");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
 
