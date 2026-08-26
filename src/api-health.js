@@ -9,17 +9,22 @@ export function classifyHttpStatus(status) {
 export function healthTargets(channelUrl = "") {
   const targets = [
     { id: "gosh-web", platform: "gosh", name: "Website", url: "https://gosh6.app/" },
-    { id: "gosh-user", platform: "gosh", name: "User API", url: "https://gosh6.app/gosh_base/app/user/user_info" },
+    { id: "gosh-user", platform: "gosh", name: "User Info API", url: "https://gosh6.app/gosh_base/app/user/user_info" },
+    { id: "gosh-profile", platform: "gosh", name: "Đổi tên API", url: "https://gosh6.app/gosh_base/app/user/user_center?scene=avatar" },
+    { id: "gosh-refresh", platform: "gosh", name: "Refresh Token API", url: "https://gosh6.app/gosh_base/app/user/refresh_token" },
     { id: "loco-web", platform: "loco", name: "Website", url: "https://loco.com/" },
     { id: "loco-home", platform: "loco", name: "Discovery API", url: "https://api.loco.com/ivr/v3/homepage/sub_recipe/?limit=1&offset=0&r_id=web_home_global" },
     { id: "loco-config", platform: "loco", name: "Config API", url: "https://api.loco.com/auth/v1/ivory/config/?ivory=true" },
+    { id: "loco-profile-me", platform: "loco", name: "Hồ sơ API", url: "https://api.loco.com/ivr/v1/profile/me/" },
+    { id: "loco-profile-update", platform: "loco", name: "Đổi tên API", url: "https://api.loco.com/ivr/v1/profile/update/" },
+    { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v1/user/refresh_token/" },
   ];
   const streamId = getLocoStreamId(channelUrl);
   if (streamId) {
     targets.push({
       id: "loco-chat",
       platform: "loco",
-      name: "Chat API · phòng hiện tại",
+      name: "Chat V2 API · phòng hiện tại",
       url: `https://api.loco.com/chat/v2/streams/${streamId}/history/`,
     });
   }

@@ -62,6 +62,54 @@ export const LOCO_API_ENDPOINTS = {
   updateProfile: "https://api.loco.com/ivr/v1/profile/update/",
   legacyUpdateProfile: "https://ivory.loco.gg/v1/profile/update/",
 };
+
+export const discoveredApiEndpoints = new Map();
+
+export function recordObservedEndpoint(url, method = "GET", status = 200) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (!host.includes("loco") && !host.includes("gosh") && !host.includes("getloconow") && !host.includes("vizzlive")) return;
+
+    const path = parsed.pathname;
+    let category = "other";
+    let name = path;
+
+    if (path.includes("/chat/") || url.includes("send=true") || path.includes("/send_msg")) {
+      category = "chat";
+      name = "Gửi Chat";
+    } else if (path.includes("/profile/update") || path.includes("/user_center")) {
+      category = "profile_update";
+      name = "Đổi tên";
+    } else if (path.includes("/refresh_token")) {
+      category = "auth_refresh";
+      name = "Làm mới Token";
+    } else if (path.includes("/profile/me") || path.includes("/user_info")) {
+      category = "profile_info";
+      name = "Hồ sơ tài khoản";
+    } else if (path.includes("/live/") || path.includes("/streams/")) {
+      category = "live_stream";
+      name = "Phòng Live";
+    } else if (path.includes("/config")) {
+      category = "config";
+      name = "Cấu hình Website";
+    } else {
+      return;
+    }
+
+    discoveredApiEndpoints.set(`${method}:${path}`, {
+      name,
+      category,
+      method,
+      host,
+      path,
+      fullUrl: url,
+      status,
+      lastSeen: new Date().toISOString(),
+    });
+  } catch {}
+}
+
 export const CHROME_PROFILE_IGNORE_DEFAULT_ARGS = [
   "--enable-automation",
   "--password-store=basic",
@@ -569,6 +617,10 @@ export class BrowserSession {
         return;
       }
       await route.continue();
+    });
+
+    this.context.on("response", (res) => {
+      recordObservedEndpoint(res.url(), res.request().method(), res.status());
     });
 
     this.context.on("close", () => {

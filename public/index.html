@@ -103,13 +103,23 @@
 
           <section id="view-health" class="view" data-view-panel="health" hidden>
             <header class="view-header">
-              <div><h1>Kiểm tra API</h1><p id="health-summary">Chưa kiểm tra</p></div>
+              <div><h1>Kiểm tra & Theo dõi API</h1><p id="health-summary">Chưa kiểm tra</p></div>
               <button id="check-health" class="primary" type="button">Kiểm tra lại</button>
             </header>
             <div class="health-layout">
               <div class="health-table-header" aria-hidden="true"><span>Dịch vụ</span><span>Endpoint</span><span>HTTP</span><span>Phản hồi</span><span>Trạng thái</span></div>
               <ol id="health-list" class="health-list"></ol>
               <p id="health-empty" class="empty-state">Bấm “Kiểm tra lại” để bắt đầu</p>
+
+              <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                  <h2 style="font-size: 15px; font-weight: 600; margin: 0;">API thực tế tự động bắt được từ trình duyệt</h2>
+                  <span id="observed-count" class="badge">0 endpoint</span>
+                </div>
+                <div class="health-table-header" aria-hidden="true"><span>Chức năng</span><span>URL phát hiện</span><span>Phương thức</span><span>HTTP</span><span>Thời điểm</span></div>
+                <ol id="observed-list" class="health-list"></ol>
+                <p id="observed-empty" class="empty-state">Chưa có API nào được bắt từ phiên duyệt web</p>
+              </div>
             </div>
           </section>
 

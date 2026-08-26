@@ -68,7 +68,12 @@ const elements = {
   healthSummary: $("#health-summary"),
   healthList: $("#health-list"),
   healthEmpty: $("#health-empty"),
+  observedList: $("#observed-list"),
+  observedEmpty: $("#observed-empty"),
+  observedCount: $("#observed-count"),
 };
+
+let observedEndpoints = [];
 
 function setUpdateStatus(message, type = "") {
   if (!elements.updateStatus) return;
@@ -552,6 +557,42 @@ function renderHealth() {
     row.append(service, endpoint, http, latency, status);
     elements.healthList.append(row);
   }
+
+  if (elements.observedList) {
+    elements.observedList.replaceChildren();
+    elements.observedEmpty.hidden = observedEndpoints.length > 0;
+    elements.observedCount.textContent = `${observedEndpoints.length} endpoint`;
+
+    for (const item of observedEndpoints) {
+      const row = document.createElement("li");
+      row.className = "health-row";
+      const service = document.createElement("span");
+      service.className = "health-service";
+      service.append(statusDot("ready"), document.createTextNode(item.name || item.category));
+
+      const endpoint = document.createElement("code");
+      endpoint.textContent = `${item.host}${item.path}`;
+      endpoint.title = item.fullUrl;
+
+      const method = document.createElement("span");
+      method.textContent = item.method || "GET";
+
+      const http = document.createElement("span");
+      http.textContent = item.status || 200;
+
+      const time = document.createElement("span");
+      time.className = "health-status ready";
+      try {
+        const d = new Date(item.lastSeen);
+        time.textContent = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+      } catch {
+        time.textContent = "vừa xong";
+      }
+
+      row.append(service, endpoint, method, http, time);
+      elements.observedList.append(row);
+    }
+  }
 }
 
 function stopBulkPolling() {
@@ -777,8 +818,12 @@ elements.refreshStatus.addEventListener("click", async () => {
 elements.checkHealth.addEventListener("click", async () => {
   setBusy(elements.checkHealth, true, "Đang kiểm tra…");
   try {
-    const result = await api("/api/health/check", { method: "POST" });
+    const [result, observed] = await Promise.all([
+      api("/api/health/check", { method: "POST" }),
+      api("/api/endpoints/observed").catch(() => ({ endpoints: [] })),
+    ]);
     healthChecks = result.checks || [];
+    observedEndpoints = observed.endpoints || [];
     renderHealth();
     renderAggregateStatus();
     const down = healthChecks.filter((item) => item.status === "down").length;
@@ -835,8 +880,12 @@ elements.stopBulk.addEventListener("click", async () => {
 
 void updateVersionDisplay();
 
-Promise.all([refreshState(), api("/api/health")])
-  .then(([, health]) => { healthChecks = health.checks || []; render(); })
+Promise.all([refreshState(), api("/api/health"), api("/api/endpoints/observed").catch(() => ({ endpoints: [] }))])
+  .then(([, health, observed]) => {
+    healthChecks = health.checks || [];
+    observedEndpoints = observed.endpoints || [];
+    render();
+  })
   .catch((error) => showNotice(error.message));
 
 window.setInterval(async () => {

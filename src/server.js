@@ -5,6 +5,7 @@ import { AccountSessionManager } from "./session-manager.js";
 import { JsonStore } from "./store.js";
 import { checkApiHealth, healthTargets } from "./api-health.js";
 import { PLATFORMS } from "./platforms.js";
+import { discoveredApiEndpoints } from "./browser-session.js";
 
 import { readFileSync } from "node:fs";
 
@@ -413,6 +414,10 @@ app.post("/api/health/check", asyncRoute(async (_request, response) => {
   apiHealth = await checkApiHealth(store.snapshot().settings.channelUrl);
   response.json({ checks: apiHealth });
 }));
+
+app.get("/api/endpoints/observed", (_request, response) => {
+  response.json({ endpoints: Array.from(discoveredApiEndpoints.values()) });
+});
 
 app.post("/api/comments/send-next", asyncRoute(async (_request, response) => {
   if (bulkSend.running) {
