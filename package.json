@@ -1,6 +1,6 @@
 {
   "name": "live-comment-desktop",
-  "version": "0.1.1",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "Desktop multi-account comment assistant for Gosh and Loco",

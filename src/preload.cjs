@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopUpdater", {
   check: () => ipcRenderer.invoke("updater:check"),
+  getVersion: () => ipcRenderer.invoke("updater:version"),
   download: () => ipcRenderer.invoke("updater:download"),
   install: () => ipcRenderer.invoke("updater:install"),
   onStatus: (callback) => {

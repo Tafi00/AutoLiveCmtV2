@@ -6,8 +6,16 @@ import { JsonStore } from "./store.js";
 import { checkApiHealth, healthTargets } from "./api-health.js";
 import { PLATFORMS } from "./platforms.js";
 
+import { readFileSync } from "node:fs";
+
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const rootDirectory = dirname(currentDirectory);
+
+let appVersion = "2.0.0";
+try {
+  const pkg = JSON.parse(readFileSync(join(rootDirectory, "package.json"), "utf8"));
+  if (pkg.version) appVersion = pkg.version;
+} catch {}
 
 export async function createServerApp({
   dataDirectory = process.env.DATA_DIRECTORY
@@ -88,6 +96,7 @@ async function dashboardState() {
     cooldown: store.cooldown(),
     bulkSend: bulkSendState(),
     platforms: Object.values(PLATFORMS).map(({ id, name, homeUrl }) => ({ id, name, homeUrl })),
+    version: appVersion,
   };
 }
 

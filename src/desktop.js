@@ -35,6 +35,7 @@ async function checkForUpdates() {
 }
 
 ipcMain.handle("updater:check", checkForUpdates);
+ipcMain.handle("updater:version", () => app.getVersion());
 ipcMain.handle("updater:download", async () => {
   try { await autoUpdater.downloadUpdate(); return { status: "downloaded" }; }
   catch (error) { sendUpdaterStatus("error", { message: error.message }); return { status: "error", message: error.message }; }

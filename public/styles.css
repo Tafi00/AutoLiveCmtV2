@@ -30,7 +30,9 @@ button { cursor: pointer; }
   padding: 0 16px 0 78px; border-bottom: 1px solid var(--line); background: #151619;
   -webkit-app-region: drag; user-select: none;
 }
-.titlebar > strong { font-size: 12px; font-weight: 650; }
+.titlebar-title { display: flex; align-items: center; gap: 8px; }
+.titlebar-title > strong { font-size: 12px; font-weight: 650; }
+.app-version { color: var(--muted); font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 4px; background: #202227; border: 1px solid #2d3037; font-variant-numeric: tabular-nums; }
 .update-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; -webkit-app-region: no-drag; }
 .status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #5c5f66; }
 .status-dot.ready { background: var(--accent); }

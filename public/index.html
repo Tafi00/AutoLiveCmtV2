@@ -10,7 +10,10 @@
   <body>
     <div class="app-frame">
       <header class="titlebar">
-        <strong>Live Comment</strong>
+        <div class="titlebar-title">
+          <strong>Live Comment</strong>
+          <span id="app-version" class="app-version"></span>
+        </div>
         <div class="update-actions"><span id="update-status" class="save-state" aria-live="polite"></span><button id="check-update" class="text-button" type="button">Kiểm tra cập nhật</button></div>
       </header>
 
@@ -133,14 +136,17 @@
               </section>
 
               <section class="settings-section data-section">
-                <div class="setting-copy"><h2>Dữ liệu cục bộ</h2><p>Mỗi tài khoản có một hồ sơ Chrome riêng. Phiên đăng nhập không được xuất khỏi máy.</p></div>
-                <div class="setting-control data-value"><strong id="profile-count">1 hồ sơ Chrome</strong><small>Được quản lý trong thư mục data</small></div>
+                <div class="setting-copy"><h2>Dữ liệu & Phiên bản</h2><p>Mỗi tài khoản có một hồ sơ Chrome riêng. Phiên đăng nhập không được xuất khỏi máy.</p></div>
+                <div class="setting-control data-value">
+                  <strong id="settings-app-version">Phiên bản --</strong>
+                  <small id="profile-count">1 hồ sơ Chrome</small>
+                </div>
               </section>
             </div>
           </section>
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=9"></script>
+    <script type="module" src="/app.js?v=11"></script>
   </body>
 </html>

@@ -28,6 +28,8 @@ const elements = {
   navAccountCount: $("#nav-account-count"),
   navHealthCount: $("#nav-health-count"),
   refreshStatus: $("#refresh-status"),
+  appVersion: $("#app-version"),
+  settingsAppVersion: $("#settings-app-version"),
   checkUpdate: $("#check-update"),
   updateStatus: $("#update-status"),
   liveSummary: $("#live-summary"),
@@ -577,8 +579,27 @@ function pollBulkSend() {
   }, 1000);
 }
 
+let appVersionCached = "";
+
+async function updateVersionDisplay() {
+  if (!appVersionCached && window.desktopUpdater?.getVersion) {
+    try {
+      appVersionCached = await window.desktopUpdater.getVersion();
+    } catch {}
+  }
+  if (!appVersionCached && state?.version) {
+    appVersionCached = state.version;
+  }
+  if (appVersionCached) {
+    const formatted = appVersionCached.startsWith("v") ? appVersionCached : `v${appVersionCached}`;
+    if (elements.appVersion) elements.appVersion.textContent = formatted;
+    if (elements.settingsAppVersion) elements.settingsAppVersion.textContent = `Phiên bản ${formatted}`;
+  }
+}
+
 function render() {
   if (!state) return;
+  void updateVersionDisplay();
   renderAggregateStatus();
   renderLive();
   renderSettings();
@@ -811,6 +832,8 @@ elements.stopBulk.addEventListener("click", async () => {
     setBusy(elements.stopBulk, false);
   }
 });
+
+void updateVersionDisplay();
 
 Promise.all([refreshState(), api("/api/health")])
   .then(([, health]) => { healthChecks = health.checks || []; render(); })
