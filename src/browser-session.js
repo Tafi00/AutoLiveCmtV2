@@ -56,9 +56,11 @@ export const CHROME_PATHS = [
   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
 ];
 export const LOCO_API_ENDPOINTS = {
-  refreshToken: "https://api.getloconow.com/v3/user/refresh_token/",
-  profile: "https://ivory.loco.gg/v1/profile/me/",
-  updateProfile: "https://ivory.loco.gg/v1/profile/update/",
+  refreshToken: "https://api.loco.com/auth/v1/user/refresh_token/",
+  legacyRefreshToken: "https://api.getloconow.com/v3/user/refresh_token/",
+  profile: "https://api.loco.com/ivr/v1/profile/me/",
+  updateProfile: "https://api.loco.com/ivr/v1/profile/update/",
+  legacyUpdateProfile: "https://ivory.loco.gg/v1/profile/update/",
 };
 export const CHROME_PROFILE_IGNORE_DEFAULT_ARGS = [
   "--enable-automation",
