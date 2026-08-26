@@ -1,7 +1,8 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, lstat, mkdir, readlink, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { join } from "node:path";
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {
@@ -22,6 +23,16 @@ const CONFIRM_BUTTON_NAME = /^(Xác nhận(?: thay đổi)?|Đồng ý|Có|Tiế
 const CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+];
+export const LOCO_API_ENDPOINTS = {
+  refreshToken: "https://api.getloconow.com/v3/user/refresh_token/",
+  profile: "https://ivory.loco.gg/v1/profile/me/",
+  updateProfile: "https://ivory.loco.gg/v1/profile/update/",
+};
+export const CHROME_PROFILE_IGNORE_DEFAULT_ARGS = [
+  "--enable-automation",
+  "--password-store=basic",
+  "--use-mock-keychain",
 ];
 const SUPPORTED_LOCALES = new Set([
   "en", "ar", "hi", "id", "pt", "sw", "es", "ru", "tr", "th", "uk", "ms", "fil", "vi", "zh-Hans", "zh-Hant",
@@ -236,33 +247,50 @@ export function goshLoginProbeExpression() {
 
 export function locoLoginProbeExpression() {
   return `(async () => {
-    // 1. Try device_profile endpoint
-    try {
-      const res = await fetch('https://api.loco.com/auth/v3/user/device_profile/', { credentials: 'include' });
-      if (res.ok) {
-        const json = await res.json();
-        if (json && (json.user_id || json.username || json.display_name || json.name || (json.data && (json.data.username || json.data.user_id)))) {
-          return { loggedIn: true, data: json.data || json };
+    const identityKeys = ['username', 'display_name', 'displayName', 'nickname', 'nick', 'name', 'user_id', 'user_uid', 'userId', 'uid'];
+    const findIdentity = (value, depth = 0, seen = new Set()) => {
+      if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return null;
+      seen.add(value);
+      for (const key of identityKeys) {
+        const candidate = value[key];
+        if (candidate !== null && candidate !== undefined && typeof candidate !== 'object') {
+          const clean = String(candidate).trim();
+          if (clean && clean.length <= 40 && !/^(true|false|null|undefined)$/i.test(clean)) return { [key]: clean };
         }
+      }
+      for (const child of Object.values(value)) {
+        const found = findIdentity(child, depth + 1, seen);
+        if (found) return found;
+      }
+      return null;
+    };
+    const cookieMap = Object.fromEntries((document.cookie || '').split(';').map((part) => {
+      const index = part.indexOf('=');
+      return index < 0 ? [part.trim(), ''] : [part.slice(0, index).trim(), part.slice(index + 1)];
+    }).filter(([key]) => key));
+
+    // The current Loco site exposes the signed-in identity in its access-token
+    // JWT. This avoids the device_profile request, which is rejected by CORS.
+    try {
+      const payload = (cookieMap.access_token || '').split('.')[1];
+      if (payload) {
+        const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const decoded = JSON.parse(decodeURIComponent(Array.from(atob(normalized), (char) =>
+          '%' + char.charCodeAt(0).toString(16).padStart(2, '0')).join('')));
+        const identity = findIdentity(decoded);
+        if (identity) return { loggedIn: true, data: identity };
       }
     } catch (e) {}
 
-    // 2. Check localStorage
+    // Newer Loco builds keep user data inside nested Zustand stores.
     for (const key of Object.keys(localStorage)) {
-      if (/user|profile|token|auth|account/i.test(key)) {
+      if (/user|profile|token|auth|account|app-store|login/i.test(key)) {
         const val = localStorage.getItem(key);
         if (val) {
           try {
             const parsed = JSON.parse(val);
-            const items = Array.isArray(parsed) ? parsed : [parsed];
-            for (const item of items) {
-              if (item && typeof item === 'object') {
-                const name = item.username || item.display_name || item.nick || item.nickname || item.name || item.user_id || item.user_uid;
-                if (name && typeof name === 'string' && name.trim().length <= 40) {
-                  return { loggedIn: true, data: item };
-                }
-              }
-            }
+            const identity = findIdentity(parsed);
+            if (identity) return { loggedIn: true, data: identity };
           } catch (e) {}
         }
       }
@@ -280,12 +308,76 @@ export function locoLoginProbeExpression() {
       }
     } catch (e) {}
 
+    if (cookieMap.access_token && cookieMap.refresh_token && cookieMap.mode === 'logged-in') {
+      const fallbackId = localStorage.getItem('userUid');
+      if (fallbackId) return { loggedIn: true, data: { user_uid: fallbackId.replace(/^['"]|['"]$/g, '') } };
+    }
+
     return { loggedIn: false };
   })()`;
 }
 
 export function isBrowserProcessRunning(process) {
   return Boolean(process && process.exitCode === null);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function waitForProfileUnlock(profileDirectory, timeoutMs = 5_000) {
+  const lockPath = join(profileDirectory, "SingletonLock");
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      await lstat(lockPath);
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+    try {
+      const lockTarget = await readlink(lockPath);
+      const pid = Number(lockTarget.match(/-(\d+)$/)?.[1]);
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        let processExists = true;
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          if (error.code === "ESRCH") processExists = false;
+        }
+        if (!processExists) {
+          await Promise.allSettled(["SingletonLock", "SingletonCookie", "SingletonSocket"].map((name) =>
+            unlink(join(profileDirectory, name))));
+          return;
+        }
+      }
+    } catch (error) {
+      if (error.code !== "EINVAL" && error.code !== "ENOENT") throw error;
+    }
+    if (Date.now() >= deadline) {
+      const error = new Error("Chrome chưa nhả khóa hồ sơ. Hãy thử lại sau vài giây.");
+      error.code = "PROFILE_LOCKED";
+      throw error;
+    }
+    await delay(50);
+  }
+}
+
+async function waitForProcessExit(child, timeoutMs) {
+  if (!isBrowserProcessRunning(child)) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off?.("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(!isBrowserProcessRunning(child)), timeoutMs);
+    child.once?.("exit", onExit);
+  });
 }
 
 export function observeManualLoginUrls(urls, platformOrigin, previouslySawProvider = false) {
@@ -366,6 +458,7 @@ export class BrowserSession {
     this.identityDetection = null;
     this.lastIdentityAttempt = 0;
     this.manualLoginProcess = null;
+    this.manualLoginDebugPort = null;
     this.manualLoginError = null;
     this.suppressManualLoginReopen = false;
   }
@@ -410,6 +503,7 @@ export class BrowserSession {
     }
 
     await mkdir(this.profileDirectory, { recursive: true });
+    await waitForProfileUnlock(this.profileDirectory);
     this.context = await chromium.launchPersistentContext(this.profileDirectory, {
       executablePath,
       headless: true,
@@ -418,7 +512,10 @@ export class BrowserSession {
       // Google rejects OAuth in Chrome instances carrying Playwright's default
       // automation switch. The app still controls the browser after login, but
       // the sign-in flow sees a regular installed Chrome profile.
-      ignoreDefaultArgs: ["--enable-automation"],
+      // The visible Chrome login process uses macOS Keychain. Playwright's
+      // mock-keychain defaults would make the same encrypted cookies unreadable
+      // and can rewrite them with a different key.
+      ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
       args: [
         "--headless=new",
         "--autoplay-policy=user-gesture-required",
@@ -468,11 +565,13 @@ export class BrowserSession {
 
     // Release Chrome's profile lock before starting a completely normal Chrome
     // process. No Playwright/CDP flags are present during Google OAuth.
-    await this.context?.close();
+    const activeContext = this.context;
+    if (activeContext) await this.#closeTemporaryContext(activeContext);
     this.context = null;
     this.commentPage = null;
     this.profilePage = null;
     await mkdir(this.profileDirectory, { recursive: true });
+    await waitForProfileUnlock(this.profileDirectory);
 
     this.suppressManualLoginReopen = false;
     this.manualLoginError = null;
@@ -488,13 +587,20 @@ export class BrowserSession {
       stdio: "ignore",
     });
     this.manualLoginProcess = child;
+    this.manualLoginDebugPort = debugPort;
 
     child.once("error", (error) => {
       this.manualLoginError = error.message;
-      if (this.manualLoginProcess === child) this.manualLoginProcess = null;
+      if (this.manualLoginProcess === child) {
+        this.manualLoginProcess = null;
+        this.manualLoginDebugPort = null;
+      }
     });
     child.once("exit", () => {
-      if (this.manualLoginProcess === child) this.manualLoginProcess = null;
+      if (this.manualLoginProcess === child) {
+        this.manualLoginProcess = null;
+        this.manualLoginDebugPort = null;
+      }
     });
     void this.#monitorManualLogin(child, debugPort, new URL(safeUrl).origin, { autoCloseOnLogin });
 
@@ -547,7 +653,7 @@ export class BrowserSession {
             }
           }
 
-          if (detectedDisplayName) {
+          if (detectedDisplayName && this.identity?.source !== "explicit_update") {
             this.identity = {
               displayName: detectedDisplayName,
               source: "manual_login",
@@ -582,19 +688,48 @@ export class BrowserSession {
       }
     } catch {}
 
+    if (await waitForProcessExit(child, 1_500)) {
+      await waitForProfileUnlock(this.profileDirectory);
+      return;
+    }
+
     if (isBrowserProcessRunning(child)) {
       try {
         child.kill("SIGTERM");
       } catch {}
     }
+    if (await waitForProcessExit(child, 1_200)) {
+      await waitForProfileUnlock(this.profileDirectory);
+      return;
+    }
+    if (isBrowserProcessRunning(child)) {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }
+    await waitForProcessExit(child, 1_200);
+    if (isBrowserProcessRunning(child)) {
+      throw new Error("Không thể đóng cửa sổ Chrome của tài khoản.");
+    }
+    await waitForProfileUnlock(this.profileDirectory);
+  }
 
-    setTimeout(() => {
-      if (isBrowserProcessRunning(child)) {
-        try {
-          child.kill("SIGKILL");
-        } catch {}
-      }
-    }, 1_200);
+  async #closeManualLoginForProfileUse() {
+    const child = this.manualLoginProcess;
+    if (!isBrowserProcessRunning(child)) return;
+    this.suppressManualLoginReopen = true;
+    try {
+      await this.#terminateManualLogin(child, this.manualLoginDebugPort);
+    } finally {
+      if (this.manualLoginProcess === child) this.manualLoginProcess = null;
+      this.manualLoginDebugPort = null;
+      this.suppressManualLoginReopen = false;
+    }
+  }
+
+  async #closeTemporaryContext(context) {
+    await context.close().catch(() => {});
+    await waitForProfileUnlock(this.profileDirectory);
   }
 
   async status() {
@@ -755,6 +890,7 @@ export class BrowserSession {
     if (cleanName.length > maxLength) {
       throw new Error(`Tên hiển thị không được vượt quá ${maxLength} ký tự.`);
     }
+    await this.#closeManualLoginForProfileUse();
 
     if (this.platform === "loco") {
       let createdContext = false;
@@ -763,9 +899,12 @@ export class BrowserSession {
       if (!context) {
         const executablePath = await findChrome();
         if (!executablePath) throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
+        await mkdir(this.profileDirectory, { recursive: true });
+        await waitForProfileUnlock(this.profileDirectory);
         context = await chromium.launchPersistentContext(this.profileDirectory, {
           executablePath,
           headless: true,
+          ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
           args: ["--headless=new", "--mute-audio", "--no-sandbox"],
         });
         createdContext = true;
@@ -774,12 +913,16 @@ export class BrowserSession {
       try {
         let cookies = [];
         try {
-          cookies = await context.cookies();
+          // Scope cookie lookup to the active Loco origin. Profiles can retain
+          // obsolete loco11.com tokens; an unscoped `.find()` may select those
+          // before the valid .loco.com session.
+          cookies = await context.cookies([this.definition.homeUrl]);
         } catch {
           const page = context.pages()[0] || (await context.newPage());
           const cdp = await context.newCDPSession(page);
           const cdpRes = await cdp.send("Network.getAllCookies");
-          cookies = cdpRes.cookies || [];
+          cookies = (cdpRes.cookies || []).filter((cookie) =>
+            cookie.domain === "loco.com" || cookie.domain === ".loco.com");
         }
         const tokenCookie = cookies.find((c) => c.name === "access_token");
         const refreshCookie = cookies.find((c) => c.name === "refresh_token");
@@ -797,7 +940,7 @@ export class BrowserSession {
 
         const callRefresh = async (currToken, currRefresh) => {
           if (!currRefresh) return null;
-          const refRes = await fetch("https://api.loco.com/auth/v3/user/refresh_token/", {
+          const refRes = await fetch(LOCO_API_ENDPOINTS.refreshToken, {
             method: "POST",
             headers: {
               Authorization: currToken,
@@ -832,7 +975,7 @@ export class BrowserSession {
           let gender = 0;
           let bio = "";
           try {
-            const pRes = await fetch("https://api.loco.com/ivr/v1/profile/me/", {
+            const pRes = await fetch(LOCO_API_ENDPOINTS.profile, {
               headers: {
                 Authorization: token,
                 Origin: "https://loco.com",
@@ -850,7 +993,7 @@ export class BrowserSession {
             }
           } catch {}
 
-          const res = await fetch("https://api.loco.com/ivr/v1/profile/update/", {
+          const res = await fetch(LOCO_API_ENDPOINTS.updateProfile, {
             method: "POST",
             headers: {
               Authorization: token,
@@ -869,6 +1012,9 @@ export class BrowserSession {
           const data = await res.json().catch(() => ({}));
           if (data.message === "User Action Not allowed") {
             throw new Error("Tài khoản Loco này đã đổi username trước đó và nền tảng không cho phép đổi lại lần thứ hai.");
+          }
+          if (/not allowed to login|login not allowed|invalid.*token|token.*expired/i.test(String(data.message || ""))) {
+            return { ok: false, status: 401, data: { ...data, message: "Phiên Loco đã hết hạn hoặc chưa đăng nhập đầy đủ." } };
           }
           if (res.status === 401 || data.status_code === 401 || data.error_code === "E005") {
             return { ok: false, status: 401, data };
@@ -891,17 +1037,19 @@ export class BrowserSession {
         }
 
         if (!updateResult.ok) {
-          throw new Error(updateResult.data?.message || `Lỗi cập nhật tên Loco (HTTP ${updateResult.status})`);
+          const error = new Error(updateResult.data?.message || `Lỗi cập nhật tên Loco (HTTP ${updateResult.status})`);
+          if (updateResult.status === 401) error.code = "LOGIN_REQUIRED";
+          throw error;
         }
 
         // Always refresh token after successful rename so new JWT contains updated username
         await callRefresh(accessToken, refreshToken);
 
-        this.identity = { displayName: cleanName, source: "loco_api", detectedAt: new Date().toISOString() };
+        this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
         return { displayName: cleanName, updatedAt: new Date().toISOString() };
       } finally {
         if (createdContext) {
-          await context.close().catch(() => {});
+          await this.#closeTemporaryContext(context);
         }
       }
     }
@@ -913,14 +1061,22 @@ export class BrowserSession {
     if (!context) {
       const executablePath = await findChrome();
       if (!executablePath) throw new Error("Không tìm thấy Google Chrome trong thư mục Applications.");
-      context = await chromium.launchPersistentContext(this.profileDirectory, {
-        executablePath,
-        headless: true,
-        args: ["--headless=new", "--mute-audio", "--no-sandbox"],
-      });
-      createdContext = true;
-      profilePage = await context.newPage();
-      await profilePage.goto(this.definition.profileUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await mkdir(this.profileDirectory, { recursive: true });
+      await waitForProfileUnlock(this.profileDirectory);
+      try {
+        context = await chromium.launchPersistentContext(this.profileDirectory, {
+          executablePath,
+          headless: true,
+          ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
+          args: ["--headless=new", "--mute-audio", "--no-sandbox"],
+        });
+        createdContext = true;
+        profilePage = await context.newPage();
+        await profilePage.goto(this.definition.profileUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      } catch (error) {
+        if (createdContext) await this.#closeTemporaryContext(context);
+        throw error;
+      }
     } else {
       profilePage = await this.#getProfilePage();
     }
@@ -929,7 +1085,8 @@ export class BrowserSession {
       name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
     });
     if (await loginButton.isVisible().catch(() => false)) {
-      if (!createdContext) await profilePage.bringToFront().catch(() => {});
+      if (createdContext) await this.#closeTemporaryContext(context);
+      else await profilePage.bringToFront().catch(() => {});
       const error = new Error("Bạn cần đăng nhập trước khi đổi tên.");
       error.code = "LOGIN_REQUIRED";
       throw error;
@@ -944,7 +1101,7 @@ export class BrowserSession {
         throw new Error("Không tìm thấy trường tên trong trang hồ sơ.");
       });
       if ((await nameInput.inputValue()).trim() === cleanName) {
-        this.identity = { displayName: cleanName, source: "profile", detectedAt: new Date().toISOString() };
+        this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
         return { displayName: cleanName, updatedAt: new Date().toISOString(), unchanged: true };
       }
       await nameInput.fill(cleanName);
@@ -983,12 +1140,12 @@ export class BrowserSession {
         throw new Error("Trang hồ sơ không phản hồi sau khi ứng dụng tự xác nhận đổi tên.");
       }
 
-      this.identity = { displayName: cleanName, source: "profile", detectedAt: new Date().toISOString() };
+      this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
       return { displayName: cleanName, updatedAt: new Date().toISOString() };
     } finally {
       profilePage.off("dialog", acceptBrowserDialog);
       if (createdContext) {
-        await context.close().catch(() => {});
+        await this.#closeTemporaryContext(context);
       } else if (this.commentPage && !this.commentPage.isClosed()) {
         await this.commentPage.bringToFront().catch(() => {});
       }
@@ -1000,12 +1157,56 @@ export class BrowserSession {
     const cleanContent = String(content ?? "").trim();
     if (!cleanContent) throw new Error("Không có nội dung để gửi.");
 
+    // A visible/manual Chrome instance owns the same persistent profile. A
+    // user-triggered send should hand that profile over to the controlled
+    // headless context instead of failing with USER_ACTION_REQUIRED.
+    await this.#closeManualLoginForProfileUse();
     await this.open(safeUrl);
     const status = await this.status();
     if (status.loginState === "signed_out") {
       const error = new Error("Bạn cần đăng nhập trong cửa sổ Chrome trước khi gửi.");
       error.code = "LOGIN_REQUIRED";
       throw error;
+    }
+
+    let directResult = null;
+    if (this.platform === "loco") {
+      const matureConfirmation = this.commentPage
+        .getByRole("button", { name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i })
+        .first();
+      if (await matureConfirmation.isVisible().catch(() => false)) {
+        const error = new Error("Phòng Loco yêu cầu xác nhận độ tuổi trong Chrome trước khi gửi chat.");
+        error.code = "USER_ACTION_REQUIRED";
+        throw error;
+      }
+
+      const transportDeadline = Date.now() + 15_000;
+      do {
+        directResult = await this.commentPage.evaluate(sendCommentViaLocoTransport, {
+          content: cleanContent,
+          streamId: getLocoStreamId(safeUrl),
+          timeoutMs: 12_000,
+        }).catch(() => ({
+          status: "failed",
+          attempted: true,
+          reason: "page_evaluate_failed",
+        }));
+        if (directResult.status === "sent" || directResult.attempted || Date.now() >= transportDeadline) break;
+        await this.commentPage.waitForTimeout(500);
+      } while (true);
+
+      if (directResult.status === "sent") {
+        return {
+          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
+          url: this.commentPage.url(),
+          transport: "https",
+          provider: directResult.provider,
+          providerMessageId: directResult.providerMessageId,
+        };
+      }
+      if (directResult.attempted) {
+        throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason || "không rõ nguyên nhân"}`);
+      }
     }
 
     const textBox = this.commentPage
@@ -1017,17 +1218,6 @@ export class BrowserSession {
       throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
     });
 
-    if (this.platform === "loco") {
-      const matureConfirmation = this.commentPage
-        .getByRole("button", { name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i })
-        .first();
-      if (await matureConfirmation.isVisible().catch(() => false)) {
-        const error = new Error("Phòng Loco yêu cầu xác nhận độ tuổi trong Chrome trước khi gửi chat.");
-        error.code = "USER_ACTION_REQUIRED";
-        throw error;
-      }
-    }
-
     await textBox.fill(cleanContent);
     const sendButton = this.commentPage.getByRole("button", { name: /^(Gửi|Send)$/i }).first();
     await sendButton.waitFor({ state: "visible", timeout: 10_000 });
@@ -1035,7 +1225,7 @@ export class BrowserSession {
       throw new Error("Nút gửi đang bị vô hiệu hóa. Tin nhắn có thể không hợp lệ hoặc phòng không cho chat.");
     }
 
-    const directResult = await this.commentPage.evaluate(
+    directResult ??= await this.commentPage.evaluate(
       this.platform === "loco" ? sendCommentViaLocoTransport : sendCommentViaWebsiteTransport,
       this.platform === "loco" ? {
         content: cleanContent,
@@ -1081,15 +1271,10 @@ export class BrowserSession {
     this.suppressManualLoginReopen = true;
     const manualLoginProcess = this.manualLoginProcess;
     if (isBrowserProcessRunning(manualLoginProcess)) {
-      try {
-        manualLoginProcess.kill("SIGKILL");
-        await new Promise((resolve) => {
-          manualLoginProcess.once("exit", resolve);
-          setTimeout(resolve, 500);
-        });
-      } catch {}
+      await this.#terminateManualLogin(manualLoginProcess, this.manualLoginDebugPort).catch(() => {});
     }
     this.manualLoginProcess = null;
+    this.manualLoginDebugPort = null;
     try {
       await this.context?.close();
     } catch {}

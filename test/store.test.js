@@ -157,3 +157,35 @@ test("đổi tên đúng chu kỳ và xoay vòng danh sách", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("sau mỗi mẫu thành công thì đổi tên ngay và khóa gửi theo delay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gosh-comment-workflow-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    await store.updateSettings({
+      channelUrl: "https://gosh6.app/15942759",
+      delaySeconds: 30,
+      displayNames: ["Tên một", "Tên hai"],
+      renameEveryComments: 1,
+    });
+    const first = await store.addMessage("Mẫu một");
+    const second = await store.addMessage("Mẫu hai");
+
+    assert.equal(store.getNextMessage().id, first.id);
+    assert.equal(store.cooldown().ready, true);
+
+    await store.markSent();
+    assert.equal(store.getNextMessage().id, second.id);
+    assert.equal(store.getPendingDisplayName(), "Tên một");
+    assert.equal(store.cooldown().ready, false);
+    assert.ok(store.cooldown().remainingSeconds > 0);
+
+    await store.markDisplayNameUpdated();
+    assert.equal(store.getPendingDisplayName(), null);
+    assert.equal(store.snapshot().commentsSinceRename, 0);
+    assert.equal(store.snapshot().displayNameCursor, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

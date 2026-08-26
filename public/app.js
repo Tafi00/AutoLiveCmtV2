@@ -28,6 +28,8 @@ const elements = {
   navAccountCount: $("#nav-account-count"),
   navHealthCount: $("#nav-health-count"),
   refreshStatus: $("#refresh-status"),
+  checkUpdate: $("#check-update"),
+  updateStatus: $("#update-status"),
   liveSummary: $("#live-summary"),
   channelUrl: $("#channel-url"),
   platformSelect: $("#platform-select"),
@@ -65,6 +67,39 @@ const elements = {
   healthList: $("#health-list"),
   healthEmpty: $("#health-empty"),
 };
+
+function setUpdateStatus(message, type = "") {
+  if (!elements.updateStatus) return;
+  elements.updateStatus.textContent = message;
+  elements.updateStatus.className = `save-state${type ? ` ${type}` : ""}`;
+}
+
+async function checkForUpdate() {
+  if (!window.desktopUpdater) {
+    setUpdateStatus("Chỉ khả dụng trong bản desktop", "warning");
+    return;
+  }
+  setBusy(elements.checkUpdate, true, "Đang kiểm tra…");
+  try {
+    const result = await window.desktopUpdater.check();
+    if (result.status === "available") {
+      setUpdateStatus(`Có bản ${result.version}` , "success");
+      if (window.confirm(`Đã có bản ${result.version}. Tải xuống ngay?`)) await window.desktopUpdater.download();
+    } else if (result.status === "up-to-date") setUpdateStatus("Đang dùng bản mới nhất", "success");
+    else setUpdateStatus(result.message || "Không thể kiểm tra", "warning");
+  } catch (error) { setUpdateStatus(error.message, "error"); }
+  finally { setBusy(elements.checkUpdate, false); }
+}
+
+elements.checkUpdate?.addEventListener("click", checkForUpdate);
+window.desktopUpdater?.onStatus((event) => {
+  if (event.status === "downloading") setUpdateStatus(`Đang tải ${event.percent}%`, "saving");
+  else if (event.status === "downloaded") {
+    setUpdateStatus("Đã tải xong", "success");
+    if (window.confirm("Đã tải bản cập nhật. Khởi động lại để cài đặt?")) window.desktopUpdater.install();
+  } else if (event.status === "available") setUpdateStatus(`Có bản ${event.version}`, "success");
+  else if (event.status === "error") setUpdateStatus(event.message, "error");
+});
 
 let state = null;
 let currentView = "live";
@@ -424,6 +459,10 @@ function renderInspector(account) {
         body: JSON.stringify({ displayName: displayInput.value }),
       });
       displayInput.value = "";
+      // The display-name endpoint returns only the operation result. Refresh
+      // the dashboard so the account list and inspector immediately show the
+      // persisted profile name instead of waiting for a manual refresh.
+      await refreshState();
       showNotice(`Đã đổi tên thành “${response.result.displayName}”.`, "success");
     } catch (error) {
       showNotice(error.message);

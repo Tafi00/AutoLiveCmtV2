@@ -1,0 +1,41 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:win
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AutoLiveCmtV2 v${{ github.run_number }}
+          generate_release_notes: true
+          files: |
+            dist/AutoLiveCmtV2-Setup-*.exe
+            dist/latest.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Remove older releases and assets
+        shell: bash
+        run: |
+          gh release list --limit 100 --json tagName,isDraft,isPrerelease --jq '.[] | select(.tagName != "v${{ github.run_number }}") | .tagName' | while read tag; do
+            [ -z "$tag" ] || gh release delete "$tag" --yes --cleanup-tag
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

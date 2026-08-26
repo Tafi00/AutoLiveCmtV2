@@ -73,7 +73,8 @@ async function dashboardState() {
   const accountStatuses = await sessions.statuses(state.accounts);
   for (const account of accountStatuses) {
     const detectedName = account.session?.identity?.displayName;
-    if (detectedName && detectedName !== account.profileName) {
+    const identitySource = account.session?.identity?.source;
+    if (detectedName && identitySource !== "explicit_update" && detectedName !== account.profileName) {
       await store.updateAccountProfileName(account.id, detectedName);
     }
   }

@@ -82,7 +82,11 @@ function createWebpackFixture({ sendImpl }) {
   return chunkQueue;
 }
 
-function createLocoWebpackFixture({ sendImpl }) {
+function createLocoWebpackFixture({
+  sendImpl,
+  includeEmptyStreamCollision = false,
+  includeBodyVariantCollision = false,
+}) {
   const moduleFactories = {};
   const moduleCache = {};
   const runtimeRequire = (moduleId) => {
@@ -97,6 +101,14 @@ function createLocoWebpackFixture({ sendImpl }) {
 
   moduleFactories.chat = function locoChatFactory(module, exports) {
     void "/chat/?send=true X-CLIENT-ID X-CLIENT-SECRET";
+    if (includeBodyVariantCollision) {
+      exports.bodyVariant = async function locoChatBody({ streamId, body }) {
+        const websiteClient = { post() {} };
+        websiteClient.post();
+        void "/chat/?send=true X-CLIENT-ID";
+        return sendImpl({ streamId, body, selectedWrongVariant: true });
+      };
+    }
     exports.send = async function locoChatSend({ streamId, params }) {
       const websiteClient = { post() {} };
       websiteClient.post();
@@ -138,6 +150,18 @@ function createLocoWebpackFixture({ sendImpl }) {
       slowModeTime: 5,
     });
   };
+  if (includeEmptyStreamCollision) {
+    // Loco currently ships another matching store factory before the hydrated
+    // stream store. Discovery must continue until it finds the active room.
+    moduleFactories["000-empty-stream"] = function emptyLocoStreamFactory(module, exports) {
+      void "followDelayRunningTimer setSlowModeTime isChatTimeStamps";
+      exports.store = createStore({
+        stream: undefined,
+        isModerator: 0,
+        slowModeTime: 0,
+      });
+    };
+  }
   moduleFactories.app = function locoAppFactory(module, exports) {
     void "sessionUid requestCountryCode setAppLanguage";
     exports.store = createStore({
@@ -216,6 +240,8 @@ test("gửi comment Loco qua Chat V2 HTTPS bằng payload của website", async 
   const previousBridge = globalThis.__locoCommentAssistantDirectTransportV1;
   let sent;
   globalThis.webpackChunk_N_E = createLocoWebpackFixture({
+    includeEmptyStreamCollision: true,
+    includeBodyVariantCollision: true,
     sendImpl: async (input) => {
       sent = input;
       return { code: "C10", statusCode: 200, data: { msgId: "server-message-1" } };

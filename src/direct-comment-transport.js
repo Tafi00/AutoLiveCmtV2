@@ -264,6 +264,24 @@ export async function sendCommentViaLocoTransport(input) {
     return null;
   }
 
+  function findStoreInMatchingModules(runtimeRequire, markers, requiredStateKeys, preferState) {
+    let fallback = null;
+    for (const [moduleId, factory] of Object.entries(runtimeRequire.m || {})) {
+      const source = functionSource(factory);
+      if (!markers.every((marker) => source.includes(marker))) continue;
+      try {
+        const store = findStore(runtimeRequire(moduleId), requiredStateKeys);
+        if (!store) continue;
+        fallback ||= store;
+        if (preferState?.(store.getState() || {})) return store;
+      } catch {
+        // Keep scanning: Next.js can bundle both an empty template store and
+        // the hydrated store used by the active stream page.
+      }
+    }
+    return fallback;
+  }
+
   function discoverBridge() {
     const runtimeRequire = captureWebpackRequire();
     if (!runtimeRequire?.m) return null;
@@ -283,24 +301,30 @@ export async function sendCommentViaLocoTransport(input) {
       "refreshToken",
       "isSignUp",
     ]);
-    const streamModule = requireModuleMatching(runtimeRequire, [
+    const streamMarkers = [
       "followDelayRunningTimer",
       "setSlowModeTime",
       "isChatTimeStamps",
-    ]);
+    ];
     const appModule = requireModuleMatching(runtimeRequire, [
       "sessionUid",
       "requestCountryCode",
       "setAppLanguage",
     ]);
 
-    const send = Object.values(chatApiModule || {}).find((value) => {
+    const sendCandidates = Object.values(chatApiModule || {}).filter((value) => {
       const source = functionSource(value);
       return typeof value === "function"
         && source.includes("/chat/?send=true")
         && source.includes("X-CLIENT-ID")
         && source.includes(".post(");
     });
+    // The current Loco bundle exposes both { streamId, body } and
+    // { streamId, params } variants for this endpoint. Chat composition uses
+    // the params variant; calling the body variant with params silently posts
+    // an empty payload and returns the generic "try again later" error.
+    const send = sendCandidates.find((value) => functionSource(value).includes("params"))
+      || sendCandidates[0];
     const getFingerprint = Object.values(fingerprintModule || {}).find((value) => {
       const source = functionSource(value);
       return typeof value === "function"
@@ -308,7 +332,12 @@ export async function sendCommentViaLocoTransport(input) {
         && source.includes("endsWith(\"live\")");
     });
     const userStore = findStore(userModule, ["me", "accessToken", "setAccessToken"]);
-    const streamStore = findStore(streamModule, ["stream", "isModerator", "slowModeTime"]);
+    const streamStore = findStoreInMatchingModules(
+      runtimeRequire,
+      streamMarkers,
+      ["stream", "isModerator", "slowModeTime"],
+      (state) => Boolean(state.stream?.uid || state.streamID),
+    );
     const appStore = findStore(appModule, ["sessionUid", "appLanguage", "requestCountryCode"]);
 
     if (!send || !getFingerprint || !userStore || !streamStore || !appStore) return null;

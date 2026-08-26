@@ -1,6 +1,6 @@
 {
   "name": "live-comment-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Desktop multi-account comment assistant for Gosh and Loco",
@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "electron .",
+    "dist:win": "electron-builder --win nsis --publish never",
     "web": "node src/server.js",
     "test": "node --test"
   },
@@ -15,6 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "express": "^5.2.1",
     "lucide": "^1.34.0",
     "playwright": "^1.62.1",
@@ -22,6 +24,39 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "devDependencies": {
-    "electron": "^44.0.0"
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.tafi.autolivecmt",
+    "productName": "AutoLiveCmtV2",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "AutoLiveCmtV2-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Tafi00",
+      "repo": "AutoLiveCmtV2",
+      "releaseType": "release"
+    }
   }
 }

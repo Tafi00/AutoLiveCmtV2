@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Menu, shell } from "electron";
+import { app, BrowserWindow, Menu, shell, ipcMain } from "electron";
+import { autoUpdater } from "electron-updater";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { dirname, join } from "node:path";
@@ -11,6 +12,40 @@ const appUrl = `http://127.0.0.1:${port}`;
 
 let serverProcess = null;
 let mainWindow = null;
+
+function sendUpdaterStatus(status, details = {}) {
+  mainWindow?.webContents.send("updater:status", { status, ...details });
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged) return { status: "dev", message: "Bản chạy thử không kiểm tra cập nhật." };
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    if (!result?.updateInfo || result.updateInfo.version === app.getVersion()) {
+      sendUpdaterStatus("up-to-date", { version: app.getVersion() });
+      return { status: "up-to-date", version: app.getVersion() };
+    }
+    sendUpdaterStatus("available", { version: result.updateInfo.version });
+    return { status: "available", version: result.updateInfo.version };
+  } catch (error) {
+    sendUpdaterStatus("error", { message: error.message });
+    return { status: "error", message: error.message };
+  }
+}
+
+ipcMain.handle("updater:check", checkForUpdates);
+ipcMain.handle("updater:download", async () => {
+  try { await autoUpdater.downloadUpdate(); return { status: "downloaded" }; }
+  catch (error) { sendUpdaterStatus("error", { message: error.message }); return { status: "error", message: error.message }; }
+});
+ipcMain.handle("updater:install", () => { autoUpdater.quitAndInstall(); return { status: "installing" }; });
+
+autoUpdater.autoDownload = false;
+autoUpdater.on("update-available", (info) => sendUpdaterStatus("available", { version: info.version }));
+autoUpdater.on("update-not-available", () => sendUpdaterStatus("up-to-date", { version: app.getVersion() }));
+autoUpdater.on("download-progress", (progress) => sendUpdaterStatus("downloading", { percent: Math.round(progress.percent) }));
+autoUpdater.on("update-downloaded", (info) => sendUpdaterStatus("downloaded", { version: info.version }));
+autoUpdater.on("error", (error) => sendUpdaterStatus("error", { message: error.message }));
 
 function stopServer() {
   if (!serverProcess) return;
@@ -70,6 +105,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: join(currentDirectory, "preload.cjs"),
     },
   });
 

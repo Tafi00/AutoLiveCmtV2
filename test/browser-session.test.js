@@ -1,16 +1,42 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, symlink, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   BrowserSession,
+  CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
   extractDisplayName,
   isBrowserProcessRunning,
+  LOCO_API_ENDPOINTS,
+  locoLoginProbeExpression,
   observeManualLoginUrls,
+  waitForProfileUnlock,
 } from "../src/browser-session.js";
+
+test("headless dùng cùng macOS Keychain với Chrome đăng nhập", () => {
+  assert.ok(CHROME_PROFILE_IGNORE_DEFAULT_ARGS.includes("--password-store=basic"));
+  assert.ok(CHROME_PROFILE_IGNORE_DEFAULT_ARGS.includes("--use-mock-keychain"));
+});
 
 test("đọc tên hiển thị từ các dạng response hồ sơ", () => {
   assert.equal(extractDisplayName({ data: { nickname: "Streamer A" } }), "Streamer A");
   assert.equal(extractDisplayName({ result: { userInfo: { displayName: "Shop B" } } }), "Shop B");
   assert.equal(extractDisplayName({ message: "success", data: {} }), "");
+});
+
+test("probe Loco nhận diện JWT và store đăng nhập hiện hành", () => {
+  const expression = locoLoginProbeExpression();
+  assert.match(expression, /access_token/);
+  assert.match(expression, /app-store/);
+  assert.match(expression, /findIdentity/);
+  assert.doesNotMatch(expression, /fetch\(['"]https:\/\/api\.loco\.com/);
+});
+
+test("đổi tên Loco dùng endpoint hiện hành của bundle website", () => {
+  assert.equal(LOCO_API_ENDPOINTS.profile, "https://ivory.loco.gg/v1/profile/me/");
+  assert.equal(LOCO_API_ENDPOINTS.updateProfile, "https://ivory.loco.gg/v1/profile/update/");
+  assert.equal(LOCO_API_ENDPOINTS.refreshToken, "https://api.getloconow.com/v3/user/refresh_token/");
 });
 
 test("từ chối tên hiển thị trống trước khi mở trình duyệt", async () => {
@@ -24,6 +50,32 @@ test("từ chối tên hiển thị dài hơn giới hạn của website", async
 
   const locoBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
   await assert.rejects(locoBrowser.updateDisplayName("a".repeat(31)), /không được vượt quá 30 ký tự/);
+});
+
+test("chờ Chrome nhả khóa profile trước khi mở tiến trình tiếp theo", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "live-comment-profile-"));
+  const lockPath = join(directory, "SingletonLock");
+  try {
+    await symlink(`test-host-${process.pid}`, lockPath);
+    setTimeout(() => void unlink(lockPath).catch(() => {}), 75);
+    const startedAt = Date.now();
+    await waitForProfileUnlock(directory, 1_000);
+    assert.ok(Date.now() - startedAt >= 50);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("tự dọn SingletonLock khi PID Chrome trong lock đã chết", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "live-comment-stale-profile-"));
+  const lockPath = join(directory, "SingletonLock");
+  try {
+    await symlink("test-host-99999999", lockPath);
+    await waitForProfileUnlock(directory, 1_000);
+    await assert.rejects(() => unlink(lockPath), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("không xem process đăng nhập rỗng là đang chạy", () => {
@@ -52,4 +104,3 @@ test("đọc tên hiển thị từ user id, số hoặc email khi không có ni
   assert.equal(extractDisplayName({ user: { email: "streamer@gosh.app" } }), "streamer@gosh.app");
   assert.equal(extractDisplayName({ username: "LocoGamer99" }), "LocoGamer99");
 });
-
