@@ -1,9 +1,11 @@
 import { app, BrowserWindow, Menu, shell, ipcMain } from "electron";
-import { autoUpdater } from "electron-updater";
+import electronUpdaterPkg from "electron-updater";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const autoUpdater = electronUpdaterPkg.autoUpdater ?? electronUpdaterPkg.default?.autoUpdater ?? electronUpdaterPkg;
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const rootDirectory = dirname(currentDirectory);
