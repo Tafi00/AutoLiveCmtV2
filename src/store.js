@@ -330,6 +330,16 @@ export class JsonStore {
     return true;
   }
 
+  async clearMessages() {
+    const deletedCount = this.state.messages.length;
+    if (!deletedCount) return 0;
+
+    this.state.messages = [];
+    this.state.cursor = 0;
+    await this.persist();
+    return deletedCount;
+  }
+
   async updateSettings(input) {
     const nextSettings = {
       channelUrl: normalizeChannelUrl(input.channelUrl),

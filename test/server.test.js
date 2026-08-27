@@ -27,3 +27,29 @@ test("startServer khởi động server Express và phản hồi /api/state", as
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("DELETE /api/messages xóa toàn bộ kho bình luận", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "server-message-delete-test-"));
+  const instance = await startServer({ port: 0, dataDirectory: tempDir });
+  const port = instance.server.address().port;
+
+  try {
+    const addResponse = await fetch(`http://127.0.0.1:${port}/api/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "Một\nHai\nBa" }),
+    });
+    assert.equal(addResponse.status, 201);
+    assert.equal((await addResponse.json()).messages.length, 3);
+
+    const deleteResponse = await fetch(`http://127.0.0.1:${port}/api/messages`, { method: "DELETE" });
+    assert.equal(deleteResponse.status, 200);
+    const deleted = await deleteResponse.json();
+    assert.equal(deleted.deletedCount, 3);
+    assert.deepEqual(deleted.messages, []);
+    assert.equal(deleted.nextMessage, null);
+  } finally {
+    await instance.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

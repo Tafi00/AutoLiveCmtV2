@@ -1319,7 +1319,7 @@ export class BrowserSession {
     const textBox = this.commentPage
       .locator(this.platform === "loco"
         ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
-        : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea')
+        : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
       .first();
     await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
       if (directResult?.attempted && directResult?.reason) {

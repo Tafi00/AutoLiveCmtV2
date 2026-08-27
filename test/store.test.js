@@ -135,6 +135,26 @@ test("xóa tin đứng trước con trỏ không làm bỏ qua tin kế tiếp",
   }
 });
 
+test("xóa toàn bộ kho bình luận và đặt lại con trỏ", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gosh-comment-assistant-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    await store.addMessage("Tin thứ nhất\nTin thứ hai\nTin thứ ba");
+    await store.markSent();
+
+    assert.equal(store.snapshot().messages.length, 3);
+    assert.equal(store.snapshot().cursor, 1);
+    assert.equal(await store.clearMessages(), 3);
+    assert.deepEqual(store.snapshot().messages, []);
+    assert.equal(store.snapshot().cursor, 0);
+    assert.equal(store.getNextMessage(), null);
+    assert.equal(await store.clearMessages(), 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("đổi tên đúng chu kỳ và chọn ngẫu nhiên từ danh sách", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gosh-comment-assistant-"));
   try {
@@ -226,4 +246,3 @@ test("nhiều tài khoản gửi các bình luận khác nhau theo thứ tự h�
     await rm(directory, { recursive: true, force: true });
   }
 });
-

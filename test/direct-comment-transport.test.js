@@ -82,6 +82,80 @@ function createWebpackFixture({ sendImpl }) {
   return chunkQueue;
 }
 
+function createCurrentGoshWebpackFixture({ sendImpl }) {
+  const moduleFactories = {};
+  const moduleCache = {};
+  const runtimeRequire = (moduleId) => {
+    if (!moduleCache[moduleId]) {
+      const record = { exports: {} };
+      moduleCache[moduleId] = record;
+      moduleFactories[moduleId](record, record.exports, runtimeRequire);
+    }
+    return moduleCache[moduleId].exports;
+  };
+  runtimeRequire.m = moduleFactories;
+
+  // Current Gosh bundles expose the high-level custom-message wrapper. Its
+  // implementation hands the command to the active realtime provider.
+  moduleFactories.send = function currentGoshSendFactory(module, exports) {
+    void "custom_group_message clientRequestId payloadData";
+    exports.send = async function currentGoshSend({ groupId, payloadData }) {
+      void "custom_group_message payloadData";
+      return sendImpl({ groupId, payloadData });
+    };
+  };
+  moduleFactories.account = function currentGoshAccountFactory(module, exports) {
+    void "setAuthenticatedAccount refreshAccount sessionRevision";
+    exports.store = createStore({
+      account: {
+        id: "account-current",
+        nickname: "Tên cũ",
+        avatar: "avatar.png",
+        tim_user_sig: "must-not-leak",
+      },
+      loginType: 2,
+      sessionRevision: "revision-current",
+    });
+  };
+  moduleFactories.live = function currentGoshLiveFactory(module, exports) {
+    void "anchorSensitiveWords currentLiveRoom roomChatSetting";
+    exports.store = createStore({
+      anchorInfo: {
+        live_info: {
+          live_id: "live-current",
+          im_room: "@room-current",
+        },
+      },
+      currentLiveRoom: {
+        live: {
+          id: "live-current",
+          im_room: "@room-current",
+        },
+        room_role_infos: [{ role: "member" }],
+      },
+      roomChatSetting: { chat_rules: "" },
+    });
+  };
+  moduleFactories.sanitizer = function currentGoshSanitizerFactory(module, exports) {
+    void "tim_user_sig is_show_transfer last_login_at";
+    exports.sanitize = function sanitizeAccount(account) {
+      void "tim_user_sig is_show_transfer";
+      const clean = { ...account };
+      delete clean.tim_user_sig;
+      return clean;
+    };
+  };
+
+  const chunkQueue = [];
+  chunkQueue.push = (chunk) => {
+    const [, newModules, runtime] = chunk;
+    Object.assign(moduleFactories, newModules);
+    runtime?.(runtimeRequire);
+    return chunkQueue.length;
+  };
+  return chunkQueue;
+}
+
 function createLocoWebpackFixture({
   sendImpl,
   includeEmptyStreamCollision = false,
@@ -232,6 +306,42 @@ test("transport Gosh dùng tên vừa đổi thay vì nickname còn lưu trong s
     });
     assert.equal(result.status, "sent");
     assert.equal(JSON.parse(sent.payloadData).user.nickname, "Tên đã đổi");
+  } finally {
+    if (previousQueue === undefined) delete globalThis.webpackChunk_N_E;
+    else globalThis.webpackChunk_N_E = previousQueue;
+    if (previousBridge === undefined) delete globalThis.__goshCommentAssistantDirectTransportV1;
+    else globalThis.__goshCommentAssistantDirectTransportV1 = previousBridge;
+  }
+});
+
+test("transport Gosh nhận store currentLiveRoom và wrapper custom message của bundle mới", async () => {
+  const previousQueue = globalThis.webpackChunk_N_E;
+  const previousBridge = globalThis.__goshCommentAssistantDirectTransportV1;
+  let sent;
+  globalThis.webpackChunk_N_E = createCurrentGoshWebpackFixture({
+    sendImpl: async (input) => {
+      sent = input;
+      return { provider: "tencent", providerMessageId: "current-message-1", sentAt: 1_780_000_000_000 };
+    },
+  });
+  delete globalThis.__goshCommentAssistantDirectTransportV1;
+
+  try {
+    const result = await serializedWebsiteTransport()({
+      content: "  Bình luận bundle mới  ",
+      displayName: "Tên hiện tại",
+      timeoutMs: 2_000,
+    });
+    assert.equal(result.status, "sent");
+    assert.equal(result.providerMessageId, "current-message-1");
+    assert.equal(sent.groupId, "@room-current");
+
+    const payload = JSON.parse(sent.payloadData);
+    assert.equal(payload.live_id, "live-current");
+    assert.equal(payload.data.text, "Bình luận bundle mới");
+    assert.equal(payload.user.nickname, "Tên hiện tại");
+    assert.deepEqual(payload.room_role_infos, [{ role: "member" }]);
+    assert.equal("tim_user_sig" in payload.user, false);
   } finally {
     if (previousQueue === undefined) delete globalThis.webpackChunk_N_E;
     else globalThis.webpackChunk_N_E = previousQueue;

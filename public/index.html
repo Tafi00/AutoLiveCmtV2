@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Live Comment</title>
-    <link rel="stylesheet" href="/styles.css?v=8" />
+    <link rel="stylesheet" href="/styles.css?v=9" />
   </head>
   <body>
     <div class="app-frame">
@@ -51,7 +51,10 @@
 
             <div class="live-workspace">
               <section class="queue-pane">
-                <div class="section-heading"><h2>Bình luận</h2><span id="message-count" class="muted-count">0</span></div>
+                <div class="section-heading">
+                  <div class="section-label"><h2>Bình luận</h2><span id="message-count" class="muted-count">0</span></div>
+                  <button id="clear-messages" class="text-button clear-messages" type="button" disabled>Xóa toàn bộ</button>
+                </div>
 
                 <form id="message-form" class="composer">
                   <textarea id="message-content" rows="2" aria-label="Nội dung bình luận" placeholder="Nhập bình luận (mỗi dòng 1 bình luận, nhấn Ctrl+Enter để thêm)…"></textarea>
@@ -157,6 +160,6 @@
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=11"></script>
+    <script type="module" src="/app.js?v=12"></script>
   </body>
 </html>

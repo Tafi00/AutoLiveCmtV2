@@ -69,16 +69,28 @@ export async function sendCommentViaWebsiteTransport(input) {
       "chat_target_group_missing",
       "payloadData",
       "client_request_id",
+    ]) || requireModuleMatching(runtimeRequire, [
+      "custom_group_message",
+      "clientRequestId",
+      "payloadData",
     ]);
     const accountModule = requireModuleMatching(runtimeRequire, [
       "setAuthenticatedAccount",
       "refreshAccount",
       "sessionRevision",
     ]);
+    // Gosh moved the hydrated room store from the legacy `currentLive` /
+    // `liveRoom` shape to `currentLiveRoom` in the current Next.js bundle.
+    // Keep the old markers as the first choice for older deployments, then
+    // fall back to markers that identify the current store.
     const liveModule = requireModuleMatching(runtimeRequire, [
       "anchorSensitiveWords",
       "fetchJoinRoom",
       "currentLive",
+    ]) || requireModuleMatching(runtimeRequire, [
+      "anchorSensitiveWords",
+      "currentLiveRoom",
+      "roomChatSetting",
     ]);
     const accountSanitizerModule = requireModuleMatching(runtimeRequire, [
       "tim_user_sig",
@@ -89,7 +101,7 @@ export async function sendCommentViaWebsiteTransport(input) {
     const send = Object.values(sendModule || {}).find((value) => {
       const source = functionSource(value);
       return typeof value === "function"
-        && source.includes("chat_target_group_missing")
+        && (source.includes("chat_target_group_missing") || source.includes("custom_group_message"))
         && source.includes("payloadData");
     });
     const sanitizeAccount = Object.values(accountSanitizerModule || {}).find((value) => {
@@ -99,7 +111,8 @@ export async function sendCommentViaWebsiteTransport(input) {
         && source.includes("is_show_transfer");
     });
     const accountStore = findStore(accountModule, ["account", "loginType", "sessionRevision"]);
-    const liveStore = findStore(liveModule, ["anchorInfo", "currentLive", "liveRoom"]);
+    const liveStore = findStore(liveModule, ["anchorInfo", "currentLive", "liveRoom"])
+      || findStore(liveModule, ["anchorInfo", "currentLiveRoom", "roomChatSetting"]);
 
     if (!send || !sanitizeAccount || !accountStore || !liveStore) return null;
     return { send, sanitizeAccount, accountStore, liveStore };
@@ -186,17 +199,21 @@ export async function sendCommentViaWebsiteTransport(input) {
 
     const liveId = liveState.anchorInfo?.live_info?.live_id
       ?? liveState.currentLive?.id
-      ?? liveState.liveRoom?.live?.id;
+      ?? liveState.liveRoom?.live?.id
+      ?? liveState.currentLiveRoom?.live?.id
+      ?? liveState.currentLiveRoom?.live?.live_id;
     if (!liveId) return unavailable("website_live_room_not_ready");
 
     groupId = String(
       liveState.currentLive?.im_room
       ?? liveState.liveRoom?.live?.im_room
+      ?? liveState.currentLiveRoom?.live?.im_room
+      ?? liveState.currentLiveRoom?.live?.live_room
       ?? liveState.anchorInfo?.live_info?.im_room
       ?? "",
     );
 
-    const roomData = liveState.liveRoomData || {};
+    const roomData = liveState.liveRoomData || liveState.currentLiveRoom || {};
     const optionalRoomFields = {};
     for (const key of ["room_role_infos", "platform_role_infos", "room_describe_rank_info"]) {
       const value = roomData[key];

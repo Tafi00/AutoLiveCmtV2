@@ -400,6 +400,12 @@ app.delete("/api/messages/:id", asyncRoute(async (request, response) => {
   response.json(await dashboardState());
 }));
 
+app.delete("/api/messages", asyncRoute(async (_request, response) => {
+  if (rejectDuringBulk(response)) return;
+  const deletedCount = await store.clearMessages();
+  response.json({ ...(await dashboardState()), deletedCount });
+}));
+
 app.put("/api/settings", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;
   await store.updateSettings(request.body || {});

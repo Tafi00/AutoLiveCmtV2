@@ -40,6 +40,7 @@ const elements = {
   messageContent: $("#message-content"),
   messageCount: $("#message-count"),
   messageList: $("#message-list"),
+  clearMessages: $("#clear-messages"),
   emptyState: $("#empty-state"),
   nextMessage: $("#next-message"),
   liveAccountList: $("#live-account-list"),
@@ -226,6 +227,7 @@ function renderLiveAccounts() {
 function renderMessages() {
   elements.messageList.replaceChildren();
   elements.messageCount.textContent = state.messages.length;
+  elements.clearMessages.disabled = !state.messages.length || Boolean(state.bulkSend?.running);
   elements.emptyState.hidden = state.messages.length > 0;
   elements.nextMessage.textContent = state.nextMessage?.content || "Kho bình luận đang trống.";
 
@@ -308,7 +310,7 @@ function renderBulkSend() {
   elements.stopBulk.hidden = !running;
   elements.stopBulk.disabled = bulk.phase === "stopping";
 
-  for (const control of [elements.channelUrl, elements.messageContent, elements.addMessage, elements.addAccount, elements.delaySeconds, elements.displayNames, elements.renameEveryComments]) {
+  for (const control of [elements.channelUrl, elements.messageContent, elements.addMessage, elements.addAccount, elements.delaySeconds, elements.displayNames, elements.renameEveryComments, elements.clearMessages]) {
     control.disabled = running;
   }
 }
@@ -783,6 +785,25 @@ elements.messageForm.addEventListener("submit", async (event) => {
     render();
   } catch (error) {
     showNotice(error.message);
+  }
+});
+
+elements.clearMessages.addEventListener("click", async () => {
+  const count = state.messages.length;
+  if (!count || !window.confirm(`Xóa toàn bộ ${count} bình luận đã thêm?`)) return;
+
+  const label = elements.clearMessages.textContent;
+  elements.clearMessages.disabled = true;
+  elements.clearMessages.textContent = "Đang xóa…";
+  try {
+    state = await api("/api/messages", { method: "DELETE" });
+    render();
+    showNotice(`Đã xóa ${count} bình luận.`, "success");
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    elements.clearMessages.textContent = label;
+    render();
   }
 });
 
