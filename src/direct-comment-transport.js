@@ -1,4 +1,4 @@
-// This function is serialized by Playwright and runs inside gosh6.app. Keep it
+// This function is serialized by Playwright and runs inside a Gosh live page. Keep it
 // self-contained: references to module-level helpers are not available there.
 export async function sendCommentViaWebsiteTransport(input) {
   const pageGlobal = globalThis;
@@ -124,6 +124,59 @@ export async function sendCommentViaWebsiteTransport(input) {
     }
   }
 
+  function accountWithDisplayName(account, displayName) {
+    const cleanName = String(displayName ?? "").trim();
+    if (!cleanName) return account;
+
+    // The website keeps the authenticated account in a client-side store.
+    // That store can still contain the old nickname immediately after the
+    // profile API succeeds, so make the outgoing payload reflect the name
+    // that was just confirmed by the profile update.
+    const accountPayload = { ...account };
+    const displayNameKeys = ["nickname", "nick", "displayName", "display_name", "username", "userName", "name"];
+    let replaced = false;
+    for (const key of displayNameKeys) {
+      if (Object.hasOwn(accountPayload, key)) {
+        accountPayload[key] = cleanName;
+        replaced = true;
+      }
+    }
+    if (!replaced) accountPayload.nickname = cleanName;
+    return accountPayload;
+  }
+
+  async function sendWebsitePayload({ groupId: sendGroupId, payloadData: sendPayload, timeoutMs: sendTimeout }) {
+    let attempted = false;
+    let timeoutId;
+    try {
+      attempted = true;
+      const result = await Promise.race([
+        bridge.send({ groupId: sendGroupId, payloadData: sendPayload }),
+        new Promise((_, reject) => {
+          timeoutId = pageGlobal.setTimeout(
+            () => reject(new Error("website_transport_timeout")),
+            sendTimeout,
+          );
+        }),
+      ]);
+      pageGlobal.clearTimeout(timeoutId);
+      return {
+        status: "sent",
+        attempted: true,
+        provider: result?.provider || "tencent",
+        providerMessageId: result?.providerMessageId || "",
+        sentAt: result?.sentAt || Date.now(),
+      };
+    } catch (error) {
+      pageGlobal.clearTimeout(timeoutId);
+      return {
+        status: "failed",
+        attempted,
+        reason: String(error?.message || error || "website_transport_failed").slice(0, 240),
+      };
+    }
+  }
+
   let payloadData;
   let groupId = "";
   try {
@@ -152,10 +205,12 @@ export async function sendCommentViaWebsiteTransport(input) {
       }
     }
 
+    const sanitizedAccount = bridge.sanitizeAccount(account);
+    const requestedDisplayName = String(input?.displayName ?? "").trim();
     payloadData = JSON.stringify({
       type: 10_000,
       msg_id: 0,
-      user: bridge.sanitizeAccount(account),
+      user: accountWithDisplayName(sanitizedAccount, requestedDisplayName),
       data: {
         text: cleanContent,
         rich_content: [{ type: "text", text: cleanContent }],
@@ -168,35 +223,7 @@ export async function sendCommentViaWebsiteTransport(input) {
     return unavailable("website_payload_not_ready");
   }
 
-  let attempted = false;
-  let timeoutId;
-  try {
-    attempted = true;
-    const result = await Promise.race([
-      bridge.send({ groupId, payloadData }),
-      new Promise((_, reject) => {
-        timeoutId = pageGlobal.setTimeout(
-          () => reject(new Error("website_transport_timeout")),
-          timeoutMs,
-        );
-      }),
-    ]);
-    pageGlobal.clearTimeout(timeoutId);
-    return {
-      status: "sent",
-      attempted: true,
-      provider: result?.provider || "tencent",
-      providerMessageId: result?.providerMessageId || "",
-      sentAt: result?.sentAt || Date.now(),
-    };
-  } catch (error) {
-    pageGlobal.clearTimeout(timeoutId);
-    return {
-      status: "failed",
-      attempted,
-      reason: String(error?.message || error || "website_transport_failed").slice(0, 240),
-    };
-  }
+  return await sendWebsitePayload({ groupId, payloadData, timeoutMs });
 }
 
 // This function is serialized by Playwright and runs inside loco.com. It calls
@@ -383,6 +410,7 @@ export async function sendCommentViaLocoTransport(input) {
     const msgId = typeof pageGlobal.crypto?.randomUUID === "function"
       ? pageGlobal.crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const requestedDisplayName = String(input?.displayName ?? "").trim();
     params = {
       message: cleanContent,
       msgId,
@@ -393,7 +421,7 @@ export async function sendCommentViaLocoTransport(input) {
         avatar: me.avatar_url,
         color: "#777777",
         uid: me.user_uid,
-        username: me.username,
+        username: requestedDisplayName || String(me.username ?? "").trim(),
         is_loco_verified: Boolean(me.is_loco_verified),
         is_streamer: me.user_uid === stream?.streamer?.user_uid,
       },

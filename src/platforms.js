@@ -4,7 +4,8 @@ export const PLATFORMS = Object.freeze({
     name: "Gosh",
     homeUrl: "https://gosh6.app/",
     profileUrl: "https://gosh6.app/streamer-dashboard/settings/profile",
-    hostPattern: /(^|\.)gosh6\.app$/i,
+    // Gosh uses both domains for live-room links.
+    hostPattern: /(^|\.)(?:gosh6\.app|gosh\.com)$/i,
     roomPathPattern: /^\/(?:[a-z]{2}(?:-[A-Za-z]+)?\/)?\d+/,
   }),
   loco: Object.freeze({

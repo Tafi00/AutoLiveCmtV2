@@ -968,6 +968,27 @@ export class BrowserSession {
     return this.profilePage;
   }
 
+  async #refreshCommentPageIdentity() {
+    const page = this.commentPage;
+    try {
+      if (!page || page.isClosed()) return false;
+
+      // A live page keeps the signed-in account in a client-side store. Reload
+      // it after a successful profile update so the visible account badge,
+      // chat composer and the website's own send path all pick up the new name.
+      // There is no page to refresh when the rename used a temporary context.
+      const pageUrl = page.url();
+      if (!pageUrl || pageUrl === "about:blank") return false;
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForTimeout(250);
+      return true;
+    } catch {
+      // The profile update has already succeeded. A transient navigation
+      // failure must not turn it into a reported rename failure.
+      return false;
+    }
+  }
+
   async updateDisplayName(displayName) {
     const cleanName = String(displayName ?? "").trim();
     if (!cleanName) throw new Error("Tên hiển thị không được để trống.");
@@ -1131,6 +1152,7 @@ export class BrowserSession {
         await callRefresh(accessToken, refreshToken);
 
         this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
+        await this.#refreshCommentPageIdentity();
         return { displayName: cleanName, updatedAt: new Date().toISOString() };
       } finally {
         if (createdContext) {
@@ -1187,6 +1209,7 @@ export class BrowserSession {
       });
       if ((await nameInput.inputValue()).trim() === cleanName) {
         this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
+        await this.#refreshCommentPageIdentity();
         return { displayName: cleanName, updatedAt: new Date().toISOString(), unchanged: true };
       }
       await nameInput.fill(cleanName);
@@ -1226,6 +1249,7 @@ export class BrowserSession {
       }
 
       this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
+      await this.#refreshCommentPageIdentity();
       return { displayName: cleanName, updatedAt: new Date().toISOString() };
     } finally {
       profilePage.off("dialog", acceptBrowserDialog);
@@ -1270,6 +1294,7 @@ export class BrowserSession {
         directResult = await this.commentPage.evaluate(sendCommentViaLocoTransport, {
           content: cleanContent,
           streamId: getLocoStreamId(safeUrl),
+          displayName: this.identity?.displayName || "",
           timeoutMs: 6_000,
         }).catch(() => ({
           status: "failed",
@@ -1308,6 +1333,7 @@ export class BrowserSession {
     if (this.platform === "gosh") {
       directResult = await this.commentPage.evaluate(sendCommentViaWebsiteTransport, {
         content: cleanContent,
+        displayName: this.identity?.displayName || "",
         timeoutMs: 10_000,
       }).catch(() => ({
         status: "failed",

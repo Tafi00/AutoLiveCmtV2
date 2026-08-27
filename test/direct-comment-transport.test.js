@@ -212,6 +212,34 @@ test("gửi trực tiếp bằng transport của website và loại thông tin �
   }
 });
 
+test("transport Gosh dùng tên vừa đổi thay vì nickname còn lưu trong store của trang", async () => {
+  const previousQueue = globalThis.webpackChunk_N_E;
+  const previousBridge = globalThis.__goshCommentAssistantDirectTransportV1;
+  let sent;
+  globalThis.webpackChunk_N_E = createWebpackFixture({
+    sendImpl: async (input) => {
+      sent = input;
+      return { provider: "tencent" };
+    },
+  });
+  delete globalThis.__goshCommentAssistantDirectTransportV1;
+
+  try {
+    const result = await serializedWebsiteTransport()({
+      content: "Tên mới",
+      displayName: "Tên đã đổi",
+      timeoutMs: 2_000,
+    });
+    assert.equal(result.status, "sent");
+    assert.equal(JSON.parse(sent.payloadData).user.nickname, "Tên đã đổi");
+  } finally {
+    if (previousQueue === undefined) delete globalThis.webpackChunk_N_E;
+    else globalThis.webpackChunk_N_E = previousQueue;
+    if (previousBridge === undefined) delete globalThis.__goshCommentAssistantDirectTransportV1;
+    else globalThis.__goshCommentAssistantDirectTransportV1 = previousBridge;
+  }
+});
+
 test("không yêu cầu UI fallback sau khi transport realtime đã bắt đầu gửi", async () => {
   const previousQueue = globalThis.webpackChunk_N_E;
   const previousBridge = globalThis.__goshCommentAssistantDirectTransportV1;
@@ -260,6 +288,34 @@ test("gửi comment Loco qua Chat V2 HTTPS bằng payload của website", async 
     assert.equal(sent.params.moderator_type, 10);
     assert.equal(sent.params.profile.username, "Tài khoản Loco");
     assert.equal("accessToken" in sent.params, false);
+  } finally {
+    if (previousQueue === undefined) delete globalThis.webpackChunk_N_E;
+    else globalThis.webpackChunk_N_E = previousQueue;
+    if (previousBridge === undefined) delete globalThis.__locoCommentAssistantDirectTransportV1;
+    else globalThis.__locoCommentAssistantDirectTransportV1 = previousBridge;
+  }
+});
+
+test("transport Loco dùng username vừa đổi thay vì hồ sơ cũ trong store của trang", async () => {
+  const previousQueue = globalThis.webpackChunk_N_E;
+  const previousBridge = globalThis.__locoCommentAssistantDirectTransportV1;
+  let sent;
+  globalThis.webpackChunk_N_E = createLocoWebpackFixture({
+    sendImpl: async (input) => {
+      sent = input;
+      return { code: "C10", statusCode: 200 };
+    },
+  });
+  delete globalThis.__locoCommentAssistantDirectTransportV1;
+
+  try {
+    const result = await serializedLocoTransport()({
+      content: "Tên mới",
+      displayName: "Tên đã đổi",
+      timeoutMs: 2_000,
+    });
+    assert.equal(result.status, "sent");
+    assert.equal(sent.params.profile.username, "Tên đã đổi");
   } finally {
     if (previousQueue === undefined) delete globalThis.webpackChunk_N_E;
     else globalThis.webpackChunk_N_E = previousQueue;

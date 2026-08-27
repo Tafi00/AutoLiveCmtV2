@@ -14,9 +14,11 @@ import {
   normalizeMessages,
 } from "../src/store.js";
 
-test("chỉ chấp nhận URL HTTPS của gosh6.app", () => {
+test("chấp nhận URL HTTPS của cả hai miền Gosh", () => {
   assert.equal(normalizeGoshUrl("https://gosh6.app/15942759"), "https://gosh6.app/15942759");
+  assert.equal(normalizeGoshUrl("https://gosh.com/vi/16427037"), "https://gosh.com/vi/16427037");
   assert.throws(() => normalizeGoshUrl("http://gosh6.app/15942759"));
+  assert.throws(() => normalizeGoshUrl("http://gosh.com/vi/16427037"));
   assert.throws(() => normalizeGoshUrl("https://example.com/15942759"));
 });
 
@@ -224,5 +226,4 @@ test("nhiều tài khoản gửi các bình luận khác nhau theo thứ tự h�
     await rm(directory, { recursive: true, force: true });
   }
 });
-
 

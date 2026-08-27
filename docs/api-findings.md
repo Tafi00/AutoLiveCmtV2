@@ -4,7 +4,7 @@ Khảo sát được thực hiện ở chế độ chỉ đọc bằng Chrome ng
 
 ## Luồng điều hướng
 
-- Phòng/kênh của người sáng tạo dùng mẫu `https://gosh6.app/{showID}`; website tự thêm locale, ví dụ `/vi/{showID}`.
+- Phòng/kênh của người sáng tạo có thể dùng `gosh6.app` hoặc `gosh.com`, với mẫu đường dẫn `/{showID}` hoặc `/vi/{showID}`.
 - Trang hồ sơ cài đặt dùng route `/streamer-dashboard/settings/profile`.
 
 ## Endpoint quan trọng đã quan sát

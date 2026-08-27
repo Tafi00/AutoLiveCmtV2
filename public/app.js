@@ -512,7 +512,7 @@ function renderSettings() {
   if (document.activeElement !== elements.accountPlatform) elements.accountPlatform.value = state.settings.platform;
   elements.channelUrl.placeholder = state.settings.platform === "loco"
     ? "https://loco.com/stream/…"
-    : "https://gosh6.app/…";
+    : "https://gosh.com/vi/…";
   syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);
   syncSettingControl(elements.displayNames, state.settings.displayNames.join("\n"));
   syncSettingControl(elements.renameEveryComments, state.settings.renameEveryComments);
