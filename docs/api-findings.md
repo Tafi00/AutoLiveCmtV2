@@ -44,6 +44,7 @@ Biểu mẫu hồ sơ chính thức có trường nickname tối đa 20 ký tự
 | Method | URL | Mục đích quan sát được |
 | --- | --- | --- |
 | `GET` | `https://api.loco.com/auth/v3/user/device_profile/` | Hồ sơ thiết bị/người dùng hiện hành |
+| `POST` | `https://api.loco.com/auth/v3/user/refresh_token/` | Làm mới access/refresh token |
 | `GET` | `https://api.loco.com/auth/v1/ivory/config/?ivory=true` | Cấu hình client |
 | `GET` | `https://api.loco.com/ivr/v3/homepage/sub_recipe/` | Dữ liệu discovery/homepage |
 | `GET` | `https://api.loco.com/chat/v2/streams/{id}/history/` | Lịch sử chat của live |

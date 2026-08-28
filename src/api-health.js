@@ -17,7 +17,7 @@ export function healthTargets(channelUrl = "") {
     { id: "loco-config", platform: "loco", name: "Config API", url: "https://api.loco.com/auth/v1/ivory/config/?ivory=true" },
     { id: "loco-profile-me", platform: "loco", name: "Hồ sơ API", url: "https://api.loco.com/ivr/v1/profile/me/" },
     { id: "loco-profile-update", platform: "loco", name: "Đổi tên API", url: "https://api.loco.com/ivr/v1/profile/update/" },
-    { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v1/user/refresh_token/" },
+    { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v3/user/refresh_token/" },
   ];
   const streamId = getLocoStreamId(channelUrl);
   if (streamId) {

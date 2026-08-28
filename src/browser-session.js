@@ -56,7 +56,11 @@ export const CHROME_PATHS = [
   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
 ];
 export const LOCO_API_ENDPOINTS = {
-  refreshToken: "https://api.loco.com/auth/v1/user/refresh_token/",
+  // Loco's web client refreshes sessions through auth v3.  The old v1 path
+  // returns INVALID_ROUTE; leaving it here makes a successful username
+  // update invalidate the access token without issuing the replacement token,
+  // so the next chat request is rejected.
+  refreshToken: "https://api.loco.com/auth/v3/user/refresh_token/",
   legacyRefreshToken: "https://api.getloconow.com/v3/user/refresh_token/",
   profile: "https://api.loco.com/ivr/v1/profile/me/",
   updateProfile: "https://api.loco.com/ivr/v1/profile/update/",

@@ -36,7 +36,7 @@ test("probe Loco nhận diện JWT và store đăng nhập hiện hành", () => 
 test("đổi tên Loco dùng endpoint hiện hành của bundle website", () => {
   assert.equal(LOCO_API_ENDPOINTS.profile, "https://api.loco.com/ivr/v1/profile/me/");
   assert.equal(LOCO_API_ENDPOINTS.updateProfile, "https://api.loco.com/ivr/v1/profile/update/");
-  assert.equal(LOCO_API_ENDPOINTS.refreshToken, "https://api.loco.com/auth/v1/user/refresh_token/");
+  assert.equal(LOCO_API_ENDPOINTS.refreshToken, "https://api.loco.com/auth/v3/user/refresh_token/");
 });
 
 test("từ chối tên hiển thị trống trước khi mở trình duyệt", async () => {
