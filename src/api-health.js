@@ -6,7 +6,7 @@ export function classifyHttpStatus(status) {
   return "down";
 }
 
-export function healthTargets(channelUrl = "") {
+export function healthTargets(channelUrls = "") {
   const targets = [
     { id: "gosh-web", platform: "gosh", name: "Website", url: "https://gosh6.app/" },
     { id: "gosh-user", platform: "gosh", name: "User Info API", url: "https://gosh6.app/gosh_base/app/user/user_info" },
@@ -16,10 +16,12 @@ export function healthTargets(channelUrl = "") {
     { id: "loco-home", platform: "loco", name: "Discovery API", url: "https://api.loco.com/ivr/v3/homepage/sub_recipe/?limit=1&offset=0&r_id=web_home_global" },
     { id: "loco-config", platform: "loco", name: "Config API", url: "https://api.loco.com/auth/v1/ivory/config/?ivory=true" },
     { id: "loco-profile-me", platform: "loco", name: "Hồ sơ API", url: "https://api.loco.com/ivr/v1/profile/me/" },
-    { id: "loco-profile-update", platform: "loco", name: "Đổi tên API", url: "https://api.loco.com/ivr/v1/profile/update/" },
     { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v3/user/refresh_token/" },
   ];
-  const streamId = getLocoStreamId(channelUrl);
+  const locoChannelUrl = channelUrls && typeof channelUrls === "object"
+    ? channelUrls.loco || ""
+    : channelUrls;
+  const streamId = getLocoStreamId(locoChannelUrl);
   if (streamId) {
     targets.push({
       id: "loco-chat",
@@ -60,6 +62,6 @@ export async function checkTarget(target, { timeoutMs = 8_000, fetchImpl = fetch
   }
 }
 
-export async function checkApiHealth(channelUrl, options) {
-  return Promise.all(healthTargets(channelUrl).map((target) => checkTarget(target, options)));
+export async function checkApiHealth(channelUrls, options) {
+  return Promise.all(healthTargets(channelUrls).map((target) => checkTarget(target, options)));
 }

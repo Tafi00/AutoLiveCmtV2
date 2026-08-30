@@ -33,8 +33,8 @@ const elements = {
   checkUpdate: $("#check-update"),
   updateStatus: $("#update-status"),
   liveSummary: $("#live-summary"),
-  channelUrl: $("#channel-url"),
-  platformSelect: $("#platform-select"),
+  channelUrlGosh: $("#channel-url-gosh"),
+  channelUrlLoco: $("#channel-url-loco"),
   roomSaveState: $("#room-save-state"),
   messageForm: $("#message-form"),
   messageContent: $("#message-content"),
@@ -150,8 +150,18 @@ function setBusy(button, busy, label) {
   }
 }
 
+function channelUrlFor(platform) {
+  return state?.settings?.channelUrls?.[platform]
+    || (state?.settings?.platform === platform ? state?.settings?.channelUrl : "")
+    || "";
+}
+
 function enabledAccounts() {
-  return state?.accounts?.filter((account) => account.enabled && account.platform === state.settings.platform) || [];
+  return state?.accounts?.filter((account) => account.enabled && Boolean(channelUrlFor(account.platform))) || [];
+}
+
+function activePlatformCount() {
+  return new Set(enabledAccounts().map((account) => account.platform)).size;
 }
 
 function accountLabel(account) {
@@ -289,6 +299,7 @@ function bulkPhaseLabel(bulk) {
 function renderBulkSend() {
   const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
   const accountCount = enabledAccounts().length;
+  const websiteCount = activePlatformCount();
   const attempted = (bulk.sent || 0) + (bulk.failed || 0);
   const percent = bulk.total ? Math.min(100, Math.round((attempted / bulk.total) * 100)) : 0;
   const failures = bulk.failures || [];
@@ -303,21 +314,22 @@ function renderBulkSend() {
   elements.bulkError.hidden = !failures.length;
   elements.bulkError.textContent = failures.length ? `${failures.at(-1).accountName}: ${failures.at(-1).error}` : "";
 
-  elements.sendScope.textContent = `${accountCount} tài khoản`;
-  elements.sendNext.textContent = "Gửi một";
+  elements.sendScope.textContent = `${websiteCount} website · ${accountCount} tài khoản`;
+  elements.sendNext.textContent = websiteCount > 1 ? "Gửi song song" : "Gửi một";
   elements.sendNext.disabled = running || !state.nextMessage || !accountCount;
   elements.sendAll.disabled = running || !state.messages.length || !accountCount;
   elements.stopBulk.hidden = !running;
   elements.stopBulk.disabled = bulk.phase === "stopping";
 
-  for (const control of [elements.channelUrl, elements.messageContent, elements.addMessage, elements.addAccount, elements.delaySeconds, elements.displayNames, elements.renameEveryComments, elements.clearMessages]) {
+  for (const control of [elements.channelUrlGosh, elements.channelUrlLoco, elements.messageContent, elements.addMessage, elements.addAccount, elements.delaySeconds, elements.displayNames, elements.renameEveryComments, elements.clearMessages]) {
     control.disabled = running;
   }
 }
 
 function renderLive() {
   const accountCount = enabledAccounts().length;
-  elements.liveSummary.textContent = `${state.messages.length} bình luận · ${accountCount} tài khoản`;
+  const websiteCount = activePlatformCount();
+  elements.liveSummary.textContent = `${state.messages.length} bình luận · ${websiteCount} website · ${accountCount} tài khoản`;
   renderMessages();
   renderLiveAccounts();
   renderCooldown();
@@ -442,44 +454,47 @@ function renderInspector(account) {
   sessionActions.append(open, profile);
   sessionSection.append(sessionActions);
 
-  const displaySection = inspectorSection(account.platform === "loco" ? "Tên hiển thị trên Loco" : "Tên hiển thị trên Gosh");
-  const displayForm = document.createElement("form");
-  displayForm.className = "inspector-form";
-  const displayWrap = document.createElement("div");
-  displayWrap.className = "inline-form";
-  const displayInput = document.createElement("input");
-  displayInput.type = "text";
-  displayInput.maxLength = account.platform === "loco" ? 30 : 20;
-  displayInput.placeholder = "Tên mới";
-  displayInput.setAttribute("aria-label", "Tên hiển thị mới");
-  const update = document.createElement("button");
-  update.type = "submit";
-  update.className = "secondary";
-  update.textContent = "Cập nhật";
-  displayInput.disabled = update.disabled = Boolean(state.bulkSend?.running);
-  displayWrap.append(displayInput, update);
-  displayForm.append(displayWrap);
-  displayForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    setBusy(update, true, "Đang đổi…");
-    try {
-      const response = await api(`/api/accounts/${encodeURIComponent(account.id)}/display-name`, {
-        method: "POST",
-        body: JSON.stringify({ displayName: displayInput.value }),
-      });
-      displayInput.value = "";
-      // The display-name endpoint returns only the operation result. Refresh
-      // the dashboard so the account list and inspector immediately show the
-      // persisted profile name instead of waiting for a manual refresh.
-      await refreshState();
-      showNotice(`Đã đổi tên thành “${response.result.displayName}”.`, "success");
-    } catch (error) {
-      showNotice(error.message);
-    } finally {
-      setBusy(update, false);
-    }
-  });
-  displaySection.append(displayForm);
+  let displaySection = null;
+  if (account.platform === "gosh") {
+    displaySection = inspectorSection("Tên hiển thị trên Gosh");
+    const displayForm = document.createElement("form");
+    displayForm.className = "inspector-form";
+    const displayWrap = document.createElement("div");
+    displayWrap.className = "inline-form";
+    const displayInput = document.createElement("input");
+    displayInput.type = "text";
+    displayInput.maxLength = 20;
+    displayInput.placeholder = "Tên mới";
+    displayInput.setAttribute("aria-label", "Tên hiển thị mới");
+    const update = document.createElement("button");
+    update.type = "submit";
+    update.className = "secondary";
+    update.textContent = "Cập nhật";
+    displayInput.disabled = update.disabled = Boolean(state.bulkSend?.running);
+    displayWrap.append(displayInput, update);
+    displayForm.append(displayWrap);
+    displayForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      setBusy(update, true, "Đang đổi…");
+      try {
+        const response = await api(`/api/accounts/${encodeURIComponent(account.id)}/display-name`, {
+          method: "POST",
+          body: JSON.stringify({ displayName: displayInput.value }),
+        });
+        displayInput.value = "";
+        // The display-name endpoint returns only the operation result. Refresh
+        // the dashboard so the account list and inspector immediately show the
+        // persisted profile name instead of waiting for a manual refresh.
+        await refreshState();
+        showNotice(`Đã đổi tên thành “${response.result.displayName}”.`, "success");
+      } catch (error) {
+        showNotice(error.message);
+      } finally {
+        setBusy(update, false);
+      }
+    });
+    displaySection.append(displayForm);
+  }
 
   const danger = document.createElement("div");
   danger.className = "danger-zone";
@@ -491,7 +506,9 @@ function renderInspector(account) {
   remove.addEventListener("click", () => deleteAccount(account));
   danger.append(remove);
 
-  elements.accountInspector.append(head, sessionSection, displaySection, danger);
+  elements.accountInspector.append(head, sessionSection);
+  if (displaySection) elements.accountInspector.append(displaySection);
+  elements.accountInspector.append(danger);
 }
 
 function renderAccounts() {
@@ -499,7 +516,7 @@ function renderAccounts() {
   if (!state.accounts.some((account) => account.id === selectedAccountId)) {
     selectedAccountId = state.accounts[0]?.id || null;
   }
-  elements.accountSummary.textContent = `${enabledAccounts().length}/${state.accounts.length} đang sử dụng`;
+  elements.accountSummary.textContent = `${state.accounts.filter((account) => account.enabled).length}/${state.accounts.length} đang sử dụng`;
   elements.accountList.replaceChildren(...state.accounts.map(createAccountRow));
   renderInspector(state.accounts.find((account) => account.id === selectedAccountId));
 }
@@ -509,12 +526,8 @@ function syncSettingControl(control, value) {
 }
 
 function renderSettings() {
-  syncSettingControl(elements.channelUrl, state.settings.channelUrl);
-  syncSettingControl(elements.platformSelect, state.settings.platform);
-  if (document.activeElement !== elements.accountPlatform) elements.accountPlatform.value = state.settings.platform;
-  elements.channelUrl.placeholder = state.settings.platform === "loco"
-    ? "https://loco.com/stream/…"
-    : "https://gosh.com/vi/…";
+  syncSettingControl(elements.channelUrlGosh, channelUrlFor("gosh"));
+  syncSettingControl(elements.channelUrlLoco, channelUrlFor("loco"));
   syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);
   syncSettingControl(elements.displayNames, state.settings.displayNames.join("\n"));
   syncSettingControl(elements.renameEveryComments, state.settings.renameEveryComments);
@@ -665,8 +678,10 @@ function setSaveState(status, message) {
 
 function settingsPayload() {
   return {
-    channelUrl: elements.channelUrl.value,
-    platform: elements.platformSelect.value,
+    channelUrls: {
+      gosh: elements.channelUrlGosh.value,
+      loco: elements.channelUrlLoco.value,
+    },
     delaySeconds: Number(elements.delaySeconds.value),
     displayNames: elements.displayNames.value,
     renameEveryComments: Number(elements.renameEveryComments.value),
@@ -707,7 +722,7 @@ async function openAccount(account, button, profile = false) {
       : account.session?.loginState === "signed_out" ? "login" : "open";
     await api(`/api/accounts/${encodeURIComponent(account.id)}/browser/${suffix}`, {
       method: "POST",
-      body: profile ? "{}" : JSON.stringify({ targetUrl: elements.channelUrl.value || undefined }),
+      body: profile ? "{}" : JSON.stringify({ targetUrl: channelUrlFor(account.platform) || undefined }),
     });
     await refreshState();
     showNotice(
@@ -744,7 +759,7 @@ async function addAccount() {
     if (account) {
       await api(`/api/accounts/${encodeURIComponent(account.id)}/browser/login`, {
         method: "POST",
-        body: JSON.stringify({ targetUrl: elements.channelUrl.value || undefined }),
+        body: JSON.stringify({ targetUrl: channelUrlFor(account.platform) || undefined }),
       });
       await refreshState();
       showNotice(`Đã tạo phiên mới. Hãy đăng nhập trong Chrome; tên sẽ tự đồng bộ.`, "success");
@@ -818,12 +833,10 @@ for (const control of [elements.delaySeconds, elements.displayNames, elements.re
   control.addEventListener("input", queueSettingsSave);
   control.addEventListener("change", queueSettingsSave);
 }
-elements.channelUrl.addEventListener("change", queueSettingsSave);
-elements.channelUrl.addEventListener("blur", queueSettingsSave);
-elements.platformSelect.addEventListener("change", () => {
-  elements.channelUrl.value = "";
-  queueSettingsSave();
-});
+for (const control of [elements.channelUrlGosh, elements.channelUrlLoco]) {
+  control.addEventListener("change", queueSettingsSave);
+  control.addEventListener("blur", queueSettingsSave);
+}
 
 elements.addAccount.addEventListener("click", addAccount);
 elements.refreshStatus.addEventListener("click", async () => {
@@ -862,7 +875,12 @@ elements.sendNext.addEventListener("click", async () => {
     state = await api("/api/comments/send-next", { method: "POST" });
     render();
     const result = state.result;
-    showNotice(`Đã gửi bình luận từ ${result?.account?.name || "tài khoản"}.`, "success");
+    const websiteCount = result?.activePlatforms?.length || result?.successCount || 0;
+    if (result?.failureCount) {
+      showNotice(`Đã gửi ${result.successCount}/${websiteCount} website; ${result.failureCount} website lỗi.`, "warning");
+    } else {
+      showNotice(`Đã gửi song song tới ${websiteCount} website.`, "success");
+    }
   } catch (error) {
     showNotice(error.message);
   } finally {

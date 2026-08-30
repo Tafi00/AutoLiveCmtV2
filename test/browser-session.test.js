@@ -8,7 +8,6 @@ import {
   CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
   extractDisplayName,
   isBrowserProcessRunning,
-  LOCO_API_ENDPOINTS,
   locoLoginProbeExpression,
   observeManualLoginUrls,
   waitForProfileUnlock,
@@ -33,12 +32,6 @@ test("probe Loco nhận diện JWT và store đăng nhập hiện hành", () => 
   assert.doesNotMatch(expression, /fetch\(['"]https:\/\/api\.loco\.com/);
 });
 
-test("đổi tên Loco dùng endpoint hiện hành của bundle website", () => {
-  assert.equal(LOCO_API_ENDPOINTS.profile, "https://api.loco.com/ivr/v1/profile/me/");
-  assert.equal(LOCO_API_ENDPOINTS.updateProfile, "https://api.loco.com/ivr/v1/profile/update/");
-  assert.equal(LOCO_API_ENDPOINTS.refreshToken, "https://api.loco.com/auth/v3/user/refresh_token/");
-});
-
 test("từ chối tên hiển thị trống trước khi mở trình duyệt", async () => {
   const browser = new BrowserSession({ profileDirectory: "/tmp/unused-gosh-profile" });
   await assert.rejects(browser.updateDisplayName("   "), /không được để trống/);
@@ -47,9 +40,11 @@ test("từ chối tên hiển thị trống trước khi mở trình duyệt", a
 test("từ chối tên hiển thị dài hơn giới hạn của website", async () => {
   const goshBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-gosh-profile", platform: "gosh" });
   await assert.rejects(goshBrowser.updateDisplayName("a".repeat(21)), /không được vượt quá 20 ký tự/);
+});
 
+test("không cho phiên Loco dùng chức năng đổi tên", async () => {
   const locoBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
-  await assert.rejects(locoBrowser.updateDisplayName("a".repeat(31)), /không được vượt quá 30 ký tự/);
+  await assert.rejects(locoBrowser.updateDisplayName("Tên mới"), /chỉ áp dụng cho tài khoản Gosh/);
 });
 
 test("chờ Chrome nhả khóa profile trước khi mở tiến trình tiếp theo", async () => {

@@ -66,6 +66,9 @@ export class AccountSessionManager {
   }
 
   async updateDisplayName(accountId, displayName, platform) {
+    if (platform !== "gosh") {
+      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+    }
     return this.get(accountId, platform).updateDisplayName(displayName);
   }
 

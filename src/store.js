@@ -9,6 +9,10 @@ export const DEFAULT_STATE = Object.freeze({
   cursor: 0,
   settings: {
     channelUrl: "",
+    channelUrls: {
+      gosh: "",
+      loco: "",
+    },
     platform: "gosh",
     delaySeconds: 30,
     displayNames: [],
@@ -41,6 +45,23 @@ export function normalizeGoshUrl(value, { allowEmpty = true } = {}) {
 }
 
 export { normalizeChannelUrl };
+
+export function normalizeChannelUrls(value, legacyChannelUrl = "") {
+  const urls = { gosh: "", loco: "" };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const platform of Object.keys(urls)) {
+      urls[platform] = normalizeChannelUrl(value[platform], { platform });
+    }
+  }
+
+  const legacy = String(legacyChannelUrl ?? "").trim();
+  if (legacy) {
+    const normalized = normalizeChannelUrl(legacy);
+    const platform = platformFromUrl(normalized);
+    if (platform && !urls[platform]) urls[platform] = normalized;
+  }
+  return urls;
+}
 
 export function normalizeDelay(value) {
   const delay = Number(value);
@@ -143,12 +164,14 @@ function normalizeState(value) {
     ? Math.max(0, Math.min(Number.isInteger(value.cursor) ? value.cursor : 0, messages.length - 1))
     : 0;
 
-  let channelUrl = "";
+  let channelUrls = { gosh: "", loco: "" };
   try {
-    channelUrl = normalizeChannelUrl(value.settings?.channelUrl);
+    channelUrls = normalizeChannelUrls(value.settings?.channelUrls, value.settings?.channelUrl);
   } catch {
-    channelUrl = "";
+    channelUrls = { gosh: "", loco: "" };
   }
+  const platform = normalizePlatform(value.settings?.platform, platformFromUrl(value.settings?.channelUrl) || "gosh");
+  const channelUrl = channelUrls[platform] || channelUrls.gosh || channelUrls.loco;
 
   let delaySeconds = fallback.settings.delaySeconds;
   try {
@@ -177,7 +200,8 @@ function normalizeState(value) {
     cursor,
     settings: {
       channelUrl,
-      platform: platformFromUrl(channelUrl) || normalizePlatform(value.settings?.platform, "gosh"),
+      channelUrls,
+      platform,
       delaySeconds,
       displayNames,
       renameEveryComments,
@@ -341,9 +365,21 @@ export class JsonStore {
   }
 
   async updateSettings(input) {
+    const legacyPlatform = platformFromUrl(input.channelUrl);
+    const platform = normalizePlatform(input.platform, legacyPlatform || this.state.settings.platform);
+    let channelUrls;
+    if (Object.hasOwn(input, "channelUrls")) {
+      channelUrls = normalizeChannelUrls(input.channelUrls);
+    } else {
+      channelUrls = normalizeChannelUrls(this.state.settings.channelUrls);
+      channelUrls[legacyPlatform || platform] = normalizeChannelUrl(input.channelUrl, {
+        platform: legacyPlatform || platform,
+      });
+    }
     const nextSettings = {
-      channelUrl: normalizeChannelUrl(input.channelUrl),
-      platform: platformFromUrl(input.channelUrl) || normalizePlatform(input.platform, this.state.settings.platform),
+      channelUrl: channelUrls[platform] || channelUrls.gosh || channelUrls.loco,
+      channelUrls,
+      platform,
       delaySeconds: normalizeDelay(input.delaySeconds),
       displayNames: normalizeDisplayNames(input.displayNames),
       renameEveryComments: normalizeRenameEveryComments(input.renameEveryComments),
@@ -370,9 +406,9 @@ export class JsonStore {
     };
   }
 
-  async markSent() {
+  async markSent({ countForRename = true } = {}) {
     this.state.lastSentAt = new Date().toISOString();
-    this.state.commentsSinceRename += 1;
+    if (countForRename) this.state.commentsSinceRename += 1;
     if (this.state.messages.length) {
       this.state.cursor = (this.state.cursor + 1) % this.state.messages.length;
     }

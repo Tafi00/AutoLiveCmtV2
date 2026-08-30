@@ -43,6 +43,7 @@ const bulkSend = {
   error: null,
   failures: [],
   currentAccount: "",
+  activePlatforms: [],
   phase: "idle",
   wakeWaiter: null,
 };
@@ -74,6 +75,7 @@ function bulkSendState() {
     error: bulkSend.error,
     failures: bulkSend.failures.slice(-30),
     currentAccount: bulkSend.currentAccount,
+    activePlatforms: [...bulkSend.activePlatforms],
     phase: bulkSend.phase,
   };
 }
@@ -117,6 +119,28 @@ function accountOrThrow(accountId) {
   return account;
 }
 
+function channelUrlForPlatform(state, platform) {
+  return state.settings.channelUrls?.[platform]
+    || (state.settings.platform === platform ? state.settings.channelUrl : "")
+    || "";
+}
+
+function availableDestinations(state) {
+  return Object.keys(PLATFORMS).flatMap((platform) => {
+    const channelUrl = channelUrlForPlatform(state, platform);
+    const accounts = store.getEnabledAccounts(platform);
+    return channelUrl && accounts.length ? [{ platform, channelUrl, accounts }] : [];
+  });
+}
+
+function assertDestinations(state) {
+  const destinations = availableDestinations(state);
+  if (destinations.length) return destinations;
+  const hasRoom = Object.keys(PLATFORMS).some((platform) => channelUrlForPlatform(state, platform));
+  if (!hasRoom) throw new Error("Hãy lưu URL phòng live cho Gosh hoặc Loco trước.");
+  throw new Error("Cần bật ít nhất một tài khoản phù hợp với website đã nhập URL.");
+}
+
 function waitForBulk(milliseconds) {
   if (milliseconds <= 0 || bulkSend.stopRequested) return Promise.resolve();
   return new Promise((resolve) => {
@@ -132,6 +156,11 @@ function waitForBulk(milliseconds) {
 
 async function updateDisplayName(accountId, displayName) {
   const account = accountOrThrow(accountId);
+  if (account.platform !== "gosh") {
+    const error = new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+    error.status = 400;
+    throw error;
+  }
   if (displayNameUpdates.has(accountId)) {
     throw new Error("Tài khoản này đang được đổi tên.");
   }
@@ -147,12 +176,14 @@ async function updateDisplayName(accountId, displayName) {
 
 async function updateAutomaticDisplayNames(accounts) {
   if (!store.shouldRename()) return null;
+  const goshAccounts = accounts.filter((account) => account.platform === "gosh");
+  if (!goshAccounts.length) return null;
   if (bulkSend.running) bulkSend.phase = "renaming";
 
   const results = [];
   const chosenNames = [];
 
-  for (const account of accounts) {
+  for (const account of goshAccounts) {
     const currentName = account.profileName || account.name;
     const displayName = store.getRandomDisplayName(currentName);
     if (!displayName) continue;
@@ -180,51 +211,80 @@ async function updateAutomaticDisplayNames(accounts) {
   return { displayName: chosenNames[0] || null, displayNames: chosenNames, results };
 }
 
-let accountCursor = 0;
+const accountCursors = { gosh: 0, loco: 0 };
 
-async function sendNextComment() {
+async function sendNextComment({ advanceOnTotalFailure = false } = {}) {
   const state = store.snapshot();
-  const accounts = store.getEnabledAccounts(state.settings.platform);
   const message = store.getNextMessage();
   if (!message) throw new Error("Kho bình luận đang trống.");
-  if (!state.settings.channelUrl) throw new Error("Hãy lưu URL phòng live trước.");
-  if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản để gửi.");
+  const destinations = assertDestinations(state);
+  const selected = destinations.map((destination) => {
+    const cursor = accountCursors[destination.platform] || 0;
+    const account = destination.accounts[cursor % destination.accounts.length];
+    accountCursors[destination.platform] = cursor + 1;
+    return { ...destination, account };
+  });
 
-  const account = accounts[accountCursor % accounts.length];
-  accountCursor++;
-
-  const accountName = account.profileName || account.name;
-  let result;
-  try {
-    result = await sessions.sendComment(account.id, {
-      channelUrl: state.settings.channelUrl,
-      content: message.content,
-    }, account.platform);
-  } catch (error) {
-    throw new Error(`${accountName}: ${error.message || "Không thể gửi bình luận."}`);
+  if (bulkSend.running) {
+    bulkSend.currentAccount = selected
+      .map(({ platform, account }) => `${PLATFORMS[platform].name}: ${account.profileName || account.name}`)
+      .join(" + ");
   }
 
-  await store.markSent();
+  const settled = await Promise.allSettled(selected.map(({ account, channelUrl }) => (
+    sessions.sendComment(account.id, {
+      channelUrl,
+      content: message.content,
+    }, account.platform)
+  )));
+  const results = settled.map((outcome, index) => {
+    const { platform, channelUrl, account } = selected[index];
+    const accountName = account.profileName || account.name;
+    if (outcome.status === "fulfilled") {
+      return { platform, channelUrl, accountId: account.id, accountName, ok: true, result: outcome.value };
+    }
+    return {
+      platform,
+      channelUrl,
+      accountId: account.id,
+      accountName,
+      ok: false,
+      error: outcome.reason?.message || "Không thể gửi bình luận.",
+    };
+  });
+  const successes = results.filter((result) => result.ok);
+  const failures = results.filter((result) => !result.ok);
+
+  if (!successes.length && !advanceOnTotalFailure) {
+    throw new Error(failures.map((failure) => `${failure.accountName}: ${failure.error}`).join(" · "));
+  }
+
+  await store.markSent({ countForRename: successes.some((result) => result.platform === "gosh") });
 
   let rename = null;
-  if (store.shouldRename()) {
-    rename = await updateAutomaticDisplayNames([account]);
+  const successfulGoshAccounts = selected
+    .filter(({ account }) => successes.some((result) => result.accountId === account.id && result.platform === "gosh"))
+    .map(({ account }) => account);
+  if (successfulGoshAccounts.length && store.shouldRename()) {
+    rename = await updateAutomaticDisplayNames(successfulGoshAccounts);
   }
 
   return {
     message,
-    account: { id: account.id, name: accountName },
-    result,
+    account: successes[0] ? { id: successes[0].accountId, name: successes[0].accountName } : null,
+    accounts: results.map((result) => ({ id: result.accountId, name: result.accountName, platform: result.platform })),
+    result: successes[0]?.result || null,
+    results,
     rename,
-    successCount: 1,
-    failureCount: 0,
-    totalAccounts: accounts.length,
+    successCount: successes.length,
+    failureCount: failures.length,
+    totalAccounts: selected.length,
+    activePlatforms: selected.map(({ platform }) => platform),
   };
 }
 
 async function runBulkSend() {
   try {
-    let bulkAccountCursor = 0;
     while (!bulkSend.stopRequested && bulkSend.completedMessages < bulkSend.totalMessages) {
       const cooldown = store.cooldown();
       if (!cooldown.ready) {
@@ -234,40 +294,18 @@ async function runBulkSend() {
         if (bulkSend.stopRequested) break;
       }
 
-      const state = store.snapshot();
-      const accounts = store.getEnabledAccounts(state.settings.platform);
-      if (!accounts.length) throw new Error("Cần bật ít nhất một tài khoản.");
-      const message = store.getNextMessage();
-      if (!message) break;
-
-      const account = accounts[bulkAccountCursor % accounts.length];
-      bulkAccountCursor++;
-      const accountName = account.profileName || account.name;
-
       bulkSend.phase = "sending";
-      bulkSend.currentAccount = accountName;
-
-      try {
-        await sessions.sendComment(account.id, {
-          channelUrl: state.settings.channelUrl,
-          content: message.content,
-        }, account.platform);
-
-        await store.markSent();
-        bulkSend.sent += 1;
-        bulkSend.completedMessages += 1;
-
-        if (store.shouldRename()) {
-          bulkSend.phase = "renaming";
-          await updateAutomaticDisplayNames([account]);
-        }
-      } catch (error) {
-        bulkSend.failed += 1;
+      const batch = await sendNextComment({ advanceOnTotalFailure: true });
+      bulkSend.sent += batch.successCount;
+      bulkSend.failed += batch.failureCount;
+      bulkSend.completedMessages += 1;
+      for (const failure of batch.results.filter((result) => !result.ok)) {
         bulkSend.failures.push({
-          accountId: account.id,
-          accountName,
-          message: message.content,
-          error: error.message || "Không thể gửi bình luận.",
+          accountId: failure.accountId,
+          accountName: failure.accountName,
+          platform: failure.platform,
+          message: batch.message.content,
+          error: failure.error,
         });
       }
     }
@@ -285,6 +323,7 @@ async function runBulkSend() {
     bulkSend.stopRequested = false;
     bulkSend.completedAt = new Date().toISOString();
     bulkSend.currentAccount = "";
+    bulkSend.activePlatforms = [];
     bulkSend.wakeWaiter = null;
   }
 }
@@ -323,9 +362,7 @@ app.post("/api/accounts/:id/browser/open", asyncRoute(async (request, response) 
   }
   const account = accountOrThrow(request.params.id);
   const state = store.snapshot();
-  const targetUrl = state.settings.platform === account.platform
-    ? request.body?.targetUrl || state.settings.channelUrl || undefined
-    : undefined;
+  const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
   const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: false });
   response.json({ account: { ...account, session } });
 }));
@@ -336,9 +373,7 @@ app.post("/api/accounts/:id/browser/login", asyncRoute(async (request, response)
   }
   const account = accountOrThrow(request.params.id);
   const state = store.snapshot();
-  const targetUrl = state.settings.platform === account.platform
-    ? request.body?.targetUrl || state.settings.channelUrl || undefined
-    : undefined;
+  const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
   const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: true });
   response.json({ account: { ...account, session } });
 }));
@@ -370,7 +405,7 @@ app.post("/api/browser/open", asyncRoute(async (request, response) => {
   const state = store.snapshot();
   const account = store.getEnabledAccounts(state.settings.platform)[0];
   if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
-  const targetUrl = request.body?.targetUrl || store.snapshot().settings.channelUrl || undefined;
+  const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
   response.json({ browser: await sessions.open(account.id, targetUrl, account.platform) });
 }));
 
@@ -417,7 +452,7 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.post("/api/health/check", asyncRoute(async (_request, response) => {
-  apiHealth = await checkApiHealth(store.snapshot().settings.channelUrl);
+  apiHealth = await checkApiHealth(store.snapshot().settings.channelUrls);
   response.json({ checks: apiHealth });
 }));
 
@@ -435,9 +470,8 @@ app.post("/api/comments/send-next", asyncRoute(async (_request, response) => {
 
   const state = store.snapshot();
   if (!store.getNextMessage()) return response.status(400).json({ error: "Kho bình luận đang trống." });
-  if (!state.settings.channelUrl) {
-    return response.status(400).json({ error: "Hãy lưu URL phòng live trước." });
-  }
+  try { assertDestinations(state); }
+  catch (error) { return response.status(400).json({ error: error.message }); }
 
   const cooldown = store.cooldown();
   if (!cooldown.ready) {
@@ -465,17 +499,15 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
   }
 
   const state = store.snapshot();
-  const accounts = store.getEnabledAccounts(state.settings.platform);
   if (!state.messages.length) return response.status(400).json({ error: "Kho bình luận đang trống." });
-  if (!state.settings.channelUrl) {
-    return response.status(400).json({ error: "Hãy lưu URL phòng live trước." });
-  }
-  if (!accounts.length) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
+  let destinations;
+  try { destinations = assertDestinations(state); }
+  catch (error) { return response.status(400).json({ error: error.message }); }
 
   Object.assign(bulkSend, {
     running: true,
     stopRequested: false,
-    total: state.messages.length,
+    total: state.messages.length * destinations.length,
     sent: 0,
     failed: 0,
     totalMessages: state.messages.length,
@@ -485,6 +517,7 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
     error: null,
     failures: [],
     currentAccount: "",
+    activePlatforms: destinations.map(({ platform }) => platform),
     phase: "starting",
     wakeWaiter: null,
   });

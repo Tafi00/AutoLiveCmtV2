@@ -66,10 +66,12 @@ h1, h2 { margin-bottom: 0; letter-spacing: -0.02em; }
 h1 { font-size: 19px; }
 h2 { font-size: 13px; }
 .view-header p { margin: 5px 0 0; color: var(--muted); font-size: 10px; }
-.live-header { align-items: flex-end; }
+.live-header { align-items: center; }
 
-.room-control { display: grid; grid-template-columns: 82px minmax(230px, 390px) 45px; align-items: center; gap: 8px; flex: 1; justify-content: end; }
-.room-control label { margin: 0; }
+.room-control { display: grid; grid-template-columns: 42px minmax(230px, 390px) 45px; align-items: center; gap: 6px 8px; flex: 1; justify-content: end; }
+.room-control .room-platform { margin: 0; color: var(--muted-2); text-align: right; }
+.room-control .room-platform.loco { color: #c9b8ff; }
+.room-control #room-save-state { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
 .save-state { color: var(--muted); font-size: 10px; text-align: right; }
 .save-state.saving { color: var(--warning); }
 .save-state.error { color: var(--danger); }

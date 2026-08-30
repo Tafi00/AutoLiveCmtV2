@@ -996,7 +996,10 @@ export class BrowserSession {
   async updateDisplayName(displayName) {
     const cleanName = String(displayName ?? "").trim();
     if (!cleanName) throw new Error("Tên hiển thị không được để trống.");
-    const maxLength = this.platform === "loco" ? 30 : 20;
+    if (this.platform !== "gosh") {
+      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+    }
+    const maxLength = 20;
     if (cleanName.length > maxLength) {
       throw new Error(`Tên hiển thị không được vượt quá ${maxLength} ký tự.`);
     }

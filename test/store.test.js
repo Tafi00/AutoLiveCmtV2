@@ -68,7 +68,30 @@ test("tự chuyển dữ liệu một tài khoản cũ thành tài khoản mặc
     assert.equal(state.accounts[0].profileName, "");
     assert.equal(state.accounts[0].platform, "gosh");
     assert.equal(state.messages[0].content, "Tin cũ");
+    assert.deepEqual(state.settings.channelUrls, { gosh: "", loco: "" });
     assert.match(await readFile(join(directory, "state.json"), "utf8"), /"accounts"/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("lưu đồng thời phòng live Gosh và Loco", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "dual-platform-settings-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    const settings = await store.updateSettings({
+      channelUrls: {
+        gosh: "https://gosh.com/vi/16427037",
+        loco: "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a",
+      },
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+
+    assert.equal(settings.channelUrls.gosh, "https://gosh.com/vi/16427037");
+    assert.equal(settings.channelUrls.loco, "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -212,6 +235,29 @@ test("sau mỗi mẫu thành công thì đổi tên ngay và khóa gửi theo de
     await store.markDisplayNameUpdated();
     assert.equal(store.getPendingDisplayName(), null);
     assert.equal(store.snapshot().commentsSinceRename, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bình luận Loco không được tính vào chu kỳ đổi tên Gosh", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gosh-only-rename-cycle-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    await store.updateSettings({
+      channelUrl: "",
+      delaySeconds: 0,
+      displayNames: ["Tên một"],
+      renameEveryComments: 1,
+    });
+
+    await store.markSent({ countForRename: false });
+    assert.equal(store.shouldRename(), false);
+    assert.equal(store.snapshot().commentsSinceRename, 0);
+
+    await store.markSent({ countForRename: true });
+    assert.equal(store.shouldRename(), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

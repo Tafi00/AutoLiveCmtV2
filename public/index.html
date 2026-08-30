@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Live Comment</title>
-    <link rel="stylesheet" href="/styles.css?v=9" />
+    <link rel="stylesheet" href="/styles.css?v=10" />
   </head>
   <body>
     <div class="app-frame">
@@ -43,8 +43,10 @@
             <header class="view-header live-header">
               <div><h1>Live</h1><p id="live-summary">1 bình luận · 1 tài khoản</p></div>
               <div class="room-control">
-                <select id="platform-select" aria-label="Nền tảng"><option value="gosh">Gosh</option><option value="loco">Loco</option></select>
-                <input id="channel-url" type="url" placeholder="URL phòng live…" autocomplete="off" />
+                <label class="room-platform" for="channel-url-gosh">Gosh</label>
+                <input id="channel-url-gosh" type="url" placeholder="URL phòng live Gosh…" autocomplete="off" />
+                <label class="room-platform loco" for="channel-url-loco">Loco</label>
+                <input id="channel-url-loco" type="url" placeholder="URL phòng live Loco…" autocomplete="off" />
                 <span id="room-save-state" class="save-state">Đã lưu</span>
               </div>
             </header>
@@ -160,6 +162,6 @@
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=12"></script>
+    <script type="module" src="/app.js?v=14"></script>
   </body>
 </html>

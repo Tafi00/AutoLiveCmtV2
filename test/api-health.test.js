@@ -10,8 +10,12 @@ test("phân loại trạng thái endpoint", () => {
 });
 
 test("thêm endpoint chat khi URL Loco có stream id", () => {
-  const targets = healthTargets("https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
+  const targets = healthTargets({
+    gosh: "https://gosh.com/vi/16427037",
+    loco: "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a",
+  });
   assert.ok(targets.some((item) => item.id === "loco-chat" && item.url.includes("fb32a361")));
+  assert.equal(targets.some((item) => item.id === "loco-profile-update"), false);
 });
 
 test("đo endpoint bằng fetch có thể thay thế trong test", async () => {
