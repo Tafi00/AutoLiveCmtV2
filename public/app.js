@@ -36,13 +36,20 @@ const elements = {
   channelUrlGosh: $("#channel-url-gosh"),
   channelUrlLoco: $("#channel-url-loco"),
   roomSaveState: $("#room-save-state"),
-  messageForm: $("#message-form"),
-  messageContent: $("#message-content"),
-  messageCount: $("#message-count"),
-  messageList: $("#message-list"),
-  clearMessages: $("#clear-messages"),
-  emptyState: $("#empty-state"),
-  nextMessage: $("#next-message"),
+  goshMessageForm: $("#gosh-message-form"),
+  goshMessageContent: $("#gosh-message-content"),
+  goshMessageCount: $("#gosh-message-count"),
+  goshMessageList: $("#gosh-message-list"),
+  clearGoshMessages: $("#clear-gosh-messages"),
+  goshEmptyState: $("#gosh-empty-state"),
+  locoMessageForm: $("#loco-message-form"),
+  locoMessageContent: $("#loco-message-content"),
+  locoMessageCount: $("#loco-message-count"),
+  locoMessageList: $("#loco-message-list"),
+  clearLocoMessages: $("#clear-loco-messages"),
+  locoEmptyState: $("#loco-empty-state"),
+  nextGoshMessage: $("#next-gosh-message"),
+  nextLocoMessage: $("#next-loco-message"),
   liveAccountList: $("#live-account-list"),
   cooldown: $("#cooldown"),
   sendScope: $("#send-scope"),
@@ -64,7 +71,8 @@ const elements = {
   displayNames: $("#display-names"),
   renameEveryComments: $("#rename-every-comments"),
   profileCount: $("#profile-count"),
-  addMessage: $("#message-form button[type='submit']"),
+  addGoshMessage: $("#add-gosh-message"),
+  addLocoMessage: $("#add-loco-message"),
   checkHealth: $("#check-health"),
   healthSummary: $("#health-summary"),
   healthList: $("#health-list"),
@@ -164,6 +172,26 @@ function activePlatformCount() {
   return new Set(enabledAccounts().map((account) => account.platform)).size;
 }
 
+function platformMessages(platform) {
+  if (state?.messagesByPlatform) return state.messagesByPlatform[platform] || [];
+  return state?.settings?.platform === platform ? state.messages || [] : [];
+}
+
+function totalMessageCount() {
+  return platformMessages("gosh").length + platformMessages("loco").length;
+}
+
+function sendableMessageCount() {
+  const platforms = new Set(enabledAccounts().map((account) => account.platform));
+  return [...platforms].reduce((total, platform) => total + platformMessages(platform).length, 0);
+}
+
+function sendablePlatformCount() {
+  return new Set(enabledAccounts()
+    .filter((account) => platformMessages(account.platform).length)
+    .map((account) => account.platform)).size;
+}
+
 function accountLabel(account) {
   return account.profileName || account.name;
 }
@@ -235,34 +263,57 @@ function renderLiveAccounts() {
 }
 
 function renderMessages() {
-  elements.messageList.replaceChildren();
-  elements.messageCount.textContent = state.messages.length;
-  elements.clearMessages.disabled = !state.messages.length || Boolean(state.bulkSend?.running);
-  elements.emptyState.hidden = state.messages.length > 0;
-  elements.nextMessage.textContent = state.nextMessage?.content || "Kho bình luận đang trống.";
+  const queues = {
+    gosh: {
+      messages: platformMessages("gosh"),
+      next: state.nextMessages?.gosh || (state.settings?.platform === "gosh" ? state.nextMessage : null),
+      count: elements.goshMessageCount,
+      list: elements.goshMessageList,
+      empty: elements.goshEmptyState,
+      clear: elements.clearGoshMessages,
+    },
+    loco: {
+      messages: platformMessages("loco"),
+      next: state.nextMessages?.loco || (state.settings?.platform === "loco" ? state.nextMessage : null),
+      count: elements.locoMessageCount,
+      list: elements.locoMessageList,
+      empty: elements.locoEmptyState,
+      clear: elements.clearLocoMessages,
+    },
+  };
 
-  for (const message of state.messages) {
-    const item = document.createElement("li");
-    item.className = `message-item${message.id === state.nextMessage?.id ? " is-next" : ""}`;
-    const content = document.createElement("p");
-    content.textContent = message.content;
-    const remove = document.createElement("button");
-    remove.className = "delete-message";
-    remove.type = "button";
-    remove.textContent = "Xóa";
-    remove.disabled = Boolean(state.bulkSend?.running);
-    remove.addEventListener("click", async () => {
-      if (!window.confirm(`Xóa bình luận “${message.content}”?`)) return;
-      try {
-        state = await api(`/api/messages/${encodeURIComponent(message.id)}`, { method: "DELETE" });
-        render();
-      } catch (error) {
-        showNotice(error.message);
-      }
-    });
-    item.append(content, remove);
-    elements.messageList.append(item);
+  for (const [platform, queue] of Object.entries(queues)) {
+    queue.list.replaceChildren();
+    queue.count.textContent = queue.messages.length;
+    queue.clear.disabled = !queue.messages.length || Boolean(state.bulkSend?.running);
+    queue.empty.hidden = queue.messages.length > 0;
+
+    for (const message of queue.messages) {
+      const item = document.createElement("li");
+      item.className = `message-item${message.id === queue.next?.id ? " is-next" : ""}`;
+      const content = document.createElement("p");
+      content.textContent = message.content;
+      const remove = document.createElement("button");
+      remove.className = "delete-message";
+      remove.type = "button";
+      remove.textContent = "Xóa";
+      remove.disabled = Boolean(state.bulkSend?.running);
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`Xóa mẫu bình luận ${platform === "gosh" ? "Gosh" : "Loco"} “${message.content}”?`)) return;
+        try {
+          state = await api(`/api/messages/${encodeURIComponent(message.id)}?platform=${platform}`, { method: "DELETE" });
+          render();
+        } catch (error) {
+          showNotice(error.message);
+        }
+      });
+      item.append(content, remove);
+      queue.list.append(item);
+    }
   }
+
+  elements.nextGoshMessage.textContent = queues.gosh.next?.content || "Chưa có mẫu Gosh.";
+  elements.nextLocoMessage.textContent = queues.loco.next?.content || "Chưa có mẫu Loco.";
 }
 
 function renderCooldown() {
@@ -300,6 +351,8 @@ function renderBulkSend() {
   const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
   const accountCount = enabledAccounts().length;
   const websiteCount = activePlatformCount();
+  const sendingWebsiteCount = sendablePlatformCount();
+  const messageCount = sendableMessageCount();
   const attempted = (bulk.sent || 0) + (bulk.failed || 0);
   const percent = bulk.total ? Math.min(100, Math.round((attempted / bulk.total) * 100)) : 0;
   const failures = bulk.failures || [];
@@ -315,13 +368,26 @@ function renderBulkSend() {
   elements.bulkError.textContent = failures.length ? `${failures.at(-1).accountName}: ${failures.at(-1).error}` : "";
 
   elements.sendScope.textContent = `${websiteCount} website · ${accountCount} tài khoản`;
-  elements.sendNext.textContent = websiteCount > 1 ? "Gửi song song" : "Gửi một";
-  elements.sendNext.disabled = running || !state.nextMessage || !accountCount;
-  elements.sendAll.disabled = running || !state.messages.length || !accountCount;
+  elements.sendNext.textContent = sendingWebsiteCount > 1 ? "Gửi song song" : "Gửi một";
+  elements.sendNext.disabled = running || !messageCount || !accountCount;
+  elements.sendAll.disabled = running || !messageCount || !accountCount;
   elements.stopBulk.hidden = !running;
   elements.stopBulk.disabled = bulk.phase === "stopping";
 
-  for (const control of [elements.channelUrlGosh, elements.channelUrlLoco, elements.messageContent, elements.addMessage, elements.addAccount, elements.delaySeconds, elements.displayNames, elements.renameEveryComments, elements.clearMessages]) {
+  for (const control of [
+    elements.channelUrlGosh,
+    elements.channelUrlLoco,
+    elements.goshMessageContent,
+    elements.locoMessageContent,
+    elements.addGoshMessage,
+    elements.addLocoMessage,
+    elements.addAccount,
+    elements.delaySeconds,
+    elements.displayNames,
+    elements.renameEveryComments,
+    elements.clearGoshMessages,
+    elements.clearLocoMessages,
+  ]) {
     control.disabled = running;
   }
 }
@@ -329,7 +395,8 @@ function renderBulkSend() {
 function renderLive() {
   const accountCount = enabledAccounts().length;
   const websiteCount = activePlatformCount();
-  elements.liveSummary.textContent = `${state.messages.length} bình luận · ${websiteCount} website · ${accountCount} tài khoản`;
+  const messageCount = totalMessageCount();
+  elements.liveSummary.textContent = `${messageCount} mẫu · ${websiteCount} website · ${accountCount} tài khoản`;
   renderMessages();
   renderLiveAccounts();
   renderCooldown();
@@ -790,44 +857,62 @@ for (const button of document.querySelectorAll("[data-go-view]")) {
   button.addEventListener("click", () => switchView(button.dataset.goView));
 }
 
-elements.messageForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const raw = elements.messageContent.value.trim();
-  if (!raw) return;
-  try {
-    state = await api("/api/messages", { method: "POST", body: JSON.stringify({ content: raw }) });
-    elements.messageContent.value = "";
-    render();
-  } catch (error) {
-    showNotice(error.message);
-  }
-});
+const messageQueueControls = {
+  gosh: {
+    form: elements.goshMessageForm,
+    content: elements.goshMessageContent,
+    clear: elements.clearGoshMessages,
+  },
+  loco: {
+    form: elements.locoMessageForm,
+    content: elements.locoMessageContent,
+    clear: elements.clearLocoMessages,
+  },
+};
 
-elements.clearMessages.addEventListener("click", async () => {
-  const count = state.messages.length;
-  if (!count || !window.confirm(`Xóa toàn bộ ${count} bình luận đã thêm?`)) return;
-
-  const label = elements.clearMessages.textContent;
-  elements.clearMessages.disabled = true;
-  elements.clearMessages.textContent = "Đang xóa…";
-  try {
-    state = await api("/api/messages", { method: "DELETE" });
-    render();
-    showNotice(`Đã xóa ${count} bình luận.`, "success");
-  } catch (error) {
-    showNotice(error.message);
-  } finally {
-    elements.clearMessages.textContent = label;
-    render();
-  }
-});
-
-elements.messageContent.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+for (const [platform, controls] of Object.entries(messageQueueControls)) {
+  controls.form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    elements.messageForm.requestSubmit();
-  }
-});
+    const raw = controls.content.value.trim();
+    if (!raw) return;
+    try {
+      state = await api("/api/messages", {
+        method: "POST",
+        body: JSON.stringify({ content: raw, platform }),
+      });
+      controls.content.value = "";
+      render();
+    } catch (error) {
+      showNotice(error.message);
+    }
+  });
+
+  controls.clear.addEventListener("click", async () => {
+    const count = state.messagesByPlatform?.[platform]?.length || 0;
+    if (!count || !window.confirm(`Xóa toàn bộ ${count} mẫu bình luận ${platform === "gosh" ? "Gosh" : "Loco"}?`)) return;
+
+    const label = controls.clear.textContent;
+    controls.clear.disabled = true;
+    controls.clear.textContent = "Đang xóa…";
+    try {
+      state = await api(`/api/messages?platform=${platform}`, { method: "DELETE" });
+      render();
+      showNotice(`Đã xóa ${count} mẫu ${platform === "gosh" ? "Gosh" : "Loco"}.`, "success");
+    } catch (error) {
+      showNotice(error.message);
+    } finally {
+      controls.clear.textContent = label;
+      render();
+    }
+  });
+
+  controls.content.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      controls.form.requestSubmit();
+    }
+  });
+}
 
 for (const control of [elements.delaySeconds, elements.displayNames, elements.renameEveryComments]) {
   control.addEventListener("input", queueSettingsSave);

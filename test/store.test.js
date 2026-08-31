@@ -68,6 +68,8 @@ test("tự chuyển dữ liệu một tài khoản cũ thành tài khoản mặc
     assert.equal(state.accounts[0].profileName, "");
     assert.equal(state.accounts[0].platform, "gosh");
     assert.equal(state.messages[0].content, "Tin cũ");
+    assert.equal(state.messagesByPlatform.gosh[0].content, "Tin cũ");
+    assert.equal(state.messagesByPlatform.loco[0].content, "Tin cũ");
     assert.deepEqual(state.settings.channelUrls, { gosh: "", loco: "" });
     assert.match(await readFile(join(directory, "state.json"), "utf8"), /"accounts"/);
   } finally {
@@ -92,6 +94,32 @@ test("lưu đồng thời phòng live Gosh và Loco", async () => {
 
     assert.equal(settings.channelUrls.gosh, "https://gosh.com/vi/16427037");
     assert.equal(settings.channelUrls.loco, "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("giữ kho bình luận và con trỏ riêng cho từng nền tảng", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "platform-message-queues-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    await store.addMessage("Gosh một\nGosh hai", "gosh");
+    await store.addMessage("Loco một\nLoco hai", "loco");
+
+    assert.equal(store.getNextMessage("gosh").content, "Gosh một");
+    assert.equal(store.getNextMessage("loco").content, "Loco một");
+    await store.markSent({ platforms: ["gosh"] });
+    assert.equal(store.getNextMessage("gosh").content, "Gosh hai");
+    assert.equal(store.getNextMessage("loco").content, "Loco một");
+    await store.clearMessages("loco");
+    assert.equal(store.getMessages("gosh").length, 2);
+    assert.equal(store.getMessages("loco").length, 0);
+
+    const reloaded = new JsonStore(directory);
+    await reloaded.init();
+    assert.equal(reloaded.getNextMessage("gosh").content, "Gosh hai");
+    assert.equal(reloaded.getNextMessage("loco"), null);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -44,6 +44,8 @@ const bulkSend = {
   failures: [],
   currentAccount: "",
   activePlatforms: [],
+  messageTotals: { gosh: 0, loco: 0 },
+  completedByPlatform: { gosh: 0, loco: 0 },
   phase: "idle",
   wakeWaiter: null,
 };
@@ -76,6 +78,8 @@ function bulkSendState() {
     failures: bulkSend.failures.slice(-30),
     currentAccount: bulkSend.currentAccount,
     activePlatforms: [...bulkSend.activePlatforms],
+    messageTotals: { ...bulkSend.messageTotals },
+    completedByPlatform: { ...bulkSend.completedByPlatform },
     phase: bulkSend.phase,
   };
 }
@@ -95,7 +99,11 @@ async function dashboardState() {
   return {
     ...state,
     accounts: state.accounts.map((account) => ({ ...account, session: sessionsById.get(account.id) })),
-    nextMessage: store.getNextMessage(),
+    nextMessages: {
+      gosh: store.getNextMessage("gosh"),
+      loco: store.getNextMessage("loco"),
+    },
+    nextMessage: store.getNextMessage(state.settings.platform),
     cooldown: store.cooldown(),
     bulkSend: bulkSendState(),
     platforms: Object.values(PLATFORMS).map(({ id, name, homeUrl }) => ({ id, name, homeUrl })),
@@ -133,10 +141,24 @@ function availableDestinations(state) {
   });
 }
 
-function assertDestinations(state) {
-  const destinations = availableDestinations(state);
-  if (destinations.length) return destinations;
-  const hasRoom = Object.keys(PLATFORMS).some((platform) => channelUrlForPlatform(state, platform));
+function destinationsWithMessages(state, platforms = null) {
+  const allowed = platforms ? new Set(platforms) : null;
+  return availableDestinations(state).filter(({ platform }) => (
+    (!allowed || allowed.has(platform)) && store.getNextMessage(platform)
+  ));
+}
+
+function assertDestinations(state, { requireMessages = false, platforms = null } = {}) {
+  const requestedPlatforms = platforms || Object.keys(PLATFORMS);
+  const destinations = availableDestinations(state)
+    .filter(({ platform }) => requestedPlatforms.includes(platform));
+  if (destinations.length && !requireMessages) return destinations;
+  if (destinations.length) {
+    const withMessages = destinationsWithMessages(state, requestedPlatforms);
+    if (withMessages.length) return withMessages;
+    throw new Error("Kho bình luận của website đang hoạt động đang trống.");
+  }
+  const hasRoom = requestedPlatforms.some((platform) => channelUrlForPlatform(state, platform));
   if (!hasRoom) throw new Error("Hãy lưu URL phòng live cho Gosh hoặc Loco trước.");
   throw new Error("Cần bật ít nhất một tài khoản phù hợp với website đã nhập URL.");
 }
@@ -213,16 +235,14 @@ async function updateAutomaticDisplayNames(accounts) {
 
 const accountCursors = { gosh: 0, loco: 0 };
 
-async function sendNextComment({ advanceOnTotalFailure = false } = {}) {
+async function sendNextComment({ advanceOnTotalFailure = false, platforms = null } = {}) {
   const state = store.snapshot();
-  const message = store.getNextMessage();
-  if (!message) throw new Error("Kho bình luận đang trống.");
-  const destinations = assertDestinations(state);
+  const destinations = assertDestinations(state, { requireMessages: true, platforms });
   const selected = destinations.map((destination) => {
     const cursor = accountCursors[destination.platform] || 0;
     const account = destination.accounts[cursor % destination.accounts.length];
     accountCursors[destination.platform] = cursor + 1;
-    return { ...destination, account };
+    return { ...destination, account, message: store.getNextMessage(destination.platform) };
   });
 
   if (bulkSend.running) {
@@ -231,23 +251,24 @@ async function sendNextComment({ advanceOnTotalFailure = false } = {}) {
       .join(" + ");
   }
 
-  const settled = await Promise.allSettled(selected.map(({ account, channelUrl }) => (
+  const settled = await Promise.allSettled(selected.map(({ account, channelUrl, message }) => (
     sessions.sendComment(account.id, {
       channelUrl,
       content: message.content,
     }, account.platform)
   )));
   const results = settled.map((outcome, index) => {
-    const { platform, channelUrl, account } = selected[index];
+    const { platform, channelUrl, account, message } = selected[index];
     const accountName = account.profileName || account.name;
     if (outcome.status === "fulfilled") {
-      return { platform, channelUrl, accountId: account.id, accountName, ok: true, result: outcome.value };
+      return { platform, channelUrl, accountId: account.id, accountName, message: message.content, ok: true, result: outcome.value };
     }
     return {
       platform,
       channelUrl,
       accountId: account.id,
       accountName,
+      message: message.content,
       ok: false,
       error: outcome.reason?.message || "Không thể gửi bình luận.",
     };
@@ -259,18 +280,25 @@ async function sendNextComment({ advanceOnTotalFailure = false } = {}) {
     throw new Error(failures.map((failure) => `${failure.accountName}: ${failure.error}`).join(" · "));
   }
 
-  await store.markSent({ countForRename: successes.some((result) => result.platform === "gosh") });
+  const platformsToAdvance = advanceOnTotalFailure
+    ? selected.map(({ platform }) => platform)
+    : successes.map(({ platform }) => platform);
+  await store.markSent({
+    platforms: platformsToAdvance,
+    countForRename: successes.some((result) => result.platform === "gosh"),
+  });
 
   let rename = null;
   const successfulGoshAccounts = selected
-    .filter(({ account }) => successes.some((result) => result.accountId === account.id && result.platform === "gosh"))
+    .filter(({ account, platform }) => successes.some((result) => result.accountId === account.id && result.platform === platform && platform === "gosh"))
     .map(({ account }) => account);
   if (successfulGoshAccounts.length && store.shouldRename()) {
     rename = await updateAutomaticDisplayNames(successfulGoshAccounts);
   }
 
   return {
-    message,
+    message: selected[0]?.message || null,
+    messages: selected.map(({ platform, message }) => ({ platform, ...message })),
     account: successes[0] ? { id: successes[0].accountId, name: successes[0].accountName } : null,
     accounts: results.map((result) => ({ id: result.accountId, name: result.accountName, platform: result.platform })),
     result: successes[0]?.result || null,
@@ -294,17 +322,22 @@ async function runBulkSend() {
         if (bulkSend.stopRequested) break;
       }
 
+      const roundPlatforms = Object.keys(PLATFORMS).filter((platform) => (
+        bulkSend.completedByPlatform[platform] < bulkSend.messageTotals[platform]
+      ));
+      if (!roundPlatforms.length) break;
       bulkSend.phase = "sending";
-      const batch = await sendNextComment({ advanceOnTotalFailure: true });
+      const batch = await sendNextComment({ advanceOnTotalFailure: true, platforms: roundPlatforms });
       bulkSend.sent += batch.successCount;
       bulkSend.failed += batch.failureCount;
       bulkSend.completedMessages += 1;
+      for (const platform of roundPlatforms) bulkSend.completedByPlatform[platform] += 1;
       for (const failure of batch.results.filter((result) => !result.ok)) {
         bulkSend.failures.push({
           accountId: failure.accountId,
           accountName: failure.accountName,
           platform: failure.platform,
-          message: batch.message.content,
+          message: failure.message,
           error: failure.error,
         });
       }
@@ -424,20 +457,20 @@ app.post("/api/profile/display-name", asyncRoute(async (request, response) => {
 
   app.post("/api/messages", asyncRoute(async (request, response) => {
     if (rejectDuringBulk(response)) return;
-    await store.addMessage(request.body?.content ?? request.body?.messages);
+    await store.addMessage(request.body?.content ?? request.body?.messages, request.body?.platform || "gosh");
     response.status(201).json(await dashboardState());
   }));
 
 app.delete("/api/messages/:id", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;
-  const deleted = await store.deleteMessage(request.params.id);
+  const deleted = await store.deleteMessage(request.params.id, request.query.platform || null);
   if (!deleted) return response.status(404).json({ error: "Không tìm thấy bình luận." });
   response.json(await dashboardState());
 }));
 
 app.delete("/api/messages", asyncRoute(async (_request, response) => {
   if (rejectDuringBulk(response)) return;
-  const deletedCount = await store.clearMessages();
+  const deletedCount = await store.clearMessages(_request.query.platform || null);
   response.json({ ...(await dashboardState()), deletedCount });
 }));
 
@@ -469,8 +502,7 @@ app.post("/api/comments/send-next", asyncRoute(async (_request, response) => {
   }
 
   const state = store.snapshot();
-  if (!store.getNextMessage()) return response.status(400).json({ error: "Kho bình luận đang trống." });
-  try { assertDestinations(state); }
+  try { assertDestinations(state, { requireMessages: true }); }
   catch (error) { return response.status(400).json({ error: error.message }); }
 
   const cooldown = store.cooldown();
@@ -499,18 +531,25 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
   }
 
   const state = store.snapshot();
-  if (!state.messages.length) return response.status(400).json({ error: "Kho bình luận đang trống." });
-  let destinations;
-  try { destinations = assertDestinations(state); }
+  let available;
+  try { available = assertDestinations(state); }
   catch (error) { return response.status(400).json({ error: error.message }); }
+  const messageTotals = Object.fromEntries(Object.keys(PLATFORMS).map((platform) => [
+    platform,
+    available.some((destination) => destination.platform === platform) ? store.getMessages(platform).length : 0,
+  ]));
+  const totalMessages = Object.values(messageTotals).reduce((sum, count) => sum + count, 0);
+  const roundCount = Math.max(...Object.values(messageTotals), 0);
+  if (!totalMessages) return response.status(400).json({ error: "Kho bình luận của Gosh và Loco đang trống." });
+  const destinations = available.filter(({ platform }) => messageTotals[platform] > 0);
 
   Object.assign(bulkSend, {
     running: true,
     stopRequested: false,
-    total: state.messages.length * destinations.length,
+    total: totalMessages,
     sent: 0,
     failed: 0,
-    totalMessages: state.messages.length,
+    totalMessages: roundCount,
     completedMessages: 0,
     startedAt: new Date().toISOString(),
     completedAt: null,
@@ -518,6 +557,8 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
     failures: [],
     currentAccount: "",
     activePlatforms: destinations.map(({ platform }) => platform),
+    messageTotals,
+    completedByPlatform: { gosh: 0, loco: 0 },
     phase: "starting",
     wakeWaiter: null,
   });

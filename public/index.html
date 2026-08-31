@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Live Comment</title>
-    <link rel="stylesheet" href="/styles.css?v=10" />
+    <link rel="stylesheet" href="/styles.css?v=11" />
   </head>
   <body>
     <div class="app-frame">
@@ -41,7 +41,7 @@
 
           <section id="view-live" class="view active" data-view-panel="live">
             <header class="view-header live-header">
-              <div><h1>Live</h1><p id="live-summary">1 bình luận · 1 tài khoản</p></div>
+              <div><h1>Live</h1><p id="live-summary">0 bình luận · 0 website · 0 tài khoản</p></div>
               <div class="room-control">
                 <label class="room-platform" for="channel-url-gosh">Gosh</label>
                 <input id="channel-url-gosh" type="url" placeholder="URL phòng live Gosh…" autocomplete="off" />
@@ -53,23 +53,43 @@
 
             <div class="live-workspace">
               <section class="queue-pane">
-                <div class="section-heading">
-                  <div class="section-label"><h2>Bình luận</h2><span id="message-count" class="muted-count">0</span></div>
-                  <button id="clear-messages" class="text-button clear-messages" type="button" disabled>Xóa toàn bộ</button>
-                </div>
+                <div class="comment-queues">
+                  <section class="comment-panel gosh-panel">
+                    <div class="section-heading">
+                      <div class="section-label"><span class="platform-mark gosh">G</span><h2>Bình luận Gosh</h2><span id="gosh-message-count" class="muted-count">0</span></div>
+                      <button id="clear-gosh-messages" class="text-button clear-messages" type="button" disabled>Xóa</button>
+                    </div>
+                    <form id="gosh-message-form" class="composer">
+                      <textarea id="gosh-message-content" rows="2" aria-label="Bình luận Gosh" placeholder="Nhập mẫu dành cho Gosh…"></textarea>
+                      <button id="add-gosh-message" class="secondary compact" type="submit">Thêm</button>
+                    </form>
+                    <div class="message-region">
+                      <ol id="gosh-message-list" class="message-list"></ol>
+                      <p id="gosh-empty-state" class="empty-state">Chưa có mẫu Gosh</p>
+                    </div>
+                  </section>
 
-                <form id="message-form" class="composer">
-                  <textarea id="message-content" rows="2" aria-label="Nội dung bình luận" placeholder="Nhập bình luận (mỗi dòng 1 bình luận, nhấn Ctrl+Enter để thêm)…"></textarea>
-                  <button class="secondary compact" type="submit">Thêm</button>
-                </form>
-
-                <div class="message-region">
-                  <ol id="message-list" class="message-list"></ol>
-                  <p id="empty-state" class="empty-state">Chưa có bình luận</p>
+                  <section class="comment-panel loco-panel">
+                    <div class="section-heading">
+                      <div class="section-label"><span class="platform-mark loco">L</span><h2>Bình luận Loco</h2><span id="loco-message-count" class="muted-count">0</span></div>
+                      <button id="clear-loco-messages" class="text-button clear-messages" type="button" disabled>Xóa</button>
+                    </div>
+                    <form id="loco-message-form" class="composer">
+                      <textarea id="loco-message-content" rows="2" aria-label="Bình luận Loco" placeholder="Nhập mẫu dành cho Loco…"></textarea>
+                      <button id="add-loco-message" class="secondary compact" type="submit">Thêm</button>
+                    </form>
+                    <div class="message-region">
+                      <ol id="loco-message-list" class="message-list"></ol>
+                      <p id="loco-empty-state" class="empty-state">Chưa có mẫu Loco</p>
+                    </div>
+                  </section>
                 </div>
 
                 <div class="send-dock">
-                  <div class="next-message"><small>Tiếp theo</small><p id="next-message">Kho bình luận đang trống.</p></div>
+                  <div class="next-messages">
+                    <div class="next-message"><small>Gosh tiếp theo</small><p id="next-gosh-message">Chưa có mẫu Gosh.</p></div>
+                    <div class="next-message"><small>Loco tiếp theo</small><p id="next-loco-message">Chưa có mẫu Loco.</p></div>
+                  </div>
                   <div id="bulk-progress" class="bulk-progress" hidden aria-live="polite">
                     <div class="progress-heading"><span id="bulk-status">Đang chuẩn bị…</span><strong id="bulk-count">0/0</strong></div>
                     <div class="progress-track"><span id="bulk-progress-bar"></span></div>
@@ -162,6 +182,6 @@
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=14"></script>
+    <script type="module" src="/app.js?v=15"></script>
   </body>
 </html>

@@ -7,6 +7,14 @@ export const DEFAULT_STATE = Object.freeze({
   accounts: [],
   messages: [],
   cursor: 0,
+  messagesByPlatform: {
+    gosh: [],
+    loco: [],
+  },
+  cursorsByPlatform: {
+    gosh: 0,
+    loco: 0,
+  },
   settings: {
     channelUrl: "",
     channelUrls: {
@@ -61,6 +69,24 @@ export function normalizeChannelUrls(value, legacyChannelUrl = "") {
     if (platform && !urls[platform]) urls[platform] = normalized;
   }
   return urls;
+}
+
+const COMMENT_PLATFORMS = ["gosh", "loco"];
+
+function normalizeStoredMessages(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item.content === "string")
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : randomUUID(),
+      content: item.content.slice(0, 300),
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+    }));
+}
+
+function normalizeCursor(value, length, fallback = 0) {
+  const cursor = Number.isInteger(value) ? value : fallback;
+  return length ? Math.max(0, Math.min(cursor, length - 1)) : 0;
 }
 
 export function normalizeDelay(value) {
@@ -150,19 +176,20 @@ function normalizeState(value) {
   const fallback = cloneDefaultState();
   if (!value || typeof value !== "object") return fallback;
 
-  const messages = Array.isArray(value.messages)
-    ? value.messages
-        .filter((item) => item && typeof item.content === "string")
-        .map((item) => ({
-          id: typeof item.id === "string" ? item.id : randomUUID(),
-          content: item.content.slice(0, 300),
-          createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
-        }))
-    : [];
-
-  const cursor = messages.length
-    ? Math.max(0, Math.min(Number.isInteger(value.cursor) ? value.cursor : 0, messages.length - 1))
-    : 0;
+  const legacyMessages = normalizeStoredMessages(value.messages);
+  const hasPlatformMessages = value.messagesByPlatform && typeof value.messagesByPlatform === "object"
+    && !Array.isArray(value.messagesByPlatform);
+  const messagesByPlatform = {
+    gosh: normalizeStoredMessages(hasPlatformMessages ? value.messagesByPlatform.gosh : legacyMessages),
+    loco: normalizeStoredMessages(hasPlatformMessages ? value.messagesByPlatform.loco : legacyMessages),
+  };
+  const legacyCursor = Number.isInteger(value.cursor) ? value.cursor : 0;
+  const hasPlatformCursors = value.cursorsByPlatform && typeof value.cursorsByPlatform === "object"
+    && !Array.isArray(value.cursorsByPlatform);
+  const cursorsByPlatform = {
+    gosh: normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform.gosh : legacyCursor, messagesByPlatform.gosh.length),
+    loco: normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform.loco : legacyCursor, messagesByPlatform.loco.length),
+  };
 
   let channelUrls = { gosh: "", loco: "" };
   try {
@@ -196,8 +223,12 @@ function normalizeState(value) {
 
   return {
     accounts: normalizeAccounts(value.accounts),
-    messages,
-    cursor,
+    // `messages` and `cursor` remain as compatibility aliases for older
+    // clients; new code reads the per-platform collections below.
+    messages: messagesByPlatform.gosh,
+    cursor: cursorsByPlatform.gosh,
+    messagesByPlatform,
+    cursorsByPlatform,
     settings: {
       channelUrl,
       channelUrls,
@@ -320,46 +351,71 @@ export class JsonStore {
     return { ...deleted };
   }
 
-  getNextMessage() {
-    if (!this.state.messages.length) return null;
-    return this.state.messages[this.state.cursor % this.state.messages.length];
+  getMessages(platform = "gosh") {
+    const cleanPlatform = normalizePlatform(platform);
+    return this.state.messagesByPlatform[cleanPlatform];
   }
 
-  async addMessage(content) {
+  getNextMessage(platform = "gosh") {
+    const messages = this.getMessages(platform);
+    const cursor = this.state.cursorsByPlatform[normalizePlatform(platform)];
+    if (!messages.length) return null;
+    return messages[cursor % messages.length];
+  }
+
+  async addMessage(content, platform = "gosh") {
+    const cleanPlatform = normalizePlatform(platform);
     const items = normalizeMessages(content);
     const now = new Date().toISOString();
     const created = [];
+    const messages = this.getMessages(cleanPlatform);
     for (const text of items) {
       const message = {
         id: randomUUID(),
         content: text,
         createdAt: now,
       };
-      this.state.messages.push(message);
+      messages.push(message);
       created.push(message);
     }
+    this.#syncLegacyMessageAliases();
     await this.persist();
     return created.length === 1 ? created[0] : created;
   }
 
-  async deleteMessage(id) {
-    const index = this.state.messages.findIndex((message) => message.id === id);
-    if (index < 0) return false;
+  async deleteMessage(id, platform = null) {
+    const platforms = platform ? [normalizePlatform(platform)] : COMMENT_PLATFORMS;
+    let found = null;
+    for (const itemPlatform of platforms) {
+      const messages = this.getMessages(itemPlatform);
+      const index = messages.findIndex((message) => message.id === id);
+      if (index >= 0) {
+        found = { itemPlatform, messages, index };
+        break;
+      }
+    }
+    if (!found) return false;
 
-    this.state.messages.splice(index, 1);
-    if (!this.state.messages.length) this.state.cursor = 0;
-    else if (index < this.state.cursor) this.state.cursor -= 1;
-    else if (this.state.cursor >= this.state.messages.length) this.state.cursor = 0;
+    const { itemPlatform, messages, index } = found;
+    messages.splice(index, 1);
+    const currentCursor = this.state.cursorsByPlatform[itemPlatform];
+    this.state.cursorsByPlatform[itemPlatform] = messages.length
+      ? index < currentCursor ? currentCursor - 1 : Math.min(currentCursor, messages.length - 1)
+      : 0;
+    this.#syncLegacyMessageAliases();
     await this.persist();
     return true;
   }
 
-  async clearMessages() {
-    const deletedCount = this.state.messages.length;
+  async clearMessages(platform = null) {
+    const platforms = platform ? [normalizePlatform(platform)] : COMMENT_PLATFORMS;
+    const deletedCount = platforms.reduce((total, itemPlatform) => total + this.getMessages(itemPlatform).length, 0);
     if (!deletedCount) return 0;
-
-    this.state.messages = [];
-    this.state.cursor = 0;
+    for (const itemPlatform of platforms) {
+      this.state.messagesByPlatform[itemPlatform] = [];
+      this.state.cursorsByPlatform[itemPlatform] = 0;
+    }
+    this.#syncLegacyMessageAliases();
     await this.persist();
     return deletedCount;
   }
@@ -406,13 +462,23 @@ export class JsonStore {
     };
   }
 
-  async markSent({ countForRename = true } = {}) {
+  async markSent({ platforms, platform, countForRename = true } = {}) {
     this.state.lastSentAt = new Date().toISOString();
     if (countForRename) this.state.commentsSinceRename += 1;
-    if (this.state.messages.length) {
-      this.state.cursor = (this.state.cursor + 1) % this.state.messages.length;
+    const selectedPlatforms = platforms || (platform ? [platform] : ["gosh"]);
+    for (const itemPlatform of [...new Set(selectedPlatforms.map((value) => normalizePlatform(value)))]) {
+      const messages = this.getMessages(itemPlatform);
+      if (messages.length) {
+        this.state.cursorsByPlatform[itemPlatform] = (this.state.cursorsByPlatform[itemPlatform] + 1) % messages.length;
+      }
     }
+    this.#syncLegacyMessageAliases();
     await this.persist();
+  }
+
+  #syncLegacyMessageAliases() {
+    this.state.messages = this.state.messagesByPlatform.gosh;
+    this.state.cursor = this.state.cursorsByPlatform.gosh;
   }
 
   shouldRename() {

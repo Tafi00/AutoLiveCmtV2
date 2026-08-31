@@ -19,8 +19,8 @@ Nếu cần chạy giao diện web cục bộ để phát triển, dùng `npm ru
 
 1. Mở **Tài khoản**, chọn Gosh/Loco, bấm **Thêm tài khoản** rồi đăng nhập trong cửa sổ Chrome vừa mở.
 2. Sau khi đăng nhập, app tự lấy tên hiển thị từ hồ sơ/menu tài khoản và lưu cho session đó. Bật các tài khoản cần tham gia lượt gửi.
-3. Mở **Live**, nhập URL phòng Gosh và URL `https://loco.com/stream/{id}` vào hai ô riêng rồi thêm các mẫu bình luận. Có thể chỉ nhập một URL nếu chỉ chạy một website.
-4. Bấm **Gửi song song** để gửi mẫu kế tiếp đồng thời tới Gosh và Loco, hoặc **Chạy tất cả** để gửi toàn bộ kho.
+3. Mở **Live**, nhập URL phòng Gosh và URL `https://loco.com/stream/{id}` vào hai ô riêng. Thêm mẫu vào đúng khung **Bình luận Gosh** hoặc **Bình luận Loco**; có thể chỉ nhập một website nếu cần.
+4. Bấm **Gửi song song** để gửi mẫu kế tiếp của từng khung đồng thời tới Gosh và Loco, hoặc **Chạy tất cả** để gửi toàn bộ các kho.
 5. Mở **Kiểm tra API** để xem HTTP status, độ trễ và endpoint đang lỗi. Mở **Thiết lập** để đặt khoảng nghỉ; đổi tên tự động hiện áp dụng cho Gosh.
 
 URL phòng và các thiết lập được tự lưu; không cần bấm nút lưu.
@@ -31,7 +31,7 @@ Khi gửi, Gosh tái sử dụng WebSocket chat của website; Loco tái sử d�
 
 Màn kiểm tra API chỉ gọi danh sách endpoint cố định của ứng dụng, không nhận URL tùy ý. HTTP `401/403` được xem là endpoint vẫn hoạt động nhưng cần session; lỗi mạng, timeout và `5xx` được báo hỏng.
 
-Mỗi mẫu chọn một tài khoản đang bật của từng website rồi gửi tới Gosh và Loco cùng lúc. Khi có nhiều tài khoản trên cùng một website, ứng dụng luân phiên tài khoản ở các mẫu tiếp theo. Nếu một website lỗi hoặc hết phiên đăng nhập, website còn lại vẫn tiếp tục. Khoảng nghỉ được áp dụng sau khi cả hai website hoàn tất mẫu hiện tại. Trong lúc gửi, kho tin, cấu hình và danh sách tài khoản được khóa để giữ đúng thứ tự. Đổi tên chỉ áp dụng cho tài khoản Gosh.
+Mỗi lượt chọn mẫu kế tiếp độc lập từ kho Gosh và kho Loco rồi gửi tới hai website cùng lúc. Khi có nhiều tài khoản trên cùng một website, ứng dụng luân phiên tài khoản ở các lượt tiếp theo. Nếu một website lỗi hoặc hết phiên đăng nhập, website còn lại vẫn tiếp tục. Khoảng nghỉ được áp dụng sau khi các website đang có mẫu hoàn tất lượt hiện tại. Trong lúc gửi, kho tin, cấu hình và danh sách tài khoản được khóa để giữ đúng thứ tự. Đổi tên chỉ áp dụng cho tài khoản Gosh.
 
 ## Dữ liệu cục bộ
 
