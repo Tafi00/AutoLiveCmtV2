@@ -166,6 +166,49 @@ test("gửi hai mẫu riêng tới Gosh và Loco theo cách song song", async ()
   }
 });
 
+test("không dùng URL Gosh cho tài khoản Loco khi ô Loco để trống", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "server-independent-url-test-"));
+  const instance = await startServer({ port: 0, dataDirectory: tempDir });
+  const port = instance.server.address().port;
+
+  try {
+    await instance.store.addAccount("Loco 1", "loco");
+    await instance.store.updateSettings({
+      channelUrls: {
+        gosh: "https://gosh.com/vi/16427037",
+        loco: "",
+      },
+      platform: "loco",
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    await instance.store.addMessage("Mẫu Gosh", "gosh");
+    await instance.store.addMessage("Mẫu Loco", "loco");
+
+    const calls = [];
+    instance.sessions.sendComment = async (accountId, input, platform) => {
+      calls.push({ accountId, input, platform });
+      return { sentAt: new Date().toISOString(), transport: "test" };
+    };
+    instance.sessions.statuses = async (accounts) => accounts.map((account) => ({
+      ...account,
+      session: { running: true, loginState: "signed_in", readyToComment: true },
+    }));
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/comments/send-next`, { method: "POST" });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.settings.channelUrls.gosh, "https://gosh.com/vi/16427037");
+    assert.equal(body.settings.channelUrls.loco, "");
+    assert.equal(body.result.successCount, 1);
+    assert.deepEqual(calls.map((call) => call.platform), ["gosh"]);
+  } finally {
+    await instance.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("Chạy tất cả xử lý hết từng kho riêng khi số mẫu khác nhau", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "server-bulk-platform-queues-test-"));
   const instance = await startServer({ port: 0, dataDirectory: tempDir });

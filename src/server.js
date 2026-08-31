@@ -128,9 +128,10 @@ function accountOrThrow(accountId) {
 }
 
 function channelUrlForPlatform(state, platform) {
-  return state.settings.channelUrls?.[platform]
-    || (state.settings.platform === platform ? state.settings.channelUrl : "")
-    || "";
+  if (state.settings.channelUrls && typeof state.settings.channelUrls === "object") {
+    return state.settings.channelUrls[platform] || "";
+  }
+  return state.settings.platform === platform ? state.settings.channelUrl || "" : "";
 }
 
 function availableDestinations(state) {

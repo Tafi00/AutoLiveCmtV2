@@ -159,9 +159,10 @@ function setBusy(button, busy, label) {
 }
 
 function channelUrlFor(platform) {
-  return state?.settings?.channelUrls?.[platform]
-    || (state?.settings?.platform === platform ? state?.settings?.channelUrl : "")
-    || "";
+  if (state?.settings?.channelUrls && typeof state.settings.channelUrls === "object") {
+    return state.settings.channelUrls[platform] || "";
+  }
+  return state?.settings?.platform === platform ? state.settings.channelUrl || "" : "";
 }
 
 function enabledAccounts() {
@@ -593,6 +594,9 @@ function syncSettingControl(control, value) {
 }
 
 function renderSettings() {
+  // Background status refreshes must not overwrite URL/settings fields while
+  // the user's latest edit is still waiting to be saved.
+  if (settingsDirty || settingsSaveRunning) return;
   syncSettingControl(elements.channelUrlGosh, channelUrlFor("gosh"));
   syncSettingControl(elements.channelUrlLoco, channelUrlFor("loco"));
   syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);

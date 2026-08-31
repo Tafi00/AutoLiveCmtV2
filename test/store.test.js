@@ -99,6 +99,44 @@ test("lưu đồng thời phòng live Gosh và Loco", async () => {
   }
 });
 
+test("không gán URL của một website sang ô website còn lại", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "independent-platform-urls-"));
+  const goshUrl = "https://gosh.com/vi/16427037";
+  const locoUrl = "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a";
+  try {
+    await writeFile(join(directory, "state.json"), JSON.stringify({
+      settings: {
+        channelUrl: goshUrl,
+        channelUrls: { gosh: goshUrl, loco: "" },
+        platform: "loco",
+        delaySeconds: 0,
+        displayNames: [],
+        renameEveryComments: 1,
+      },
+    }));
+
+    const store = new JsonStore(directory);
+    const migrated = await store.init();
+    assert.equal(migrated.settings.channelUrls.gosh, goshUrl);
+    assert.equal(migrated.settings.channelUrls.loco, "");
+    assert.equal(migrated.settings.platform, "gosh");
+    assert.equal(migrated.settings.channelUrl, goshUrl);
+
+    const locoOnly = await store.updateSettings({
+      channelUrls: { gosh: "", loco: locoUrl },
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    assert.equal(locoOnly.channelUrls.gosh, "");
+    assert.equal(locoOnly.channelUrls.loco, locoUrl);
+    assert.equal(locoOnly.platform, "loco");
+    assert.equal(locoOnly.channelUrl, locoUrl);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("giữ kho bình luận và con trỏ riêng cho từng nền tảng", async () => {
   const directory = await mkdtemp(join(tmpdir(), "platform-message-queues-"));
   try {

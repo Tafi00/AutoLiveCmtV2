@@ -73,6 +73,11 @@ export function normalizeChannelUrls(value, legacyChannelUrl = "") {
 
 const COMMENT_PLATFORMS = ["gosh", "loco"];
 
+function resolveSettingsPlatform(channelUrls, preferredPlatform) {
+  if (channelUrls[preferredPlatform]) return preferredPlatform;
+  return COMMENT_PLATFORMS.find((platform) => channelUrls[platform]) || preferredPlatform;
+}
+
 function normalizeStoredMessages(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -197,8 +202,9 @@ function normalizeState(value) {
   } catch {
     channelUrls = { gosh: "", loco: "" };
   }
-  const platform = normalizePlatform(value.settings?.platform, platformFromUrl(value.settings?.channelUrl) || "gosh");
-  const channelUrl = channelUrls[platform] || channelUrls.gosh || channelUrls.loco;
+  const preferredPlatform = normalizePlatform(value.settings?.platform, platformFromUrl(value.settings?.channelUrl) || "gosh");
+  const platform = resolveSettingsPlatform(channelUrls, preferredPlatform);
+  const channelUrl = channelUrls[platform] || "";
 
   let delaySeconds = fallback.settings.delaySeconds;
   try {
@@ -422,18 +428,20 @@ export class JsonStore {
 
   async updateSettings(input) {
     const legacyPlatform = platformFromUrl(input.channelUrl);
-    const platform = normalizePlatform(input.platform, legacyPlatform || this.state.settings.platform);
+    const preferredPlatform = normalizePlatform(input.platform, legacyPlatform || this.state.settings.platform);
     let channelUrls;
     if (Object.hasOwn(input, "channelUrls")) {
       channelUrls = normalizeChannelUrls(input.channelUrls);
     } else {
       channelUrls = normalizeChannelUrls(this.state.settings.channelUrls);
-      channelUrls[legacyPlatform || platform] = normalizeChannelUrl(input.channelUrl, {
-        platform: legacyPlatform || platform,
+      const targetPlatform = legacyPlatform || preferredPlatform;
+      channelUrls[targetPlatform] = normalizeChannelUrl(input.channelUrl, {
+        platform: targetPlatform,
       });
     }
+    const platform = resolveSettingsPlatform(channelUrls, preferredPlatform);
     const nextSettings = {
-      channelUrl: channelUrls[platform] || channelUrls.gosh || channelUrls.loco,
+      channelUrl: channelUrls[platform] || "",
       channelUrls,
       platform,
       delaySeconds: normalizeDelay(input.delaySeconds),
