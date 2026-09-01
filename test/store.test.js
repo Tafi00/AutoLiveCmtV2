@@ -8,6 +8,7 @@ import {
   normalizeDelay,
   normalizeDisplayNames,
   normalizeGoshUrl,
+  normalizeChannelLinks,
   normalizeChannelUrl,
   normalizeAccountName,
   normalizeRenameEveryComments,
@@ -27,6 +28,23 @@ test("chấp nhận phòng live Gosh và Loco, từ chối URL ngoài hệ thố
   assert.equal(normalizeChannelUrl("https://loco.com/streamers/Supreme.Heart109"), "https://loco.com/streamers/Supreme.Heart109");
   assert.throws(() => normalizeChannelUrl("https://loco.com/browse"), /chưa phải phòng live/);
   assert.throws(() => normalizeChannelUrl("https://example.com/live"));
+});
+
+test("chuẩn hóa nhiều phòng live riêng cho từng website", () => {
+  const goshOne = "https://gosh.com/vi/16427037";
+  const goshTwo = "https://gosh6.app/15942759";
+  const locoOne = "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a";
+  assert.deepEqual(normalizeChannelLinks({
+    gosh: [` ${goshOne} `, goshTwo, goshOne, ""],
+    loco: [locoOne],
+  }), {
+    gosh: [goshOne, goshTwo],
+    loco: [locoOne],
+  });
+  assert.throws(() => normalizeChannelLinks({
+    gosh: ["https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"],
+    loco: [],
+  }), /không khớp nền tảng/);
 });
 
 test("chấp nhận mọi thời gian chờ nguyên không âm", () => {
@@ -94,6 +112,40 @@ test("lưu đồng thời phòng live Gosh và Loco", async () => {
 
     assert.equal(settings.channelUrls.gosh, "https://gosh.com/vi/16427037");
     assert.equal(settings.channelUrls.loco, "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
+    assert.deepEqual(settings.channelLinks, {
+      gosh: ["https://gosh.com/vi/16427037"],
+      loco: ["https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"],
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("lưu và tải lại nhiều phòng live trong cùng một website", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "multi-room-settings-"));
+  const channelLinks = {
+    gosh: ["https://gosh.com/vi/16427037", "https://gosh6.app/15942759"],
+    loco: [
+      "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a",
+      "https://loco.com/streamers/Supreme.Heart109",
+    ],
+  };
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    const settings = await store.updateSettings({
+      channelLinks,
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    assert.deepEqual(settings.channelLinks, channelLinks);
+    assert.equal(settings.channelUrls.gosh, channelLinks.gosh[0]);
+    assert.equal(settings.channelUrls.loco, channelLinks.loco[0]);
+
+    const reloaded = new JsonStore(directory);
+    const state = await reloaded.init();
+    assert.deepEqual(state.settings.channelLinks, channelLinks);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

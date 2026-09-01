@@ -18,15 +18,19 @@ export function healthTargets(channelUrls = "") {
     { id: "loco-profile-me", platform: "loco", name: "Hồ sơ API", url: "https://api.loco.com/ivr/v1/profile/me/" },
     { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v3/user/refresh_token/" },
   ];
-  const locoChannelUrl = channelUrls && typeof channelUrls === "object"
-    ? channelUrls.loco || ""
-    : channelUrls;
-  const streamId = getLocoStreamId(locoChannelUrl);
-  if (streamId) {
+  const locoChannelUrls = channelUrls && typeof channelUrls === "object"
+    ? (Array.isArray(channelUrls.loco) ? channelUrls.loco : [channelUrls.loco || ""])
+    : [channelUrls];
+  const seenStreamIds = new Set();
+  for (const locoChannelUrl of locoChannelUrls) {
+    const streamId = getLocoStreamId(locoChannelUrl);
+    if (!streamId || seenStreamIds.has(streamId)) continue;
+    seenStreamIds.add(streamId);
+    const roomIndex = seenStreamIds.size - 1;
     targets.push({
-      id: "loco-chat",
+      id: roomIndex ? `loco-chat-${roomIndex}` : "loco-chat",
       platform: "loco",
-      name: "Chat V2 API · phòng hiện tại",
+      name: roomIndex ? `Chat V2 API · phòng Loco ${roomIndex + 1}` : "Chat V2 API · phòng hiện tại",
       url: `https://api.loco.com/chat/v2/streams/${streamId}/history/`,
     });
   }

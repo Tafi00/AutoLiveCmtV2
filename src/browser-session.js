@@ -530,6 +530,18 @@ function isAtTarget(currentValue, targetValue) {
   }
 }
 
+// A browser profile can have several live rooms open at once.  Use the
+// origin/path (without locale prefixes or tracking query strings) as the
+// stable key so each room gets its own page and its own send queue.
+function roomPageKey(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${canonicalPath(url.href)}`;
+  } catch {
+    return String(value || "");
+  }
+}
+
 export class BrowserSession {
   constructor({ profileDirectory, platform = "gosh" }) {
     this.profileDirectory = profileDirectory;
@@ -538,6 +550,8 @@ export class BrowserSession {
     this.context = null;
     this.commentPage = null;
     this.profilePage = null;
+    this.roomPages = new Map();
+    this.roomLocks = new Map();
     this.launching = null;
     this.identity = null;
     this.identityDetection = null;
@@ -579,6 +593,52 @@ export class BrowserSession {
     if (!this.commentPage || this.commentPage.isClosed()) {
       this.commentPage = this.context.pages()[0] || (await this.context.newPage());
     }
+  }
+
+  #rememberRoomPage(key, page) {
+    this.roomPages.set(key, page);
+    page.once?.("close", () => {
+      if (this.roomPages.get(key) === page) this.roomPages.delete(key);
+    });
+    return page;
+  }
+
+  async #getRoomPage(safeUrl) {
+    await this.#ensureContext();
+    const key = roomPageKey(safeUrl);
+    let page = this.roomPages.get(key);
+    if (!page || page.isClosed()) {
+      const assignedPages = new Set(this.roomPages.values());
+      page = this.context.pages().find((candidate) => {
+        if (candidate.isClosed() || candidate === this.profilePage || assignedPages.has(candidate)) return false;
+        try {
+          return isAtTarget(candidate.url(), safeUrl);
+        } catch {
+          return false;
+        }
+      });
+
+      if (!page) {
+        // Reuse the primary page when it is still blank; otherwise create a
+        // dedicated tab so another configured room cannot navigate it away.
+        const primaryUrl = this.commentPage && !this.commentPage.isClosed()
+          ? this.commentPage.url()
+          : "";
+        if (this.commentPage && !this.commentPage.isClosed()
+          && !assignedPages.has(this.commentPage)
+          && (!primaryUrl || primaryUrl === "about:blank")) {
+          page = this.commentPage;
+        } else {
+          page = await this.context.newPage();
+        }
+      }
+      this.#rememberRoomPage(key, page);
+    }
+
+    if (!isAtTarget(page.url(), safeUrl)) {
+      await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
+    return page;
   }
 
   async #launch() {
@@ -631,6 +691,8 @@ export class BrowserSession {
       this.context = null;
       this.commentPage = null;
       this.profilePage = null;
+      this.roomPages.clear();
+      this.roomLocks.clear();
     });
     this.commentPage = this.context.pages()[0] || (await this.context.newPage());
   }
@@ -659,6 +721,8 @@ export class BrowserSession {
     this.context = null;
     this.commentPage = null;
     this.profilePage = null;
+    this.roomPages.clear();
+    this.roomLocks.clear();
     await mkdir(this.profileDirectory, { recursive: true });
     await waitForProfileUnlock(this.profileDirectory);
 
@@ -973,24 +1037,26 @@ export class BrowserSession {
   }
 
   async #refreshCommentPageIdentity() {
-    const page = this.commentPage;
-    try {
-      if (!page || page.isClosed()) return false;
+    const pages = [...new Set([this.commentPage, ...this.roomPages.values()])]
+      .filter((page) => page && !page.isClosed());
+    if (!pages.length) return false;
 
-      // A live page keeps the signed-in account in a client-side store. Reload
-      // it after a successful profile update so the visible account badge,
-      // chat composer and the website's own send path all pick up the new name.
-      // There is no page to refresh when the rename used a temporary context.
-      const pageUrl = page.url();
-      if (!pageUrl || pageUrl === "about:blank") return false;
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForTimeout(250);
-      return true;
-    } catch {
-      // The profile update has already succeeded. A transient navigation
-      // failure must not turn it into a reported rename failure.
-      return false;
-    }
+    // Every open room keeps a small client-side store with the account name.
+    // Refresh all of them after a successful rename so a later send from any
+    // configured link uses the new identity. A transient failure on one tab
+    // must not turn an already-successful profile update into an error.
+    const refreshed = await Promise.all(pages.map(async (page) => {
+      try {
+        const pageUrl = page.url();
+        if (!pageUrl || pageUrl === "about:blank") return false;
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+        await page.waitForTimeout(250);
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    return refreshed.some(Boolean);
   }
 
   async updateDisplayName(displayName) {
@@ -1268,18 +1334,16 @@ export class BrowserSession {
     }
   }
 
-  async sendComment({ channelUrl, content }) {
-    const safeUrl = assertPlatformUrl(channelUrl, this.platform);
-    const cleanContent = String(content ?? "").trim();
-    if (!cleanContent) throw new Error("Không có nội dung để gửi.");
-
+  async #sendCommentOnRoom({ safeUrl, cleanContent }) {
     // A visible/manual Chrome instance owns the same persistent profile. A
     // user-triggered send should hand that profile over to the controlled
     // headless context instead of failing with USER_ACTION_REQUIRED.
     await this.#closeManualLoginForProfileUse();
-    await this.open(safeUrl);
-    const status = await this.status();
-    if (status.loginState === "signed_out") {
+    const page = await this.#getRoomPage(safeUrl);
+    const loginButton = page.getByRole("button", {
+      name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
+    });
+    if (await loginButton.isVisible().catch(() => false)) {
       const error = new Error("Bạn cần đăng nhập trong cửa sổ Chrome trước khi gửi.");
       error.code = "LOGIN_REQUIRED";
       throw error;
@@ -1287,7 +1351,7 @@ export class BrowserSession {
 
     let directResult = null;
     if (this.platform === "loco") {
-      const matureConfirmation = this.commentPage
+      const matureConfirmation = page
         .getByRole("button", { name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i })
         .first();
       if (await matureConfirmation.isVisible().catch(() => false)) {
@@ -1298,7 +1362,7 @@ export class BrowserSession {
 
       const transportDeadline = Date.now() + 8_000;
       do {
-        directResult = await this.commentPage.evaluate(sendCommentViaLocoTransport, {
+        directResult = await page.evaluate(sendCommentViaLocoTransport, {
           content: cleanContent,
           streamId: getLocoStreamId(safeUrl),
           displayName: this.identity?.displayName || "",
@@ -1309,13 +1373,13 @@ export class BrowserSession {
           reason: "page_evaluate_failed",
         }));
         if (directResult.status === "sent" || Date.now() >= transportDeadline) break;
-        await this.commentPage.waitForTimeout(400);
+        await page.waitForTimeout(400);
       } while (true);
 
       if (directResult.status === "sent") {
         return {
           sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-          url: this.commentPage.url(),
+          url: page.url(),
           transport: "https",
           provider: directResult.provider,
           providerMessageId: directResult.providerMessageId,
@@ -1323,7 +1387,7 @@ export class BrowserSession {
       }
     }
 
-    const textBox = this.commentPage
+    const textBox = page
       .locator(this.platform === "loco"
         ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
         : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
@@ -1338,7 +1402,7 @@ export class BrowserSession {
     await textBox.fill(cleanContent);
 
     if (this.platform === "gosh") {
-      directResult = await this.commentPage.evaluate(sendCommentViaWebsiteTransport, {
+      directResult = await page.evaluate(sendCommentViaWebsiteTransport, {
         content: cleanContent,
         displayName: this.identity?.displayName || "",
         timeoutMs: 10_000,
@@ -1352,7 +1416,7 @@ export class BrowserSession {
         await textBox.fill("").catch(() => {});
         return {
           sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-          url: this.commentPage.url(),
+          url: page.url(),
           transport: "websocket",
           provider: directResult.provider,
           providerMessageId: directResult.providerMessageId,
@@ -1362,7 +1426,7 @@ export class BrowserSession {
 
     await textBox.press("Enter");
 
-    const sendButton = this.commentPage.locator(
+    const sendButton = page.locator(
       'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
     ).first();
 
@@ -1372,13 +1436,34 @@ export class BrowserSession {
       }
     }
 
-    await this.commentPage.waitForTimeout(500);
+    await page.waitForTimeout(500);
     return {
       sentAt: new Date().toISOString(),
-      url: this.commentPage.url(),
+      url: page.url(),
       transport: "browser-ui",
       provider: this.platform,
     };
+  }
+
+  async sendComment({ channelUrl, content }) {
+    const safeUrl = assertPlatformUrl(channelUrl, this.platform);
+    const cleanContent = String(content ?? "").trim();
+    if (!cleanContent) throw new Error("Không có nội dung để gửi.");
+
+    // Serialize sends to the same room (so one account cannot overwrite its
+    // own composer), while allowing different configured rooms to run in
+    // parallel on separate tabs.
+    const key = roomPageKey(safeUrl);
+    const previous = this.roomLocks.get(key) || Promise.resolve();
+    const current = previous
+      .catch(() => {})
+      .then(() => this.#sendCommentOnRoom({ safeUrl, cleanContent }));
+    this.roomLocks.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (this.roomLocks.get(key) === current) this.roomLocks.delete(key);
+    }
   }
 
   async close() {
@@ -1395,5 +1480,7 @@ export class BrowserSession {
     this.context = null;
     this.commentPage = null;
     this.profilePage = null;
+    this.roomPages.clear();
+    this.roomLocks.clear();
   }
 }

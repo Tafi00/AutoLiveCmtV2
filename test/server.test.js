@@ -166,6 +166,58 @@ test("gửi hai mẫu riêng tới Gosh và Loco theo cách song song", async ()
   }
 });
 
+test("một tài khoản gửi cùng mẫu song song tới nhiều phòng Gosh", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "server-parallel-room-test-"));
+  const instance = await startServer({ port: 0, dataDirectory: tempDir });
+  const port = instance.server.address().port;
+  const goshLinks = [
+    "https://gosh.com/vi/16427037",
+    "https://gosh6.app/15942759",
+    "https://gosh.com/vi/16248988",
+  ];
+
+  try {
+    await instance.store.updateSettings({
+      channelLinks: { gosh: goshLinks, loco: [] },
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    await instance.store.addMessage("Mẫu Gosh 1\nMẫu Gosh 2", "gosh");
+    instance.sessions.statuses = async (accounts) => accounts.map((account) => ({
+      ...account,
+      session: { running: true, loginState: "signed_in", readyToComment: true },
+    }));
+
+    const calls = [];
+    let active = 0;
+    let maximumActive = 0;
+    instance.sessions.sendComment = async (accountId, input, platform) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      calls.push({ accountId, input, platform });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { sentAt: new Date().toISOString(), transport: "test" };
+    };
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/comments/send-next`, { method: "POST" });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+
+    assert.equal(maximumActive, 3);
+    assert.equal(body.result.totalLinks, 3);
+    assert.equal(body.result.successCount, 3);
+    assert.deepEqual(new Set(calls.map((call) => call.input.channelUrl)), new Set(goshLinks));
+    assert.deepEqual(new Set(calls.map((call) => call.input.content)), new Set(["Mẫu Gosh 1"]));
+    assert.deepEqual(new Set(calls.map((call) => call.accountId)), new Set(["default"]));
+    assert.equal(body.nextMessages.gosh.content, "Mẫu Gosh 2");
+  } finally {
+    await instance.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("không dùng URL Gosh cho tài khoản Loco khi ô Loco để trống", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "server-independent-url-test-"));
   const instance = await startServer({ port: 0, dataDirectory: tempDir });
@@ -253,6 +305,56 @@ test("Chạy tất cả xử lý hết từng kho riêng khi số mẫu khác nh
     assert.equal(instance.bulkSend.failed, 0);
     assert.deepEqual(calls.filter((call) => call.platform === "gosh").map((call) => call.content), ["Gosh 1", "Gosh 2", "Gosh 3"]);
     assert.deepEqual(calls.filter((call) => call.platform === "loco").map((call) => call.content), ["Loco 1"]);
+  } finally {
+    await instance.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("Chạy tất cả gửi đủ từng mẫu trên mỗi link của cùng website", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "server-bulk-multi-room-test-"));
+  const instance = await startServer({ port: 0, dataDirectory: tempDir });
+  const port = instance.server.address().port;
+  const goshLinks = [
+    "https://gosh.com/vi/16427037",
+    "https://gosh6.app/15942759",
+  ];
+
+  try {
+    await instance.store.updateSettings({
+      channelLinks: { gosh: goshLinks, loco: [] },
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    await instance.store.addMessage("Gosh 1\nGosh 2", "gosh");
+    instance.sessions.statuses = async (accounts) => accounts.map((account) => ({
+      ...account,
+      session: { running: true, loginState: "signed_in", readyToComment: true },
+    }));
+
+    const calls = [];
+    instance.sessions.sendComment = async (_accountId, input, platform) => {
+      calls.push({ content: input.content, channelUrl: input.channelUrl, platform });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { sentAt: new Date().toISOString(), transport: "test" };
+    };
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/comments/send-all`, { method: "POST" });
+    assert.equal(response.status, 202);
+    const startingState = await response.json();
+    assert.equal(startingState.bulkSend.total, 4);
+    assert.deepEqual(startingState.bulkSend.linkTotals, { gosh: 2, loco: 0 });
+    while (instance.bulkSend.running) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    assert.equal(instance.bulkSend.sent, 4);
+    assert.equal(instance.bulkSend.failed, 0);
+    for (const link of goshLinks) {
+      assert.deepEqual(
+        calls.filter((call) => call.channelUrl === link).map((call) => call.content),
+        ["Gosh 1", "Gosh 2"],
+      );
+    }
   } finally {
     await instance.close();
     await rm(tempDir, { recursive: true, force: true });

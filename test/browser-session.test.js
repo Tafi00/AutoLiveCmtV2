@@ -47,6 +47,64 @@ test("không cho phiên Loco dùng chức năng đổi tên", async () => {
   await assert.rejects(locoBrowser.updateDisplayName("Tên mới"), /chỉ áp dụng cho tài khoản Gosh/);
 });
 
+test("một browser session giữ tab riêng và gửi song song tới nhiều phòng", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const pages = [];
+  const createLocator = () => ({
+    first() { return this; },
+    async isVisible() { return false; },
+    async waitFor() {},
+    async fill() {},
+  });
+  const createPage = (name) => {
+    let currentUrl = "about:blank";
+    const page = {
+      name,
+      isClosed: () => false,
+      url: () => currentUrl,
+      once: () => {},
+      getByRole: () => createLocator(),
+      locator: () => createLocator(),
+      goto: async (url) => { currentUrl = url; },
+      waitForTimeout: async () => {},
+      evaluate: async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return {
+          status: "sent",
+          sentAt: Date.now(),
+          provider: name,
+          providerMessageId: name,
+        };
+      },
+    };
+    pages.push(page);
+    return page;
+  };
+
+  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-multi-room-profile", platform: "gosh" });
+  browser.commentPage = createPage("room-1");
+  browser.context = {
+    pages: () => pages,
+    newPage: async () => createPage(`room-${pages.length + 1}`),
+  };
+
+  const urls = ["https://gosh.com/vi/16427037", "https://gosh6.app/15942759"];
+  const results = await Promise.all(urls.map((channelUrl) => browser.sendComment({
+    channelUrl,
+    content: "Cùng một mẫu",
+  })));
+
+  assert.equal(maximumActive, 2);
+  assert.equal(pages.length, 2);
+  assert.equal(browser.roomPages.size, 2);
+  assert.deepEqual(new Set(pages.map((page) => page.url())), new Set(urls));
+  assert.deepEqual(results.map((result) => result.transport), ["websocket", "websocket"]);
+});
+
 test("chờ Chrome nhả khóa profile trước khi mở tiến trình tiếp theo", async () => {
   const directory = await mkdtemp(join(tmpdir(), "live-comment-profile-"));
   const lockPath = join(directory, "SingletonLock");

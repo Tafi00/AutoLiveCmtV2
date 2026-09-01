@@ -21,6 +21,10 @@ export const DEFAULT_STATE = Object.freeze({
       gosh: "",
       loco: "",
     },
+    channelLinks: {
+      gosh: [],
+      loco: [],
+    },
     platform: "gosh",
     delaySeconds: 30,
     displayNames: [],
@@ -54,28 +58,70 @@ export function normalizeGoshUrl(value, { allowEmpty = true } = {}) {
 
 export { normalizeChannelUrl };
 
-export function normalizeChannelUrls(value, legacyChannelUrl = "") {
-  const urls = { gosh: "", loco: "" };
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const platform of Object.keys(urls)) {
-      urls[platform] = normalizeChannelUrl(value[platform], { platform });
+export const MAX_CHANNEL_LINKS = 20;
+
+function channelLinkEntries(value) {
+  if (Array.isArray(value)) return value;
+  if (value === null || value === undefined) return [];
+  return String(value).split(/\r?\n/);
+}
+
+function normalizePlatformLinks(value, platform) {
+  const links = [];
+  for (const entry of channelLinkEntries(value)) {
+    const raw = String(entry ?? "").trim();
+    if (!raw) continue;
+    const normalized = normalizeChannelUrl(raw, { platform });
+    if (!links.includes(normalized)) links.push(normalized);
+  }
+  if (links.length > MAX_CHANNEL_LINKS) {
+    throw new Error(`Mỗi website chỉ được thêm tối đa ${MAX_CHANNEL_LINKS} link live.`);
+  }
+  return links;
+}
+
+export function normalizeChannelLinks(value, legacyChannelUrls = "") {
+  const links = { gosh: [], loco: [] };
+  const hasObjectValue = value && typeof value === "object" && !Array.isArray(value);
+  if (hasObjectValue) {
+    for (const platform of Object.keys(links)) {
+      links[platform] = normalizePlatformLinks(value[platform], platform);
     }
+  } else if (value !== null && value !== undefined && String(value).trim()) {
+    const normalized = normalizeChannelUrl(value);
+    const platform = platformFromUrl(normalized);
+    if (platform) links[platform] = [normalized];
   }
 
-  const legacy = String(legacyChannelUrl ?? "").trim();
-  if (legacy) {
-    const normalized = normalizeChannelUrl(legacy);
-    const platform = platformFromUrl(normalized);
-    if (platform && !urls[platform]) urls[platform] = normalized;
+  if (legacyChannelUrls && typeof legacyChannelUrls === "object" && !Array.isArray(legacyChannelUrls)) {
+    for (const platform of Object.keys(links)) {
+      if (links[platform].length) continue;
+      links[platform] = normalizePlatformLinks(legacyChannelUrls[platform], platform);
+    }
+  } else {
+    const legacy = String(legacyChannelUrls ?? "").trim();
+    if (legacy) {
+      const normalized = normalizeChannelUrl(legacy);
+      const platform = platformFromUrl(normalized);
+      if (platform && !links[platform].length) links[platform] = [normalized];
+    }
   }
-  return urls;
+  return links;
+}
+
+export function normalizeChannelUrls(value, legacyChannelUrl = "") {
+  const links = normalizeChannelLinks(value, legacyChannelUrl);
+  return {
+    gosh: links.gosh[0] || "",
+    loco: links.loco[0] || "",
+  };
 }
 
 const COMMENT_PLATFORMS = ["gosh", "loco"];
 
 function resolveSettingsPlatform(channelUrls, preferredPlatform) {
-  if (channelUrls[preferredPlatform]) return preferredPlatform;
-  return COMMENT_PLATFORMS.find((platform) => channelUrls[platform]) || preferredPlatform;
+  if (channelUrls[preferredPlatform]?.length) return preferredPlatform;
+  return COMMENT_PLATFORMS.find((platform) => channelUrls[platform]?.length) || preferredPlatform;
 }
 
 function normalizeStoredMessages(value) {
@@ -196,14 +242,21 @@ function normalizeState(value) {
     loco: normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform.loco : legacyCursor, messagesByPlatform.loco.length),
   };
 
-  let channelUrls = { gosh: "", loco: "" };
+  let channelLinks = { gosh: [], loco: [] };
   try {
-    channelUrls = normalizeChannelUrls(value.settings?.channelUrls, value.settings?.channelUrl);
+    const storedLinks = Object.hasOwn(value.settings || {}, "channelLinks")
+      ? value.settings.channelLinks
+      : value.settings?.channelUrls;
+    channelLinks = normalizeChannelLinks(storedLinks, value.settings?.channelUrl);
   } catch {
-    channelUrls = { gosh: "", loco: "" };
+    channelLinks = { gosh: [], loco: [] };
   }
   const preferredPlatform = normalizePlatform(value.settings?.platform, platformFromUrl(value.settings?.channelUrl) || "gosh");
-  const platform = resolveSettingsPlatform(channelUrls, preferredPlatform);
+  const platform = resolveSettingsPlatform(channelLinks, preferredPlatform);
+  const channelUrls = {
+    gosh: channelLinks.gosh[0] || "",
+    loco: channelLinks.loco[0] || "",
+  };
   const channelUrl = channelUrls[platform] || "";
 
   let delaySeconds = fallback.settings.delaySeconds;
@@ -238,6 +291,7 @@ function normalizeState(value) {
     settings: {
       channelUrl,
       channelUrls,
+      channelLinks,
       platform,
       delaySeconds,
       displayNames,
@@ -429,20 +483,27 @@ export class JsonStore {
   async updateSettings(input) {
     const legacyPlatform = platformFromUrl(input.channelUrl);
     const preferredPlatform = normalizePlatform(input.platform, legacyPlatform || this.state.settings.platform);
-    let channelUrls;
-    if (Object.hasOwn(input, "channelUrls")) {
-      channelUrls = normalizeChannelUrls(input.channelUrls);
-    } else {
-      channelUrls = normalizeChannelUrls(this.state.settings.channelUrls);
+    let channelLinks;
+    if (Object.hasOwn(input, "channelLinks")) {
+      channelLinks = normalizeChannelLinks(input.channelLinks);
+    } else if (Object.hasOwn(input, "channelUrls")) {
+      channelLinks = normalizeChannelLinks(input.channelUrls);
+    } else if (Object.hasOwn(input, "channelUrl")) {
+      channelLinks = normalizeChannelLinks(this.state.settings.channelLinks, this.state.settings.channelUrls);
       const targetPlatform = legacyPlatform || preferredPlatform;
-      channelUrls[targetPlatform] = normalizeChannelUrl(input.channelUrl, {
-        platform: targetPlatform,
-      });
+      channelLinks[targetPlatform] = normalizePlatformLinks(input.channelUrl, targetPlatform);
+    } else {
+      channelLinks = normalizeChannelLinks(this.state.settings.channelLinks, this.state.settings.channelUrls);
     }
-    const platform = resolveSettingsPlatform(channelUrls, preferredPlatform);
+    const platform = resolveSettingsPlatform(channelLinks, preferredPlatform);
+    const channelUrls = {
+      gosh: channelLinks.gosh[0] || "",
+      loco: channelLinks.loco[0] || "",
+    };
     const nextSettings = {
       channelUrl: channelUrls[platform] || "",
       channelUrls,
+      channelLinks,
       platform,
       delaySeconds: normalizeDelay(input.delaySeconds),
       displayNames: normalizeDisplayNames(input.displayNames),

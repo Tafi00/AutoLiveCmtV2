@@ -158,11 +158,20 @@ function setBusy(button, busy, label) {
   }
 }
 
-function channelUrlFor(platform) {
+function channelLinksFor(platform) {
+  const links = state?.settings?.channelLinks?.[platform];
+  if (Array.isArray(links)) return links.filter(Boolean);
   if (state?.settings?.channelUrls && typeof state.settings.channelUrls === "object") {
-    return state.settings.channelUrls[platform] || "";
+    const legacy = state.settings.channelUrls[platform];
+    return legacy ? [legacy] : [];
   }
-  return state?.settings?.platform === platform ? state.settings.channelUrl || "" : "";
+  return state?.settings?.platform === platform && state.settings.channelUrl
+    ? [state.settings.channelUrl]
+    : [];
+}
+
+function channelUrlFor(platform) {
+  return channelLinksFor(platform)[0] || "";
 }
 
 function enabledAccounts() {
@@ -171,6 +180,11 @@ function enabledAccounts() {
 
 function activePlatformCount() {
   return new Set(enabledAccounts().map((account) => account.platform)).size;
+}
+
+function activeLinkCount() {
+  return [...new Set(enabledAccounts().map((account) => account.platform))]
+    .reduce((total, platform) => total + channelLinksFor(platform).length, 0);
 }
 
 function platformMessages(platform) {
@@ -352,6 +366,7 @@ function renderBulkSend() {
   const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
   const accountCount = enabledAccounts().length;
   const websiteCount = activePlatformCount();
+  const linkCount = activeLinkCount();
   const sendingWebsiteCount = sendablePlatformCount();
   const messageCount = sendableMessageCount();
   const attempted = (bulk.sent || 0) + (bulk.failed || 0);
@@ -366,10 +381,17 @@ function renderBulkSend() {
   elements.bulkProgress.classList.toggle("failed", bulk.phase === "failed");
   elements.bulkProgress.classList.toggle("has-errors", Boolean(bulk.failed) && bulk.phase !== "failed");
   elements.bulkError.hidden = !failures.length;
-  elements.bulkError.textContent = failures.length ? `${failures.at(-1).accountName}: ${failures.at(-1).error}` : "";
+  if (failures.length) {
+    const failure = failures.at(-1);
+    const platform = failure.platform === "loco" ? "Loco" : "Gosh";
+    const room = Number.isInteger(failure.linkIndex) ? ` #${failure.linkIndex + 1}` : "";
+    elements.bulkError.textContent = `${platform}${room} · ${failure.accountName}: ${failure.error}`;
+  } else {
+    elements.bulkError.textContent = "";
+  }
 
-  elements.sendScope.textContent = `${websiteCount} website · ${accountCount} tài khoản`;
-  elements.sendNext.textContent = sendingWebsiteCount > 1 ? "Gửi song song" : "Gửi một";
+  elements.sendScope.textContent = `${linkCount} link · ${websiteCount} website · ${accountCount} tài khoản`;
+  elements.sendNext.textContent = (sendingWebsiteCount > 1 || linkCount > 1) ? "Gửi song song" : "Gửi một";
   elements.sendNext.disabled = running || !messageCount || !accountCount;
   elements.sendAll.disabled = running || !messageCount || !accountCount;
   elements.stopBulk.hidden = !running;
@@ -396,8 +418,9 @@ function renderBulkSend() {
 function renderLive() {
   const accountCount = enabledAccounts().length;
   const websiteCount = activePlatformCount();
+  const linkCount = activeLinkCount();
   const messageCount = totalMessageCount();
-  elements.liveSummary.textContent = `${messageCount} mẫu · ${websiteCount} website · ${accountCount} tài khoản`;
+  elements.liveSummary.textContent = `${messageCount} mẫu · ${linkCount} link · ${websiteCount} website · ${accountCount} tài khoản`;
   renderMessages();
   renderLiveAccounts();
   renderCooldown();
@@ -597,8 +620,8 @@ function renderSettings() {
   // Background status refreshes must not overwrite URL/settings fields while
   // the user's latest edit is still waiting to be saved.
   if (settingsDirty || settingsSaveRunning) return;
-  syncSettingControl(elements.channelUrlGosh, channelUrlFor("gosh"));
-  syncSettingControl(elements.channelUrlLoco, channelUrlFor("loco"));
+  syncSettingControl(elements.channelUrlGosh, channelLinksFor("gosh").join("\n"));
+  syncSettingControl(elements.channelUrlLoco, channelLinksFor("loco").join("\n"));
   syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);
   syncSettingControl(elements.displayNames, state.settings.displayNames.join("\n"));
   syncSettingControl(elements.renameEveryComments, state.settings.renameEveryComments);
@@ -749,9 +772,9 @@ function setSaveState(status, message) {
 
 function settingsPayload() {
   return {
-    channelUrls: {
-      gosh: elements.channelUrlGosh.value,
-      loco: elements.channelUrlLoco.value,
+    channelLinks: {
+      gosh: elements.channelUrlGosh.value.split(/\r?\n/),
+      loco: elements.channelUrlLoco.value.split(/\r?\n/),
     },
     delaySeconds: Number(elements.delaySeconds.value),
     displayNames: elements.displayNames.value,
@@ -964,11 +987,11 @@ elements.sendNext.addEventListener("click", async () => {
     state = await api("/api/comments/send-next", { method: "POST" });
     render();
     const result = state.result;
-    const websiteCount = result?.activePlatforms?.length || result?.successCount || 0;
+    const linkCount = result?.totalLinks || result?.successCount || 0;
     if (result?.failureCount) {
-      showNotice(`Đã gửi ${result.successCount}/${websiteCount} website; ${result.failureCount} website lỗi.`, "warning");
+      showNotice(`Đã gửi ${result.successCount}/${linkCount} link; ${result.failureCount} link lỗi.`, "warning");
     } else {
-      showNotice(`Đã gửi song song tới ${websiteCount} website.`, "success");
+      showNotice(`Đã gửi song song tới ${linkCount} link.`, "success");
     }
   } catch (error) {
     showNotice(error.message);

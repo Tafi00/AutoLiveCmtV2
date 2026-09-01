@@ -44,6 +44,7 @@ const bulkSend = {
   failures: [],
   currentAccount: "",
   activePlatforms: [],
+  linkTotals: { gosh: 0, loco: 0 },
   messageTotals: { gosh: 0, loco: 0 },
   completedByPlatform: { gosh: 0, loco: 0 },
   phase: "idle",
@@ -78,6 +79,7 @@ function bulkSendState() {
     failures: bulkSend.failures.slice(-30),
     currentAccount: bulkSend.currentAccount,
     activePlatforms: [...bulkSend.activePlatforms],
+    linkTotals: { ...bulkSend.linkTotals },
     messageTotals: { ...bulkSend.messageTotals },
     completedByPlatform: { ...bulkSend.completedByPlatform },
     phase: bulkSend.phase,
@@ -127,18 +129,35 @@ function accountOrThrow(accountId) {
   return account;
 }
 
-function channelUrlForPlatform(state, platform) {
+function channelLinksForPlatform(state, platform) {
+  const links = state.settings.channelLinks?.[platform];
+  if (Array.isArray(links)) return links.filter(Boolean);
   if (state.settings.channelUrls && typeof state.settings.channelUrls === "object") {
-    return state.settings.channelUrls[platform] || "";
+    const legacy = state.settings.channelUrls[platform];
+    return legacy ? [legacy] : [];
   }
-  return state.settings.platform === platform ? state.settings.channelUrl || "" : "";
+  return state.settings.platform === platform && state.settings.channelUrl
+    ? [state.settings.channelUrl]
+    : [];
+}
+
+function channelUrlForPlatform(state, platform) {
+  return channelLinksForPlatform(state, platform)[0] || "";
 }
 
 function availableDestinations(state) {
   return Object.keys(PLATFORMS).flatMap((platform) => {
-    const channelUrl = channelUrlForPlatform(state, platform);
+    const channelLinks = channelLinksForPlatform(state, platform);
     const accounts = store.getEnabledAccounts(platform);
-    return channelUrl && accounts.length ? [{ platform, channelUrl, accounts }] : [];
+    return channelLinks.length && accounts.length
+      ? channelLinks.map((channelUrl, linkIndex) => ({
+        id: `${platform}:${channelUrl}`,
+        platform,
+        channelUrl,
+        linkIndex,
+        accounts,
+      }))
+      : [];
   });
 }
 
@@ -159,7 +178,7 @@ function assertDestinations(state, { requireMessages = false, platforms = null }
     if (withMessages.length) return withMessages;
     throw new Error("Kho bình luận của website đang hoạt động đang trống.");
   }
-  const hasRoom = requestedPlatforms.some((platform) => channelUrlForPlatform(state, platform));
+  const hasRoom = requestedPlatforms.some((platform) => channelLinksForPlatform(state, platform).length);
   if (!hasRoom) throw new Error("Hãy lưu URL phòng live cho Gosh hoặc Loco trước.");
   throw new Error("Cần bật ít nhất một tài khoản phù hợp với website đã nhập URL.");
 }
@@ -199,7 +218,11 @@ async function updateDisplayName(accountId, displayName) {
 
 async function updateAutomaticDisplayNames(accounts) {
   if (!store.shouldRename()) return null;
-  const goshAccounts = accounts.filter((account) => account.platform === "gosh");
+  const goshAccounts = [...new Map(
+    accounts
+      .filter((account) => account.platform === "gosh")
+      .map((account) => [account.id, account]),
+  ).values()];
   if (!goshAccounts.length) return null;
   if (bulkSend.running) bulkSend.phase = "renaming";
 
@@ -234,21 +257,31 @@ async function updateAutomaticDisplayNames(accounts) {
   return { displayName: chosenNames[0] || null, displayNames: chosenNames, results };
 }
 
-const accountCursors = { gosh: 0, loco: 0 };
+const accountCursors = new Map();
+
+function destinationCursorKey(destination) {
+  return `${destination.platform}:${destination.channelUrl}`;
+}
+
+function destinationLabel(destination) {
+  const ordinal = Number.isInteger(destination.linkIndex) ? ` #${destination.linkIndex + 1}` : "";
+  return `${PLATFORMS[destination.platform].name}${ordinal}`;
+}
 
 async function sendNextComment({ advanceOnTotalFailure = false, platforms = null } = {}) {
   const state = store.snapshot();
   const destinations = assertDestinations(state, { requireMessages: true, platforms });
   const selected = destinations.map((destination) => {
-    const cursor = accountCursors[destination.platform] || 0;
+    const key = destinationCursorKey(destination);
+    const cursor = accountCursors.get(key) || 0;
     const account = destination.accounts[cursor % destination.accounts.length];
-    accountCursors[destination.platform] = cursor + 1;
+    accountCursors.set(key, cursor + 1);
     return { ...destination, account, message: store.getNextMessage(destination.platform) };
   });
 
   if (bulkSend.running) {
     bulkSend.currentAccount = selected
-      .map(({ platform, account }) => `${PLATFORMS[platform].name}: ${account.profileName || account.name}`)
+      .map((destination) => `${destinationLabel(destination)}: ${destination.account.profileName || destination.account.name}`)
       .join(" + ");
   }
 
@@ -262,11 +295,21 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
     const { platform, channelUrl, account, message } = selected[index];
     const accountName = account.profileName || account.name;
     if (outcome.status === "fulfilled") {
-      return { platform, channelUrl, accountId: account.id, accountName, message: message.content, ok: true, result: outcome.value };
+      return {
+        platform,
+        channelUrl,
+        linkIndex: selected[index].linkIndex,
+        accountId: account.id,
+        accountName,
+        message: message.content,
+        ok: true,
+        result: outcome.value,
+      };
     }
     return {
       platform,
       channelUrl,
+      linkIndex: selected[index].linkIndex,
       accountId: account.id,
       accountName,
       message: message.content,
@@ -278,7 +321,9 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
   const failures = results.filter((result) => !result.ok);
 
   if (!successes.length && !advanceOnTotalFailure) {
-    throw new Error(failures.map((failure) => `${failure.accountName}: ${failure.error}`).join(" · "));
+    throw new Error(failures
+      .map((failure) => `${destinationLabel(failure)} · ${failure.accountName}: ${failure.error}`)
+      .join(" · "));
   }
 
   const platformsToAdvance = advanceOnTotalFailure
@@ -299,16 +344,27 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
 
   return {
     message: selected[0]?.message || null,
-    messages: selected.map(({ platform, message }) => ({ platform, ...message })),
+    messages: [...new Map(selected.map(({ platform, message }) => [
+      platform,
+      { platform, ...message },
+    ])).values()],
     account: successes[0] ? { id: successes[0].accountId, name: successes[0].accountName } : null,
-    accounts: results.map((result) => ({ id: result.accountId, name: result.accountName, platform: result.platform })),
+    accounts: results.map((result) => ({
+      id: result.accountId,
+      name: result.accountName,
+      platform: result.platform,
+      channelUrl: result.channelUrl,
+      linkIndex: result.linkIndex,
+    })),
     result: successes[0]?.result || null,
     results,
     rename,
     successCount: successes.length,
     failureCount: failures.length,
-    totalAccounts: selected.length,
-    activePlatforms: selected.map(({ platform }) => platform),
+    totalAccounts: new Set(selected.map(({ account }) => account.id)).size,
+    totalLinks: selected.length,
+    activePlatforms: [...new Set(selected.map(({ platform }) => platform))],
+    activeLinks: selected.map(({ platform, channelUrl, linkIndex }) => ({ platform, channelUrl, linkIndex })),
   };
 }
 
@@ -338,6 +394,8 @@ async function runBulkSend() {
           accountId: failure.accountId,
           accountName: failure.accountName,
           platform: failure.platform,
+          channelUrl: failure.channelUrl,
+          linkIndex: failure.linkIndex,
           message: failure.message,
           error: failure.error,
         });
@@ -486,7 +544,7 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.post("/api/health/check", asyncRoute(async (_request, response) => {
-  apiHealth = await checkApiHealth(store.snapshot().settings.channelUrls);
+  apiHealth = await checkApiHealth(store.snapshot().settings.channelLinks);
   response.json({ checks: apiHealth });
 }));
 
@@ -539,7 +597,14 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
     platform,
     available.some((destination) => destination.platform === platform) ? store.getMessages(platform).length : 0,
   ]));
-  const totalMessages = Object.values(messageTotals).reduce((sum, count) => sum + count, 0);
+  const linkTotals = Object.fromEntries(Object.keys(PLATFORMS).map((platform) => [
+    platform,
+    available.filter((destination) => destination.platform === platform).length,
+  ]));
+  const totalMessages = Object.keys(PLATFORMS).reduce(
+    (sum, platform) => sum + messageTotals[platform] * linkTotals[platform],
+    0,
+  );
   const roundCount = Math.max(...Object.values(messageTotals), 0);
   if (!totalMessages) return response.status(400).json({ error: "Kho bình luận của Gosh và Loco đang trống." });
   const destinations = available.filter(({ platform }) => messageTotals[platform] > 0);
@@ -557,7 +622,8 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
     error: null,
     failures: [],
     currentAccount: "",
-    activePlatforms: destinations.map(({ platform }) => platform),
+    activePlatforms: [...new Set(destinations.map(({ platform }) => platform))],
+    linkTotals,
     messageTotals,
     completedByPlatform: { gosh: 0, loco: 0 },
     phase: "starting",

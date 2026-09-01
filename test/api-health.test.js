@@ -18,6 +18,19 @@ test("thêm endpoint chat khi URL Loco có stream id", () => {
   assert.equal(targets.some((item) => item.id === "loco-profile-update"), false);
 });
 
+test("kiểm tra endpoint chat cho từng phòng Loco đã cấu hình", () => {
+  const targets = healthTargets({
+    gosh: [],
+    loco: [
+      "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a",
+      "https://loco.com/stream/aa32a361-b6aa-46f4-b618-029743a0978b",
+    ],
+  }).filter((item) => item.id.startsWith("loco-chat"));
+  assert.equal(targets.length, 2);
+  assert.ok(targets[0].url.includes("fb32a361"));
+  assert.ok(targets[1].url.includes("aa32a361"));
+});
+
 test("đo endpoint bằng fetch có thể thay thế trong test", async () => {
   const result = await checkTarget(
     { id: "test", platform: "gosh", name: "Test", url: "https://example.test/" },

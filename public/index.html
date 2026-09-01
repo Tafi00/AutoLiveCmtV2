@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Live Comment</title>
-    <link rel="stylesheet" href="/styles.css?v=11" />
+    <link rel="stylesheet" href="/styles.css?v=12" />
   </head>
   <body>
     <div class="app-frame">
@@ -41,12 +41,12 @@
 
           <section id="view-live" class="view active" data-view-panel="live">
             <header class="view-header live-header">
-              <div><h1>Live</h1><p id="live-summary">0 bình luận · 0 website · 0 tài khoản</p></div>
+              <div><h1>Live</h1><p id="live-summary">0 mẫu · 0 link · 0 website · 0 tài khoản</p></div>
               <div class="room-control">
-                <label class="room-platform" for="channel-url-gosh">Gosh</label>
-                <input id="channel-url-gosh" type="url" placeholder="URL phòng live Gosh…" autocomplete="off" />
-                <label class="room-platform loco" for="channel-url-loco">Loco</label>
-                <input id="channel-url-loco" type="url" placeholder="URL phòng live Loco…" autocomplete="off" />
+                <label class="room-platform" for="channel-url-gosh">Gosh <small>mỗi dòng 1 link</small></label>
+                <textarea id="channel-url-gosh" rows="2" placeholder="URL các phòng live Gosh…" autocomplete="off"></textarea>
+                <label class="room-platform loco" for="channel-url-loco">Loco <small>mỗi dòng 1 link</small></label>
+                <textarea id="channel-url-loco" rows="2" placeholder="URL các phòng live Loco…" autocomplete="off"></textarea>
                 <span id="room-save-state" class="save-state">Đã lưu</span>
               </div>
             </header>
@@ -96,7 +96,7 @@
                     <p id="bulk-error" class="bulk-error" hidden></p>
                   </div>
                   <div class="send-actions">
-                    <div class="send-meta"><span id="cooldown">Sẵn sàng</span><span id="send-scope">1 tài khoản</span></div>
+                    <div class="send-meta"><span id="cooldown">Sẵn sàng</span><span id="send-scope">0 link · 1 tài khoản</span></div>
                     <button id="send-next" class="secondary" type="button" disabled>Gửi một</button>
                     <button id="send-all" class="primary" type="button" disabled>Chạy tất cả</button>
                     <button id="stop-bulk" class="danger-button" type="button" hidden>Dừng</button>
