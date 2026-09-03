@@ -125,6 +125,7 @@ let bulkPollTimer = null;
 let activeBulkRun = null;
 let settingsTimer = null;
 let settingsSaveRunning = false;
+let settingsSavePromise = null;
 let settingsDirty = false;
 let statusRefreshRunning = false;
 let healthChecks = [];
@@ -784,20 +785,35 @@ function settingsPayload() {
 
 async function saveSettings() {
   window.clearTimeout(settingsTimer);
-  if (settingsSaveRunning || state.bulkSend?.running) return;
+  if (settingsSaveRunning) return settingsSavePromise;
+  if (state.bulkSend?.running) return false;
   settingsSaveRunning = true;
   settingsDirty = false;
   setSaveState("saving", "Đang lưu…");
+  settingsSavePromise = api("/api/settings", { method: "PUT", body: JSON.stringify(settingsPayload()) });
   try {
-    state = await api("/api/settings", { method: "PUT", body: JSON.stringify(settingsPayload()) });
+    state = await settingsSavePromise;
     setSaveState("", "Đã lưu");
     render();
+    return true;
   } catch (error) {
     setSaveState("error", "Chưa lưu");
     showNotice(error.message);
+    return false;
   } finally {
     settingsSaveRunning = false;
+    settingsSavePromise = null;
     if (settingsDirty) settingsTimer = window.setTimeout(saveSettings, 150);
+  }
+}
+
+async function flushSettingsBeforeSend() {
+  window.clearTimeout(settingsTimer);
+  if (settingsSaveRunning) await settingsSavePromise;
+  while (settingsDirty) {
+    const saved = await saveSettings();
+    if (!saved) throw new Error("Không thể lưu link phòng live. Vui lòng kiểm tra lại URL.");
+    if (settingsSaveRunning) await settingsSavePromise;
   }
 }
 
@@ -946,6 +962,7 @@ for (const control of [elements.delaySeconds, elements.displayNames, elements.re
   control.addEventListener("change", queueSettingsSave);
 }
 for (const control of [elements.channelUrlGosh, elements.channelUrlLoco]) {
+  control.addEventListener("input", queueSettingsSave);
   control.addEventListener("change", queueSettingsSave);
   control.addEventListener("blur", queueSettingsSave);
 }
@@ -984,6 +1001,7 @@ elements.checkHealth.addEventListener("click", async () => {
 elements.sendNext.addEventListener("click", async () => {
   setBusy(elements.sendNext, true, "Đang gửi…");
   try {
+    await flushSettingsBeforeSend();
     state = await api("/api/comments/send-next", { method: "POST" });
     render();
     const result = state.result;
@@ -1004,6 +1022,7 @@ elements.sendNext.addEventListener("click", async () => {
 elements.sendAll.addEventListener("click", async () => {
   setBusy(elements.sendAll, true, "Đang bắt đầu…");
   try {
+    await flushSettingsBeforeSend();
     state = await api("/api/comments/send-all", { method: "POST" });
     activeBulkRun = state.bulkSend.startedAt;
     render();
