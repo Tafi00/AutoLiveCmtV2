@@ -68,6 +68,9 @@ export const LOCO_API_ENDPOINTS = {
 };
 
 export const discoveredApiEndpoints = new Map();
+export const MAX_OBSERVED_ENDPOINTS = 200;
+export const ROOM_PAGE_MAX_AGE_MS = 20 * 60_000;
+export const ROOM_PAGE_IDLE_MS = 10 * 60_000;
 
 export function recordObservedEndpoint(url, method = "GET", status = 200) {
   try {
@@ -101,7 +104,9 @@ export function recordObservedEndpoint(url, method = "GET", status = 200) {
       return;
     }
 
-    discoveredApiEndpoints.set(`${method}:${path}`, {
+    const key = `${method}:${host}:${path}`;
+    discoveredApiEndpoints.delete(key);
+    discoveredApiEndpoints.set(key, {
       name,
       category,
       method,
@@ -111,6 +116,9 @@ export function recordObservedEndpoint(url, method = "GET", status = 200) {
       status,
       lastSeen: new Date().toISOString(),
     });
+    while (discoveredApiEndpoints.size > MAX_OBSERVED_ENDPOINTS) {
+      discoveredApiEndpoints.delete(discoveredApiEndpoints.keys().next().value);
+    }
   } catch {}
 }
 
@@ -552,6 +560,8 @@ export class BrowserSession {
     this.profilePage = null;
     this.roomPages = new Map();
     this.roomLocks = new Map();
+    this.roomPageTimes = new Map();
+    this.roomCleanupTimer = null;
     this.launching = null;
     this.identity = null;
     this.identityDetection = null;
@@ -597,8 +607,12 @@ export class BrowserSession {
 
   #rememberRoomPage(key, page) {
     this.roomPages.set(key, page);
+    this.roomPageTimes.set(key, { createdAt: Date.now(), lastUsedAt: Date.now() });
     page.once?.("close", () => {
-      if (this.roomPages.get(key) === page) this.roomPages.delete(key);
+      if (this.roomPages.get(key) === page) {
+        this.roomPages.delete(key);
+        this.roomPageTimes.delete(key);
+      }
     });
     return page;
   }
@@ -635,10 +649,39 @@ export class BrowserSession {
       this.#rememberRoomPage(key, page);
     }
 
+    const timing = this.roomPageTimes.get(key);
     if (!isAtTarget(page.url(), safeUrl)) {
       await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      timing.createdAt = Date.now();
+    } else if (Date.now() - timing.createdAt >= ROOM_PAGE_MAX_AGE_MS) {
+      // Called inside this room's send lock, before touching its composer.
+      // Release the live site's accumulated chat/player state between sends.
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+      timing.createdAt = Date.now();
     }
+    timing.lastUsedAt = Date.now();
     return page;
+  }
+
+  async pruneIdleRoomPages(now = Date.now()) {
+    const pending = [];
+    for (const [key, page] of this.roomPages) {
+      const timing = this.roomPageTimes.get(key);
+      if (!timing || now - timing.lastUsedAt < ROOM_PAGE_IDLE_MS || this.roomLocks.has(key)) continue;
+      const cleanup = Promise.resolve().then(async () => {
+        await page.close();
+        if (this.roomPages.get(key) === page) {
+          this.roomPages.delete(key);
+          this.roomPageTimes.delete(key);
+        }
+        if (this.commentPage === page) this.commentPage = null;
+      }).finally(() => {
+        if (this.roomLocks.get(key) === cleanup) this.roomLocks.delete(key);
+      });
+      this.roomLocks.set(key, cleanup);
+      pending.push(cleanup);
+    }
+    await Promise.allSettled(pending);
   }
 
   async #launch() {
@@ -687,7 +730,14 @@ export class BrowserSession {
       recordObservedEndpoint(res.url(), res.request().method(), res.status());
     });
 
+    this.roomCleanupTimer = setInterval(() => {
+      void this.pruneIdleRoomPages();
+    }, 60_000);
+    this.roomCleanupTimer.unref?.();
     this.context.on("close", () => {
+      clearInterval(this.roomCleanupTimer);
+      this.roomCleanupTimer = null;
+      this.roomPageTimes.clear();
       this.context = null;
       this.commentPage = null;
       this.profilePage = null;
@@ -1462,11 +1512,16 @@ export class BrowserSession {
     try {
       return await current;
     } finally {
+      const timing = this.roomPageTimes.get(key);
+      if (timing) timing.lastUsedAt = Date.now();
       if (this.roomLocks.get(key) === current) this.roomLocks.delete(key);
     }
   }
 
   async close() {
+    clearInterval(this.roomCleanupTimer);
+    this.roomCleanupTimer = null;
+    this.roomPageTimes.clear();
     this.suppressManualLoginReopen = true;
     const manualLoginProcess = this.manualLoginProcess;
     if (isBrowserProcessRunning(manualLoginProcess)) {

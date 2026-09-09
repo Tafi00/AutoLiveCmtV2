@@ -399,6 +399,7 @@ async function runBulkSend() {
           message: failure.message,
           error: failure.error,
         });
+        if (bulkSend.failures.length > 30) bulkSend.failures.shift();
       }
     }
   } catch (error) {

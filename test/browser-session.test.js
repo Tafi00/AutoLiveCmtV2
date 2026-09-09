@@ -157,3 +157,95 @@ test("đọc tên hiển thị từ user id, số hoặc email khi không có ni
   assert.equal(extractDisplayName({ user: { email: "streamer@gosh.app" } }), "streamer@gosh.app");
   assert.equal(extractDisplayName({ username: "LocoGamer99" }), "LocoGamer99");
 });
+
+test("observed endpoints stay bounded and retain the most recently seen entry", async () => {
+  const { discoveredApiEndpoints, recordObservedEndpoint, MAX_OBSERVED_ENDPOINTS } = await import("../src/browser-session.js");
+  discoveredApiEndpoints.clear();
+  try {
+    for (let i = 0; i < MAX_OBSERVED_ENDPOINTS; i++) {
+      recordObservedEndpoint(`https://api.gosh.com/live/${i}`);
+    }
+    recordObservedEndpoint("https://api.gosh.com/live/0");
+    recordObservedEndpoint("https://api.gosh.com/live/new");
+    assert.equal(discoveredApiEndpoints.size, MAX_OBSERVED_ENDPOINTS);
+    assert.ok([...discoveredApiEndpoints.values()].some((entry) => entry.path === "/live/0"));
+    assert.ok(![...discoveredApiEndpoints.values()].some((entry) => entry.path === "/live/1"));
+  } finally {
+    discoveredApiEndpoints.clear();
+  }
+});
+
+function createLifecycleSession() {
+  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-lifecycle" });
+  const pages = [];
+  const locator = {
+    first() { return this; },
+    async isVisible() { return false; },
+    async waitFor() {},
+    async fill() {},
+  };
+  const newPage = () => {
+    let url = "about:blank";
+    let closed = false;
+    let onClose;
+    const page = {
+      reloads: 0,
+      sends: 0,
+      isClosed: () => closed,
+      url: () => url,
+      once: (_, callback) => { onClose = callback; },
+      async goto(value) { url = value; },
+      async reload() { this.reloads++; },
+      async close() { closed = true; onClose?.(); },
+      getByRole: () => locator,
+      locator: () => locator,
+      async evaluate() { this.sends++; return { status: "sent" }; },
+    };
+    pages.push(page);
+    return page;
+  };
+  browser.context = { pages: () => pages.filter((page) => !page.isClosed()), newPage: async () => newPage() };
+  browser.commentPage = newPage();
+  return { browser, pages };
+}
+
+test("old live pages reload only between sends and keep their room", async () => {
+  const { ROOM_PAGE_MAX_AGE_MS } = await import("../src/browser-session.js");
+  const { browser, pages } = createLifecycleSession();
+  const input = { channelUrl: "https://gosh.com/vi/16427037", content: "test" };
+  await browser.sendComment(input);
+  const timing = [...browser.roomPageTimes.values()][0];
+  timing.createdAt = Date.now() - ROOM_PAGE_MAX_AGE_MS;
+  await Promise.all([browser.sendComment(input), browser.sendComment(input)]);
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].reloads, 1);
+  assert.equal(pages[0].sends, 3);
+  assert.equal(pages[0].url(), input.channelUrl);
+  assert.equal(browser.roomLocks.size, 0);
+});
+
+test("idle cleanup skips active sends, releases pages, and permits sending again", async () => {
+  const { ROOM_PAGE_IDLE_MS } = await import("../src/browser-session.js");
+  const { browser, pages } = createLifecycleSession();
+  const input = { channelUrl: "https://gosh.com/vi/16427037", content: "test" };
+  await browser.sendComment(input);
+  const key = [...browser.roomPages.keys()][0];
+  const future = Date.now() + ROOM_PAGE_IDLE_MS + 1;
+  browser.roomLocks.set(key, Promise.resolve());
+  await browser.pruneIdleRoomPages(future);
+  assert.equal(pages[0].isClosed(), false);
+  browser.roomLocks.delete(key);
+  const cleanup = browser.pruneIdleRoomPages(future);
+  const send = browser.sendComment(input);
+  await Promise.all([cleanup, send]);
+  assert.equal(pages[0].isClosed(), true);
+  assert.equal(pages.length, 2);
+  assert.equal(pages[1].sends, 1);
+  assert.equal(browser.roomPages.size, 1);
+  assert.equal(browser.roomPageTimes.size, 1);
+  assert.equal(browser.roomLocks.size, 0);
+  await browser.pruneIdleRoomPages(Date.now() + ROOM_PAGE_IDLE_MS + 1);
+  assert.equal(browser.roomPages.size, 0);
+  assert.equal(browser.roomPageTimes.size, 0);
+  assert.equal(browser.commentPage, null);
+});

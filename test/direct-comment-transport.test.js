@@ -497,3 +497,35 @@ test("chặn video và tài nguyên nền nhưng giữ API/JavaScript chat", () 
     url: "wss://cf-mqtt-ws.getloconow.com/mqtt",
   }), false);
 });
+
+test("failed discovery does not accumulate webpack chunks or runtime callbacks", async () => {
+  const { runInNewContext } = await import("node:vm");
+  for (const transport of [sendCommentViaWebsiteTransport, sendCommentViaLocoTransport]) {
+    const queue = [[['website-chunk'], {}, null]];
+    const installedChunks = new Set();
+    const runtimeRequire = () => ({});
+    runtimeRequire.m = {};
+    let captures = 0;
+    queue.push = (chunk) => {
+      captures++;
+      installedChunks.add(chunk[0][0]);
+      chunk[2](runtimeRequire);
+      return Array.prototype.push.call(queue, chunk);
+    };
+    const run = runInNewContext(`(${transport.toString()})`, { webpackChunk_N_E: queue });
+    for (let i = 0; i < 1000; i++) {
+      assert.equal((await run({ content: "test" })).status, "unavailable");
+    }
+    assert.equal(queue.length, 1);
+    assert.equal(queue[0][0][0], "website-chunk");
+    assert.equal(installedChunks.size, 1);
+    assert.equal(captures, 1);
+  }
+});
+
+test("Gosh stream segments are blocked when the CDN hostname changes", () => {
+  for (const extension of ["m3u8", "m4s", "ts", "mp4", "flv", "mpd", "aac"]) {
+    assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: `https://new-cdn.example/live/video.${extension}?token=test` }), true);
+  }
+  assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: "https://api.gosh.com/live/join" }), false);
+});

@@ -27,11 +27,23 @@ export async function sendCommentViaWebsiteTransport(input) {
     const chunkQueue = queueName ? pageGlobal[queueName] : null;
     if (!Array.isArray(chunkQueue)) return null;
 
+    const runtimeKey = "__goshCommentAssistantRuntime";
+    if (chunkQueue[runtimeKey]) return chunkQueue[runtimeKey];
     let runtimeRequire = null;
-    const chunkId = `gosh-comment-assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    chunkQueue.push([[chunkId], {}, (candidate) => {
+    // A fixed ID also bounds webpack's internal installedChunks registry.
+    const chunk = [["gosh-comment-assistant"], {}, (candidate) => {
       runtimeRequire = candidate;
-    }]);
+    }];
+    try {
+      chunkQueue.push(chunk);
+    } finally {
+      // Webpack retains pushed chunks, including their callback closures.
+      const index = chunkQueue.indexOf(chunk);
+      if (index >= 0) chunkQueue.splice(index, 1);
+    }
+    if (runtimeRequire) {
+      Object.defineProperty(chunkQueue, runtimeKey, { configurable: true, value: runtimeRequire });
+    }
     return runtimeRequire;
   }
 
@@ -274,11 +286,23 @@ export async function sendCommentViaLocoTransport(input) {
     const chunkQueue = queueName ? pageGlobal[queueName] : null;
     if (!Array.isArray(chunkQueue)) return null;
 
+    const runtimeKey = "__locoCommentAssistantRuntime";
+    if (chunkQueue[runtimeKey]) return chunkQueue[runtimeKey];
     let runtimeRequire = null;
-    const chunkId = `loco-comment-assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    chunkQueue.push([[chunkId], {}, (candidate) => {
+    // A fixed ID also bounds webpack's internal installedChunks registry.
+    const chunk = [["loco-comment-assistant"], {}, (candidate) => {
       runtimeRequire = candidate;
-    }]);
+    }];
+    try {
+      chunkQueue.push(chunk);
+    } finally {
+      // Webpack retains pushed chunks, including their callback closures.
+      const index = chunkQueue.indexOf(chunk);
+      if (index >= 0) chunkQueue.splice(index, 1);
+    }
+    if (runtimeRequire) {
+      Object.defineProperty(chunkQueue, runtimeKey, { configurable: true, value: runtimeRequire });
+    }
     return runtimeRequire;
   }
 
@@ -537,8 +561,7 @@ export function shouldBlockBrowserResource({ platform = "gosh", resourceType, ur
   ) return true;
 
   if (
-    platform === "loco"
-    && /\.(?:m3u8|m4s|ts|mp4)$/.test(pathname)
+    /\.(?:m3u8|m4s|ts|mp4|flv|mpd|aac)$/.test(pathname)
   ) return true;
 
   if (
