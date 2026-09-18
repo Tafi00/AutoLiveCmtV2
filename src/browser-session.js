@@ -3,7 +3,12 @@ import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { ProxyAgent } from "undici";
+
+let ProxyAgent = null;
+try {
+  const undici = await import("undici");
+  ProxyAgent = undici?.ProxyAgent || null;
+} catch {}
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {
@@ -604,7 +609,7 @@ export class BrowserSession {
     this.platform = normalizePlatform(platform);
     this.definition = PLATFORMS[this.platform];
     this.proxy = proxy || "";
-    this.dispatcher = this.proxy ? new ProxyAgent(this.proxy) : undefined;
+    this.dispatcher = (this.proxy && ProxyAgent) ? new ProxyAgent(this.proxy) : undefined;
     this.commentPage = null;
     this.profilePage = null;
     this.roomPages = new Map();
