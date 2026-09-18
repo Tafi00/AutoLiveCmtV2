@@ -22,7 +22,7 @@
     "playwright": "^1.62.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "undici": "^8.10.2"
+    "undici": "^6.21.1"
   },
   "devDependencies": {
     "electron": "^44.0.0",
