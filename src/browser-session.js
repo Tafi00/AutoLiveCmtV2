@@ -429,6 +429,10 @@ export function gaquaytvLoginProbeExpression() {
 
     // The site's own client calls the v2 API with the cookie-held JWT. Reuse
     // that call so the detected name matches what the chat composer will send.
+    // api.gaquaytv.com requires the cookie JWT as an explicit Authorization
+    // header: cookie-only calls get 401 ("Invalid authorization code"),
+    // while cookie token + Bearer succeeds. Same-origin fetch sets the
+    // required site Origin automatically.
     try {
       const res = await fetch('https://api.gaquaytv.com/api/v2/auth/me', {
         headers: { Authorization: 'Bearer ' + accessToken },
@@ -436,7 +440,7 @@ export function gaquaytvLoginProbeExpression() {
       if (res.ok) {
         const json = await res.json();
         const data = json?.data || json;
-        if (data && (data.display_name || data.username)) {
+        if (data && (data.display_name || data.displayName || data.username || data.email)) {
           return { loggedIn: true, data };
         }
       }
@@ -777,35 +781,10 @@ export class BrowserSession {
       await route.continue();
     });
 
-    if (this.platform === "gaquaytv") {
-      await this.context.route("**/api.gaquaytv.com/**", async (route) => {
-        const req = route.request();
-        try {
-          const headers = { ...req.headers(), origin: "https://api.gaquaytv.com" };
-          const fetchOptions = {
-            method: req.method(),
-            headers,
-            body: req.postDataBuffer() || undefined,
-          };
-          if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
-          const response = await fetch(req.url(), fetchOptions);
-          const responseHeaders = {};
-          for (const [k, v] of response.headers.entries()) {
-            responseHeaders[k] = v;
-          }
-          responseHeaders["access-control-allow-origin"] = "https://gaquaytv.com";
-          responseHeaders["access-control-allow-credentials"] = "true";
-          const body = await response.text();
-          await route.fulfill({
-            status: response.status,
-            headers: responseHeaders,
-            body,
-          });
-        } catch {
-          await route.continue();
-        }
-      });
-    }
+    // NOTE: no request interception for api.gaquaytv.com. The API validates
+    // the browser Origin header, so relaying page requests through Node's
+    // fetch (which sends no/re-written Origin) breaks auth/me, login- gated
+    // chat, and identity detection. Page requests go direct instead.
 
     this.context.on("response", (res) => {
       recordObservedEndpoint(res.url(), res.request().method(), res.status());
@@ -1095,6 +1074,8 @@ export class BrowserSession {
         }).filter(([key]) => key));
         const token = cookieMap.access_token || "";
         if (!token) throw new Error("no_token");
+        // The API needs the cookie JWT as an explicit Bearer header (plus
+        // the automatic same-origin Origin); cookie-only calls get 401.
         const response = await fetch("https://api.gaquaytv.com/api/v2/auth/me", {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -1183,11 +1164,15 @@ export class BrowserSession {
   async login({ usernameOrEmail, password }) {
     await this.#ensureContext();
     if (this.platform === "gaquaytv") {
+      // api.gaquaytv.com checks the browser Origin header: requests sent
+      // with the API origin (or no origin) are rejected even with valid
+      // credentials, while the site origin succeeds.
       const fetchOptions = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          origin: "https://api.gaquaytv.com",
+          Origin: "https://gaquaytv.com",
+          Referer: "https://gaquaytv.com/",
         },
         body: JSON.stringify({
           username_or_email: usernameOrEmail,
@@ -1203,12 +1188,19 @@ export class BrowserSession {
       const data = (await loginRes.json())?.data;
       if (!data?.access_token) throw new Error("Không nhận được token đăng nhập từ GaQuayTV.");
 
+      // The site only reads `access_token`/`refresh_token` (lowercase with
+      // underscore); the camelCase duplicates the old code wrote are never
+      // sent back, so drop them. Cookies must also carry the attributes the
+      // site sets on register (Secure + SameSite=Lax) or the browser will not
+      // attach them on the HTTPS live pages.
       const expires = Math.floor(Date.now() / 1000) + 3600 * 24 * 7;
+      await this.context.clearCookies({ domain: ".gaquaytv.com", name: "access_token" }).catch(() => {});
+      await this.context.clearCookies({ domain: ".gaquaytv.com", name: "refresh_token" }).catch(() => {});
       await this.context.addCookies([
-        { name: "access_token", value: data.access_token, domain: ".gaquaytv.com", path: "/", expires },
-        { name: "accessToken", value: data.access_token, domain: ".gaquaytv.com", path: "/", expires },
-        { name: "refresh_token", value: data.refresh_token, domain: ".gaquaytv.com", path: "/", expires },
-        { name: "refreshToken", value: data.refresh_token, domain: ".gaquaytv.com", path: "/", expires },
+        { name: "access_token", value: data.access_token, url: "https://gaquaytv.com/", expires, secure: true, sameSite: "Lax" },
+        ...(data.refresh_token
+          ? [{ name: "refresh_token", value: data.refresh_token, url: "https://gaquaytv.com/", expires, secure: true, sameSite: "Lax" }]
+          : []),
       ]);
 
       if (!this.commentPage || isAtTarget(this.commentPage.url(), "about:blank")) {
@@ -1282,6 +1274,8 @@ export class BrowserSession {
         }).filter(([key]) => key));
         const token = cookieMap.access_token || "";
         if (!token) return { ok: false, status: 401, reason: "no_token" };
+        // Same-origin fetch sets the required site Origin; the cookie JWT
+        // must still ride as an explicit Bearer header (cookie-only: 401).
         const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
         const meResponse = await fetch("https://api.gaquaytv.com/api/v2/auth/me", { headers });
         if (meResponse.status === 401) return { ok: false, status: 401, reason: "unauthorized" };
