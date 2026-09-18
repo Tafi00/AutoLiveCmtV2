@@ -31,6 +31,12 @@ test("kiểm tra endpoint chat cho từng phòng Loco đã cấu hình", () => {
   assert.ok(targets[1].url.includes("aa32a361"));
 });
 
+test("bao gồm các endpoint GaQuayTV trong danh sách kiểm tra", () => {
+  const targets = healthTargets({ gosh: "", loco: "", gaquaytv: "" });
+  const gaquaytvTargets = targets.filter((item) => item.platform === "gaquaytv");
+  assert.deepEqual(gaquaytvTargets.map((item) => item.id), ["gaquaytv-web", "gaquaytv-auth", "gaquaytv-schedule"]);
+});
+
 test("đo endpoint bằng fetch có thể thay thế trong test", async () => {
   const result = await checkTarget(
     { id: "test", platform: "gosh", name: "Test", url: "https://example.test/" },

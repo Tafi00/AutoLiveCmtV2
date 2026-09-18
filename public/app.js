@@ -35,6 +35,7 @@ const elements = {
   liveSummary: $("#live-summary"),
   channelUrlGosh: $("#channel-url-gosh"),
   channelUrlLoco: $("#channel-url-loco"),
+  channelUrlGaquaytv: $("#channel-url-gaquaytv"),
   roomSaveState: $("#room-save-state"),
   goshMessageForm: $("#gosh-message-form"),
   goshMessageContent: $("#gosh-message-content"),
@@ -48,8 +49,15 @@ const elements = {
   locoMessageList: $("#loco-message-list"),
   clearLocoMessages: $("#clear-loco-messages"),
   locoEmptyState: $("#loco-empty-state"),
+  gaquaytvMessageForm: $("#gaquaytv-message-form"),
+  gaquaytvMessageContent: $("#gaquaytv-message-content"),
+  gaquaytvMessageCount: $("#gaquaytv-message-count"),
+  gaquaytvMessageList: $("#gaquaytv-message-list"),
+  clearGaquaytvMessages: $("#clear-gaquaytv-messages"),
+  gaquaytvEmptyState: $("#gaquaytv-empty-state"),
   nextGoshMessage: $("#next-gosh-message"),
   nextLocoMessage: $("#next-loco-message"),
+  nextGaquaytvMessage: $("#next-gaquaytv-message"),
   liveAccountList: $("#live-account-list"),
   cooldown: $("#cooldown"),
   sendScope: $("#send-scope"),
@@ -73,6 +81,7 @@ const elements = {
   profileCount: $("#profile-count"),
   addGoshMessage: $("#add-gosh-message"),
   addLocoMessage: $("#add-loco-message"),
+  addGaquaytvMessage: $("#add-gaquaytv-message"),
   checkHealth: $("#check-health"),
   healthSummary: $("#health-summary"),
   healthList: $("#health-list"),
@@ -194,12 +203,18 @@ function platformMessages(platform) {
 }
 
 function totalMessageCount() {
-  return platformMessages("gosh").length + platformMessages("loco").length;
+  return platformMessages("gosh").length + platformMessages("loco").length + platformMessages("gaquaytv").length;
 }
 
 function sendableMessageCount() {
   const platforms = new Set(enabledAccounts().map((account) => account.platform));
   return [...platforms].reduce((total, platform) => total + platformMessages(platform).length, 0);
+}
+
+function platformName(platform) {
+  return state?.platforms?.find((item) => item.id === platform)?.name
+    || { gosh: "Gosh", loco: "Loco", gaquaytv: "GaQuayTV" }[platform]
+    || platform;
 }
 
 function sendablePlatformCount() {
@@ -271,7 +286,7 @@ function renderLiveAccounts() {
     const name = document.createElement("strong");
     name.textContent = accountLabel(account);
     const detail = document.createElement("small");
-    detail.textContent = `${account.platform === "loco" ? "Loco" : "Gosh"} · ${presentation.label}`;
+    detail.textContent = `${platformName(account.platform)} · ${presentation.label}`;
     copy.append(name, detail);
     item.append(statusDot(presentation.className), copy);
     elements.liveAccountList.append(item);
@@ -296,6 +311,14 @@ function renderMessages() {
       empty: elements.locoEmptyState,
       clear: elements.clearLocoMessages,
     },
+    gaquaytv: {
+      messages: platformMessages("gaquaytv"),
+      next: state.nextMessages?.gaquaytv || (state.settings?.platform === "gaquaytv" ? state.nextMessage : null),
+      count: elements.gaquaytvMessageCount,
+      list: elements.gaquaytvMessageList,
+      empty: elements.gaquaytvEmptyState,
+      clear: elements.clearGaquaytvMessages,
+    },
   };
 
   for (const [platform, queue] of Object.entries(queues)) {
@@ -315,7 +338,7 @@ function renderMessages() {
       remove.textContent = "Xóa";
       remove.disabled = Boolean(state.bulkSend?.running);
       remove.addEventListener("click", async () => {
-        if (!window.confirm(`Xóa mẫu bình luận ${platform === "gosh" ? "Gosh" : "Loco"} “${message.content}”?`)) return;
+        if (!window.confirm(`Xóa mẫu bình luận ${platformName(platform)} “${message.content}”?`)) return;
         try {
           state = await api(`/api/messages/${encodeURIComponent(message.id)}?platform=${platform}`, { method: "DELETE" });
           render();
@@ -330,6 +353,7 @@ function renderMessages() {
 
   elements.nextGoshMessage.textContent = queues.gosh.next?.content || "Chưa có mẫu Gosh.";
   elements.nextLocoMessage.textContent = queues.loco.next?.content || "Chưa có mẫu Loco.";
+  elements.nextGaquaytvMessage.textContent = queues.gaquaytv.next?.content || "Chưa có mẫu GaQuayTV.";
 }
 
 function renderCooldown() {
@@ -384,7 +408,7 @@ function renderBulkSend() {
   elements.bulkError.hidden = !failures.length;
   if (failures.length) {
     const failure = failures.at(-1);
-    const platform = failure.platform === "loco" ? "Loco" : "Gosh";
+    const platform = platformName(failure.platform);
     const room = Number.isInteger(failure.linkIndex) ? ` #${failure.linkIndex + 1}` : "";
     elements.bulkError.textContent = `${platform}${room} · ${failure.accountName}: ${failure.error}`;
   } else {
@@ -401,16 +425,20 @@ function renderBulkSend() {
   for (const control of [
     elements.channelUrlGosh,
     elements.channelUrlLoco,
+    elements.channelUrlGaquaytv,
     elements.goshMessageContent,
     elements.locoMessageContent,
+    elements.gaquaytvMessageContent,
     elements.addGoshMessage,
     elements.addLocoMessage,
+    elements.addGaquaytvMessage,
     elements.addAccount,
     elements.delaySeconds,
     elements.displayNames,
     elements.renameEveryComments,
     elements.clearGoshMessages,
     elements.clearLocoMessages,
+    elements.clearGaquaytvMessages,
   ]) {
     control.disabled = running;
   }
@@ -441,14 +469,23 @@ function createAccountRow(account) {
   const name = document.createElement("strong");
   name.textContent = accountLabel(account);
   nameCell.append(statusDot(presentation.className), name);
-
+  if (account.proxy) {
+    const proxyBadge = document.createElement("span");
+    proxyBadge.className = "platform-badge proxy";
+    proxyBadge.textContent = "Proxy";
+    proxyBadge.title = account.proxy;
+    proxyBadge.style.marginLeft = "6px";
+    proxyBadge.style.fontSize = "8px";
+    proxyBadge.style.padding = "1px 4px";
+    nameCell.append(proxyBadge);
+  }
   const status = document.createElement("span");
   status.className = "account-status-text";
   status.textContent = presentation.label;
 
   const platform = document.createElement("span");
   platform.className = `platform-badge ${account.platform}`;
-  platform.textContent = account.platform === "loco" ? "Loco" : "Gosh";
+  platform.textContent = platformName(account.platform);
 
   const toggleLabel = document.createElement("label");
   toggleLabel.className = "account-toggle";
@@ -525,7 +562,7 @@ function renderInspector(account) {
   const heading = document.createElement("h2");
   heading.textContent = accountLabel(account);
   const sub = document.createElement("p");
-  sub.textContent = `${account.platform === "loco" ? "Loco" : "Gosh"} · ${presentation.label}`;
+  sub.textContent = `${platformName(account.platform)} · ${presentation.label}`;
   copy.append(heading, sub);
   head.append(statusDot(presentation.className), copy);
 
@@ -547,8 +584,8 @@ function renderInspector(account) {
   sessionSection.append(sessionActions);
 
   let displaySection = null;
-  if (account.platform === "gosh") {
-    displaySection = inspectorSection("Tên hiển thị trên Gosh");
+  if (account.platform === "gosh" || account.platform === "gaquaytv") {
+    displaySection = inspectorSection(`Tên hiển thị trên ${platformName(account.platform)}`);
     const displayForm = document.createElement("form");
     displayForm.className = "inspector-form";
     const displayWrap = document.createElement("div");
@@ -588,6 +625,100 @@ function renderInspector(account) {
     displaySection.append(displayForm);
   }
 
+  let gaquaytvLoginForm = null;
+  if (account.platform === "gaquaytv") {
+    gaquaytvLoginForm = inspectorSection("Đăng nhập tài khoản GaQuayTV");
+    const form = document.createElement("form");
+    form.className = "inspector-form";
+    const userInput = document.createElement("input");
+    userInput.type = "text";
+    userInput.placeholder = "Email hoặc tên người dùng";
+    userInput.setAttribute("aria-label", "Tài khoản GaQuayTV");
+    userInput.style.marginBottom = "8px";
+    const pwInput = document.createElement("input");
+    pwInput.type = "password";
+    pwInput.placeholder = "Mật khẩu";
+    pwInput.setAttribute("aria-label", "Mật khẩu GaQuayTV");
+    pwInput.style.marginBottom = "8px";
+    const loginBtn = document.createElement("button");
+    loginBtn.type = "submit";
+    loginBtn.className = "primary";
+    loginBtn.textContent = "Đăng nhập ngay";
+
+    userInput.disabled = pwInput.disabled = loginBtn.disabled = Boolean(state.bulkSend?.running);
+    form.append(userInput, pwInput, loginBtn);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const u = userInput.value.trim();
+      const p = pwInput.value;
+      if (!u || !p) {
+        showNotice("Vui lòng nhập tài khoản và mật khẩu.");
+        return;
+      }
+      setBusy(loginBtn, true, "Đang đăng nhập…");
+      try {
+        state = await api(`/api/accounts/${encodeURIComponent(account.id)}/login`, {
+          method: "POST",
+          body: JSON.stringify({ usernameOrEmail: u, password: p }),
+        });
+        showNotice("Đăng nhập GaQuayTV thành công!", "success");
+        render();
+      } catch (err) {
+        showNotice(err.message);
+      } finally {
+        setBusy(loginBtn, false);
+      }
+    });
+    gaquaytvLoginForm.append(form);
+  }
+
+  const proxySection = inspectorSection("Cấu hình Proxy cho tài khoản");
+  const proxyForm = document.createElement("form");
+  proxyForm.className = "inspector-form";
+  const proxyWrap = document.createElement("div");
+  proxyWrap.className = "inline-form";
+  const proxyInput = document.createElement("input");
+  proxyInput.type = "text";
+  proxyInput.placeholder = "http://user:pass@host:port hoặc host:port:user:pass";
+  proxyInput.value = account.proxy || "";
+  proxyInput.setAttribute("aria-label", "Proxy tài khoản");
+  const saveProxyBtn = document.createElement("button");
+  saveProxyBtn.type = "submit";
+  saveProxyBtn.className = "secondary";
+  saveProxyBtn.textContent = "Lưu proxy";
+  proxyInput.disabled = saveProxyBtn.disabled = Boolean(state.bulkSend?.running);
+  proxyWrap.append(proxyInput, saveProxyBtn);
+
+  const proxyHint = document.createElement("small");
+  proxyHint.style.display = "block";
+  proxyHint.style.marginTop = "6px";
+  proxyHint.style.color = "var(--muted)";
+  proxyHint.textContent = account.proxy
+    ? `Đang dùng: ${account.proxy}`
+    : "Để trống nếu gửi trực tiếp qua mạng máy tính.";
+
+  proxyForm.append(proxyWrap, proxyHint);
+  proxyForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setBusy(saveProxyBtn, true, "Đang lưu…");
+    try {
+      state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ proxy: proxyInput.value.trim() }),
+      });
+      showNotice(
+        proxyInput.value.trim() ? "Đã lưu proxy cho tài khoản." : "Đã xóa proxy (dùng mạng trực tiếp).",
+        "success"
+      );
+      render();
+    } catch (err) {
+      showNotice(err.message);
+    } finally {
+      setBusy(saveProxyBtn, false);
+    }
+  });
+  proxySection.append(proxyForm);
+
   const danger = document.createElement("div");
   danger.className = "danger-zone";
   const remove = document.createElement("button");
@@ -599,7 +730,9 @@ function renderInspector(account) {
   danger.append(remove);
 
   elements.accountInspector.append(head, sessionSection);
+  if (gaquaytvLoginForm) elements.accountInspector.append(gaquaytvLoginForm);
   if (displaySection) elements.accountInspector.append(displaySection);
+  elements.accountInspector.append(proxySection);
   elements.accountInspector.append(danger);
 }
 
@@ -623,6 +756,7 @@ function renderSettings() {
   if (settingsDirty || settingsSaveRunning) return;
   syncSettingControl(elements.channelUrlGosh, channelLinksFor("gosh").join("\n"));
   syncSettingControl(elements.channelUrlLoco, channelLinksFor("loco").join("\n"));
+  syncSettingControl(elements.channelUrlGaquaytv, channelLinksFor("gaquaytv").join("\n"));
   syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);
   syncSettingControl(elements.displayNames, state.settings.displayNames.join("\n"));
   syncSettingControl(elements.renameEveryComments, state.settings.renameEveryComments);
@@ -653,7 +787,7 @@ function renderHealth() {
     row.className = "health-row";
     const service = document.createElement("span");
     service.className = "health-service";
-    service.append(statusDot(presentation.className), document.createTextNode(`${item.platform === "loco" ? "Loco" : "Gosh"} · ${item.name}`));
+    service.append(statusDot(presentation.className), document.createTextNode(`${platformName(item.platform)} · ${item.name}`));
     const endpoint = document.createElement("code");
     try { endpoint.textContent = new URL(item.url).pathname + new URL(item.url).search; } catch { endpoint.textContent = item.url; }
     endpoint.title = item.url;
@@ -776,6 +910,7 @@ function settingsPayload() {
     channelLinks: {
       gosh: elements.channelUrlGosh.value.split(/\r?\n/),
       loco: elements.channelUrlLoco.value.split(/\r?\n/),
+      gaquaytv: elements.channelUrlGaquaytv.value.split(/\r?\n/),
     },
     delaySeconds: Number(elements.delaySeconds.value),
     displayNames: elements.displayNames.value,
@@ -911,6 +1046,11 @@ const messageQueueControls = {
     content: elements.locoMessageContent,
     clear: elements.clearLocoMessages,
   },
+  gaquaytv: {
+    form: elements.gaquaytvMessageForm,
+    content: elements.gaquaytvMessageContent,
+    clear: elements.clearGaquaytvMessages,
+  },
 };
 
 for (const [platform, controls] of Object.entries(messageQueueControls)) {
@@ -932,7 +1072,7 @@ for (const [platform, controls] of Object.entries(messageQueueControls)) {
 
   controls.clear.addEventListener("click", async () => {
     const count = state.messagesByPlatform?.[platform]?.length || 0;
-    if (!count || !window.confirm(`Xóa toàn bộ ${count} mẫu bình luận ${platform === "gosh" ? "Gosh" : "Loco"}?`)) return;
+    if (!count || !window.confirm(`Xóa toàn bộ ${count} mẫu bình luận ${platformName(platform)}?`)) return;
 
     const label = controls.clear.textContent;
     controls.clear.disabled = true;
@@ -940,7 +1080,7 @@ for (const [platform, controls] of Object.entries(messageQueueControls)) {
     try {
       state = await api(`/api/messages?platform=${platform}`, { method: "DELETE" });
       render();
-      showNotice(`Đã xóa ${count} mẫu ${platform === "gosh" ? "Gosh" : "Loco"}.`, "success");
+      showNotice(`Đã xóa ${count} mẫu ${platformName(platform)}.`, "success");
     } catch (error) {
       showNotice(error.message);
     } finally {
@@ -961,7 +1101,7 @@ for (const control of [elements.delaySeconds, elements.displayNames, elements.re
   control.addEventListener("input", queueSettingsSave);
   control.addEventListener("change", queueSettingsSave);
 }
-for (const control of [elements.channelUrlGosh, elements.channelUrlLoco]) {
+for (const control of [elements.channelUrlGosh, elements.channelUrlLoco, elements.channelUrlGaquaytv]) {
   control.addEventListener("input", queueSettingsSave);
   control.addEventListener("change", queueSettingsSave);
   control.addEventListener("blur", queueSettingsSave);

@@ -47,6 +47,8 @@
                 <textarea id="channel-url-gosh" rows="2" placeholder="URL các phòng live Gosh…" autocomplete="off"></textarea>
                 <label class="room-platform loco" for="channel-url-loco">Loco <small>mỗi dòng 1 link</small></label>
                 <textarea id="channel-url-loco" rows="2" placeholder="URL các phòng live Loco…" autocomplete="off"></textarea>
+                <label class="room-platform gaquaytv" for="channel-url-gaquaytv">GaQuayTV <small>mỗi dòng 1 link</small></label>
+                <textarea id="channel-url-gaquaytv" rows="2" placeholder="URL các phòng live GaQuayTV…" autocomplete="off"></textarea>
                 <span id="room-save-state" class="save-state">Đã lưu</span>
               </div>
             </header>
@@ -83,12 +85,28 @@
                       <p id="loco-empty-state" class="empty-state">Chưa có mẫu Loco</p>
                     </div>
                   </section>
+
+                  <section class="comment-panel gaquaytv-panel">
+                    <div class="section-heading">
+                      <div class="section-label"><span class="platform-mark gaquaytv">Q</span><h2>Bình luận GaQuayTV</h2><span id="gaquaytv-message-count" class="muted-count">0</span></div>
+                      <button id="clear-gaquaytv-messages" class="text-button clear-messages" type="button" disabled>Xóa</button>
+                    </div>
+                    <form id="gaquaytv-message-form" class="composer">
+                      <textarea id="gaquaytv-message-content" rows="2" aria-label="Bình luận GaQuayTV" placeholder="Nhập mẫu dành cho GaQuayTV…"></textarea>
+                      <button id="add-gaquaytv-message" class="secondary compact" type="submit">Thêm</button>
+                    </form>
+                    <div class="message-region">
+                      <ol id="gaquaytv-message-list" class="message-list"></ol>
+                      <p id="gaquaytv-empty-state" class="empty-state">Chưa có mẫu GaQuayTV</p>
+                    </div>
+                  </section>
                 </div>
 
                 <div class="send-dock">
                   <div class="next-messages">
                     <div class="next-message"><small>Gosh tiếp theo</small><p id="next-gosh-message">Chưa có mẫu Gosh.</p></div>
                     <div class="next-message"><small>Loco tiếp theo</small><p id="next-loco-message">Chưa có mẫu Loco.</p></div>
+                    <div class="next-message"><small>GaQuayTV tiếp theo</small><p id="next-gaquaytv-message">Chưa có mẫu GaQuayTV.</p></div>
                   </div>
                   <div id="bulk-progress" class="bulk-progress" hidden aria-live="polite">
                     <div class="progress-heading"><span id="bulk-status">Đang chuẩn bị…</span><strong id="bulk-count">0/0</strong></div>
@@ -114,7 +132,7 @@
           <section id="view-accounts" class="view" data-view-panel="accounts" hidden>
             <header class="view-header">
               <div><h1>Tài khoản</h1><p id="account-summary">1 tài khoản</p></div>
-              <div class="header-actions"><select id="account-platform" aria-label="Nền tảng tài khoản"><option value="gosh">Gosh</option><option value="loco">Loco</option></select><button id="add-account" class="primary" type="button">Thêm tài khoản</button></div>
+              <div class="header-actions"><select id="account-platform" aria-label="Nền tảng tài khoản"><option value="gosh">Gosh</option><option value="loco">Loco</option><option value="gaquaytv">GaQuayTV</option></select><button id="add-account" class="primary" type="button">Thêm tài khoản</button></div>
             </header>
 
             <div class="account-workspace">
@@ -161,7 +179,7 @@
               </section>
 
               <section class="settings-section">
-                <div class="setting-copy"><h2>Tên hiển thị tự động</h2><p>Chỉ áp dụng cho tài khoản Gosh. Loco vẫn tự đọc tên sau khi đăng nhập.</p></div>
+                <div class="setting-copy"><h2>Tên hiển thị tự động</h2><p>Chỉ áp dụng cho tài khoản Gosh và GaQuayTV. Loco vẫn tự đọc tên sau khi đăng nhập.</p></div>
                 <div class="setting-control wide-control">
                   <label for="display-names">Danh sách tên</label>
                   <textarea id="display-names" rows="5" placeholder="Mỗi dòng một tên"></textarea>
@@ -182,6 +200,6 @@
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=17"></script>
+    <script type="module" src="/app.js?v=18"></script>
   </body>
 </html>

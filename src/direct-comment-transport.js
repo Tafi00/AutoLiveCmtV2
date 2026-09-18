@@ -537,6 +537,68 @@ export async function sendCommentViaLocoTransport(input) {
   }
 }
 
+// This function is serialized by Playwright and runs inside gaquaytv.com. The
+// site's chat composer is a React component whose props carry the official
+// send handler (`onSendBody`): invoking it reuses the page's own socket.io
+// session and auth token instead of copying them or rebuilding the protocol.
+export async function sendCommentViaGaquaytvTransport(input) {
+  const cleanContent = String(input?.content ?? "").trim();
+  if (!cleanContent) {
+    return { status: "failed", attempted: false, reason: "comment_empty" };
+  }
+
+  function unavailable(reason) {
+    return { status: "unavailable", attempted: false, reason };
+  }
+
+  const composer = document.querySelector(
+    '[class*="bg-surface-chat"] textarea, textarea[placeholder*="trò chuyện" i], textarea[placeholder*="tin nhắn" i]'
+  );
+  if (!composer) return unavailable("chat_composer_missing");
+
+  const fiberKey = Object.keys(composer).find((key) =>
+    key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
+  if (!fiberKey) return unavailable("react_fiber_missing");
+
+  let fiber = composer[fiberKey];
+  let sendProps = null;
+  for (let depth = 0; fiber && depth < 40; depth += 1, fiber = fiber.return) {
+    const props = fiber.memoizedProps;
+    if (props && typeof props === "object" && typeof props.onSendBody === "function") {
+      sendProps = props;
+      break;
+    }
+  }
+  if (!sendProps) return unavailable("send_handler_missing");
+  if (sendProps.isLoggedIn === false) {
+    return { status: "failed", attempted: false, reason: "login_required" };
+  }
+
+  try {
+    sendProps.onSendBody(cleanContent);
+  } catch (error) {
+    return {
+      status: "failed",
+      attempted: true,
+      reason: String(error?.message || error || "send_handler_failed").slice(0, 240),
+    };
+  }
+
+  // The site treats a send as fire-and-forget over its socket.io session. When
+  // the account is signed out the same handler opens the login modal instead,
+  // so its appearance means the message was rejected before reaching the wire.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  if (document.querySelector('input[name="usernameOrEmail"]')) {
+    return { status: "failed", attempted: false, reason: "login_required" };
+  }
+  return {
+    status: "sent",
+    attempted: true,
+    provider: "gaquaytv-socket",
+    sentAt: Date.now(),
+  };
+}
+
 export function shouldBlockBrowserResource({ platform = "gosh", resourceType, url }) {
   if (resourceType === "media" || resourceType === "font") return true;
 
@@ -559,6 +621,26 @@ export function shouldBlockBrowserResource({ platform = "gosh", resourceType, ur
       || hostname === "firebaselogging.googleapis.com"
     )
   ) return true;
+
+  if (platform === "gaquaytv") {
+    // Chat only needs the page shell, its JS chunks and the socket.io/API
+    // hosts. Everything else — ad iframes, trackers, thumbnails, playback
+    // video — is dead weight in the headless profile.
+    if (resourceType === "image") return true;
+    if (
+      hostname === "clikk.cc" || hostname.endsWith(".clikk.cc")
+      || hostname === "logriancesenius.com" || hostname.endsWith(".logriancesenius.com")
+      || hostname === "connect.facebook.net"
+      || hostname === "stats.g.doubleclick.net"
+      || hostname === "www.googletagmanager.com"
+      || hostname === "www.google-analytics.com"
+      || hostname === "analytics.google.com"
+      || hostname === "www.google.com.vn"
+      || hostname === "cdn.mxpnl.com" || hostname.endsWith(".mxpnl.com")
+      || hostname === "c.clarity.ms" || hostname.endsWith(".clarity.ms")
+      || hostname === "f003.backblazeb2.com" || hostname.endsWith(".backblazeb2.com")
+    ) return true;
+  }
 
   if (
     /\.(?:m3u8|m4s|ts|mp4|flv|mpd|aac)$/.test(pathname)

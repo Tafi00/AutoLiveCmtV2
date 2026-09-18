@@ -1,6 +1,6 @@
 # Live Comment Desktop
 
-Ứng dụng desktop giúp quản lý nhiều tài khoản và gửi bình luận đồng thời lên **Gosh** và **Loco**. Mỗi tài khoản gắn với một nền tảng và dùng một hồ sơ Chrome riêng trên máy; ứng dụng không xuất token/cookie.
+Ứng dụng desktop giúp quản lý nhiều tài khoản và gửi bình luận đồng thời lên **Gosh**, **Loco** và **GaQuayTV**. Mỗi tài khoản gắn với một nền tảng và dùng một hồ sơ Chrome riêng trên máy; ứng dụng không xuất token/cookie.
 
 ## Cài đặt và chạy
 
@@ -17,21 +17,21 @@ Nếu cần chạy giao diện web cục bộ để phát triển, dùng `npm ru
 
 ## Cách dùng
 
-1. Mở **Tài khoản**, chọn Gosh/Loco, bấm **Thêm tài khoản** rồi đăng nhập trong cửa sổ Chrome vừa mở.
-2. Sau khi đăng nhập, app tự lấy tên hiển thị từ hồ sơ/menu tài khoản và lưu cho session đó. Bật các tài khoản cần tham gia lượt gửi.
-3. Mở **Live**, nhập các URL phòng Gosh/Loco vào hai ô riêng, mỗi dòng một link (tối đa 20 link mỗi website). Thêm mẫu vào đúng khung **Bình luận Gosh** hoặc **Bình luận Loco**; có thể chỉ nhập một website nếu cần.
+1. Mở **Tài khoản**, chọn Gosh/Loco/GaQuayTV, bấm **Thêm tài khoản** rồi đăng nhập trong cửa sổ Chrome vừa mở (hoặc nhập trực tiếp user/pass cho GaQuayTV).
+2. Sau khi đăng nhập, app tự lấy tên hiển thị từ hồ sơ/menu tài khoản và lưu cho session đó. Có thể cấu hình **Proxy** riêng cho từng tài khoản (hỗ trợ `http://user:pass@host:port`, `socks5://...` hoặc `host:port:user:pass`). Bật các tài khoản cần tham gia lượt gửi.
+3. Mở **Live**, nhập các URL phòng Gosh/Loco/GaQuayTV vào các ô riêng, mỗi dòng một link (tối đa 20 link mỗi website). Thêm mẫu vào đúng khung **Bình luận Gosh**, **Bình luận Loco** hoặc **Bình luận GaQuayTV**; có thể chỉ nhập một website nếu cần.
 4. Bấm **Gửi song song** để gửi mẫu kế tiếp của từng khung đồng thời tới tất cả link đã nhập, hoặc **Chạy tất cả** để gửi toàn bộ các kho trên từng link.
-5. Mở **Kiểm tra API** để xem HTTP status, độ trễ và endpoint đang lỗi. Mở **Thiết lập** để đặt khoảng nghỉ; đổi tên tự động hiện áp dụng cho Gosh.
+5. Mở **Kiểm tra API** để xem HTTP status, độ trễ và endpoint đang lỗi. Mở **Thiết lập** để đặt khoảng nghỉ; đổi tên tự động hiện áp dụng cho Gosh và GaQuayTV.
 
 URL phòng và các thiết lập được tự lưu; không cần bấm nút lưu.
 
-Tên tài khoản Gosh được đọc bằng endpoint hồ sơ trong chính browser session, sau đó fallback sang trang hồ sơ. Với Loco, app thử `device_profile`, sau đó đọc link `Channel preview` trong menu `Your profile`. Cookie và token không được sao chép ra khỏi Chrome profile.
+Tên tài khoản Gosh được đọc bằng endpoint hồ sơ trong chính browser session, sau đó fallback sang trang hồ sơ. Với Loco, app thử `device_profile`, sau đó đọc link `Channel preview` trong menu `Your profile`. Với GaQuayTV, app đọc token từ cookie rồi gọi `auth/me`. Cookie và token không được sao chép ra khỏi Chrome profile.
 
-Khi gửi, Gosh tái sử dụng WebSocket chat của website; Loco tái sử dụng Chat V2 qua HTTPS và giữ MQTT/WebSocket để nhận realtime. Nếu lớp gửi của website chưa sẵn sàng, app mới fallback sang nút gửi trên giao diện. Video, font và telemetry không cần thiết được chặn để giảm CPU, RAM và băng thông mà không ngắt luồng chat.
+Khi gửi, Gosh tái sử dụng WebSocket chat của website; Loco tái sử dụng Chat V2 qua HTTPS và giữ MQTT/WebSocket để nhận realtime; GaQuayTV gọi `onSendBody` của composer React để đi qua socket.io của chính website. Với tài khoản có cấu hình proxy, toàn bộ lưu lượng của phiên duyệt (kể cả socket.io và API) sẽ đi qua proxy tương ứng để tránh bị Cloudflare rate-limit hoặc chặn IP. Nếu lớp gửi của website chưa sẵn sàng, app mới fallback sang nút gửi trên giao diện. Video, font và telemetry không cần thiết được chặn để giảm CPU, RAM và băng thông mà không ngắt luồng chat.
 
 Màn kiểm tra API chỉ gọi danh sách endpoint cố định của ứng dụng, không nhận URL tùy ý. HTTP `401/403` được xem là endpoint vẫn hoạt động nhưng cần session; lỗi mạng, timeout và `5xx` được báo hỏng.
 
-Mỗi lượt chọn mẫu kế tiếp độc lập từ kho Gosh và kho Loco rồi gửi tới mọi phòng live của website đó cùng lúc. Mỗi phòng được giữ trong một tab riêng; một tài khoản vẫn có thể phục vụ nhiều phòng trùng giờ. Khi có nhiều tài khoản trên cùng một website, ứng dụng luân phiên tài khoản độc lập cho từng link. Nếu một link lỗi hoặc hết phiên đăng nhập, các link còn lại vẫn tiếp tục. Khoảng nghỉ được áp dụng sau khi các phòng đang có mẫu hoàn tất lượt hiện tại. Trong lúc gửi, kho tin, cấu hình và danh sách tài khoản được khóa để giữ đúng thứ tự. Đổi tên chỉ áp dụng cho tài khoản Gosh.
+Mỗi lượt chọn mẫu kế tiếp độc lập từ kho Gosh, kho Loco và kho GaQuayTV rồi gửi tới mọi phòng live của website đó cùng lúc. Mỗi phòng được giữ trong một tab riêng; một tài khoản vẫn có thể phục vụ nhiều phòng trùng giờ. Khi có nhiều tài khoản trên cùng một website, ứng dụng luân phiên tài khoản độc lập cho từng link. Nếu một link lỗi hoặc hết phiên đăng nhập, các link còn lại vẫn tiếp tục. Khoảng nghỉ được áp dụng sau khi các phòng đang có mẫu hoàn tất lượt hiện tại. Trong lúc gửi, kho tin, cấu hình và danh sách tài khoản được khóa để giữ đúng thứ tự. Đổi tên áp dụng cho tài khoản Gosh và GaQuayTV.
 
 ## Dữ liệu cục bộ
 

@@ -17,6 +17,9 @@ export function healthTargets(channelUrls = "") {
     { id: "loco-config", platform: "loco", name: "Config API", url: "https://api.loco.com/auth/v1/ivory/config/?ivory=true" },
     { id: "loco-profile-me", platform: "loco", name: "Hồ sơ API", url: "https://api.loco.com/ivr/v1/profile/me/" },
     { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v3/user/refresh_token/" },
+    { id: "gaquaytv-web", platform: "gaquaytv", name: "Website", url: "https://gaquaytv.com/" },
+    { id: "gaquaytv-auth", platform: "gaquaytv", name: "Auth API", url: "https://api.gaquaytv.com/api/v2/auth/me" },
+    { id: "gaquaytv-schedule", platform: "gaquaytv", name: "Lịch Live API", url: "https://gaquaytv.com/api/schedule" },
   ];
   const locoChannelUrls = channelUrls && typeof channelUrls === "object"
     ? (Array.isArray(channelUrls.loco) ? channelUrls.loco : [channelUrls.loco || ""])

@@ -344,7 +344,7 @@ test("Chạy tất cả gửi đủ từng mẫu trên mỗi link của cùng we
     assert.equal(response.status, 202);
     const startingState = await response.json();
     assert.equal(startingState.bulkSend.total, 4);
-    assert.deepEqual(startingState.bulkSend.linkTotals, { gosh: 2, loco: 0 });
+    assert.deepEqual(startingState.bulkSend.linkTotals, { gosh: 2, loco: 0, gaquaytv: 0 });
     while (instance.bulkSend.running) await new Promise((resolve) => setTimeout(resolve, 5));
 
     assert.equal(instance.bulkSend.sent, 4);

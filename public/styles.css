@@ -72,7 +72,8 @@ h2 { font-size: 13px; }
 .room-control .room-platform { margin: 0; color: var(--muted-2); text-align: right; }
 .room-control .room-platform small { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; font-weight: 500; white-space: nowrap; }
 .room-control .room-platform.loco { color: #c9b8ff; }
-.room-control #room-save-state { grid-column: 3; grid-row: 1 / span 2; align-self: center; }
+.room-control .room-platform.gaquaytv { color: #8fd3ff; }
+.room-control #room-save-state { grid-column: 3; grid-row: 1 / span 3; align-self: center; }
 .room-control textarea { min-height: 52px; max-height: 84px; resize: vertical; line-height: 1.25; padding: 7px 9px; font-size: 10px; }
 .save-state { color: var(--muted); font-size: 10px; text-align: right; }
 .save-state.saving { color: var(--warning); }
@@ -113,13 +114,15 @@ button:disabled { cursor: not-allowed; opacity: 0.42; }
 
 .live-workspace { display: grid; grid-template-columns: minmax(430px, 1fr) 225px; min-width: 0; min-height: 0; }
 .queue-pane { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 17px 20px 18px; }
-.comment-queues { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; gap: 12px; min-height: 0; }
+.comment-queues { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1; gap: 12px; min-height: 0; }
 .comment-panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); }
 .comment-panel.gosh-panel { border-top: 2px solid var(--accent); }
 .comment-panel.loco-panel { border-top: 2px solid #9a7ee8; }
+.comment-panel.gaquaytv-panel { border-top: 2px solid #5cb3e8; }
 .comment-panel .section-heading { margin-bottom: 8px; }
 .platform-mark { display: grid; width: 18px; height: 18px; place-items: center; border-radius: 4px; color: #151a0b; background: var(--accent); font-size: 10px; font-weight: 800; }
 .platform-mark.loco { color: #17121f; background: #b9a2ff; }
+.platform-mark.gaquaytv { color: #0d1a24; background: #7cc4f2; }
 .comment-panel .section-label { gap: 6px; }
 .comment-panel .section-label h2 { font-size: 11px; }
 .comment-panel .composer { grid-template-columns: minmax(0, 1fr) auto; }
@@ -181,6 +184,8 @@ button:disabled { cursor: not-allowed; opacity: 0.42; }
 .account-status-text { color: var(--muted-2); font-size: 10px; }
 .platform-badge { width: fit-content; padding: 3px 6px; border: 1px solid #3a3d43; border-radius: 4px; color: var(--muted-2); font-size: 9px; }
 .platform-badge.loco { color: #c9b8ff; border-color: #4b416a; }
+.platform-badge.gaquaytv { color: #8fd3ff; border-color: #2e4a5e; }
+.platform-badge.proxy { color: #f59e0b; border-color: #78350f; background: rgba(245, 158, 11, 0.08); font-weight: 600; }
 .account-toggle { display: flex; align-items: center; gap: 6px; color: var(--muted-2); font-size: 10px; }
 .account-toggle input { accent-color: var(--accent); }
 .row-action { min-height: 27px; padding: 0 8px; color: var(--muted-2); border-color: var(--line); background: transparent; font-size: 9px; }

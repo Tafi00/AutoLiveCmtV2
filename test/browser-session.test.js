@@ -8,6 +8,7 @@ import {
   CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
   extractDisplayName,
   isBrowserProcessRunning,
+  gaquaytvLoginProbeExpression,
   locoLoginProbeExpression,
   observeManualLoginUrls,
   waitForProfileUnlock,
@@ -32,6 +33,13 @@ test("probe Loco nhận diện JWT và store đăng nhập hiện hành", () => 
   assert.doesNotMatch(expression, /fetch\(['"]https:\/\/api\.loco\.com/);
 });
 
+test("probe GaQuayTV đọc token từ cookie và gọi auth/me", () => {
+  const expression = gaquaytvLoginProbeExpression();
+  assert.match(expression, /document\.cookie/);
+  assert.match(expression, /api\.gaquaytv\.com\/api\/v2\/auth\/me/);
+  assert.match(expression, /Authorization/);
+});
+
 test("từ chối tên hiển thị trống trước khi mở trình duyệt", async () => {
   const browser = new BrowserSession({ profileDirectory: "/tmp/unused-gosh-profile" });
   await assert.rejects(browser.updateDisplayName("   "), /không được để trống/);
@@ -44,7 +52,7 @@ test("từ chối tên hiển thị dài hơn giới hạn của website", async
 
 test("không cho phiên Loco dùng chức năng đổi tên", async () => {
   const locoBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
-  await assert.rejects(locoBrowser.updateDisplayName("Tên mới"), /chỉ áp dụng cho tài khoản Gosh/);
+  await assert.rejects(locoBrowser.updateDisplayName("Tên mới"), /chỉ áp dụng cho tài khoản Gosh và GaQuayTV/);
 });
 
 test("một browser session giữ tab riêng và gửi song song tới nhiều phòng", async () => {
@@ -248,4 +256,21 @@ test("idle cleanup skips active sends, releases pages, and permits sending again
   assert.equal(browser.roomPages.size, 0);
   assert.equal(browser.roomPageTimes.size, 0);
   assert.equal(browser.commentPage, null);
+});
+
+test("BrowserSession khởi tạo proxy và dispatcher khi có cấu hình proxy", () => {
+  const sessionWithProxy = new BrowserSession({
+    profileDirectory: "/tmp/fake-profile",
+    platform: "gaquaytv",
+    proxy: "http://usr:pwd@127.0.0.1:8080",
+  });
+  assert.equal(sessionWithProxy.proxy, "http://usr:pwd@127.0.0.1:8080");
+  assert.ok(sessionWithProxy.dispatcher);
+
+  const sessionNoProxy = new BrowserSession({
+    profileDirectory: "/tmp/fake-profile",
+    platform: "gaquaytv",
+  });
+  assert.equal(sessionNoProxy.proxy, "");
+  assert.equal(sessionNoProxy.dispatcher, undefined);
 });

@@ -1,4 +1,4 @@
-# Ghi nhận kỹ thuật từ Gosh và Loco
+# Ghi nhận kỹ thuật từ Gosh, Loco và GaQuayTV
 
 Khảo sát được thực hiện ở chế độ chỉ đọc bằng Chrome ngày 25–26/08/2026. Các giá trị nhận dạng phiên, cookie, header xác thực và token không được thu thập hoặc lưu lại.
 
@@ -55,3 +55,17 @@ Biểu mẫu hồ sơ chính thức có trường nickname tối đa 20 ký tự
 Loco duy trì MQTT over WebSocket tại `wss://cf-mqtt-ws.getloconow.com/mqtt` để nhận chat/sự kiện realtime và gửi ping thiết bị. Tin nhắn live mới lại được gửi bằng Chat V2 REST qua HTTPS. Vì vậy, công cụ gọi chính hàm Chat V2 đã được website tải trong trang: phiên đăng nhập và header vẫn do mã Loco quản lý, không bị sao chép ra khỏi Chrome.
 
 Kết quả thành công được xác nhận bằng mã phản hồi `C10`. Nếu bundle thay đổi khiến không tìm thấy hàm REST trước khi request bắt đầu, công cụ quay về thao tác nút `Send`. Khi request HTTPS đã bắt đầu, lỗi hoặc mất phản hồi không kích hoạt UI fallback để tránh comment trùng. MQTT vẫn được giữ để website nhận cập nhật realtime; video, font, playlist/segment phát live và telemetry không cần thiết bị chặn để giảm tài nguyên. Với phòng có cảnh báo nội dung trưởng thành, người dùng vẫn phải tự xác nhận trong Chrome trước khi công cụ được phép gửi.
+
+## GaQuayTV
+
+Khảo sát bổ sung ngày 18/09/2026 trên `gaquaytv.com` (Next.js). Phòng live nằm tại `/live/{uuid}`; uuid đồng thời là room id trên máy chủ socket.io của website.
+
+| Method | URL | Mục đích quan sát được |
+| --- | --- | --- |
+| `GET` | `https://api.gaquaytv.com/api/v2/auth/me` | Hồ sơ tài khoản hiện hành (Bearer JWT trong cookie) |
+| `PATCH` | `https://api.gaquaytv.com/api/v2/auth/update-profile` | Cập nhật hồ sơ, gồm tên hiển thị |
+| `GET` | `https://gaquaytv.com/api/schedule` | Lịch phát live |
+
+Đăng nhập dùng JWT lưu trong cookie `accessToken`/`access_token`; công cụ đọc cookie trong chính trang rồi gọi `auth/me` để lấy tên hiển thị, không sao chép token ra ngoài Chrome. Trang hồ sơ là modal trên bất kỳ trang nào nên phiên đổi tên dùng homepage và gọi `update-profile` bằng fetch trong trang.
+
+Chat chạy qua socket.io; composer là component React trong khối `bg-surface-chat` và props của nó chứa `onSendBody` — handler chính thức website dùng để gửi tin. Công cụ gọi `onSendBody` qua React fiber của textarea để tin đi qua session socket.io sẵn có. Khi chưa đăng nhập, cùng handler này mở modal đăng nhập (`input[name="usernameOrEmail"]`), nên sự xuất hiện của modal sau khi gọi được xem là tin bị từ chối trước khi lên wire. Nếu không tìm thấy composer/fiber (bundle đổi), công cụ fallback sang nhập textarea và bấm nút gửi `aria-label="Gửi tin nhắn"`; composer là textarea nên phím Enter chỉ xuống dòng, không gửi.

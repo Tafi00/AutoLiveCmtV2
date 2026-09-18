@@ -1,30 +1,24 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { normalizeChannelUrl, normalizePlatform, platformFromUrl } from "./platforms.js";
+import { normalizeChannelUrl, normalizePlatform, platformFromUrl, PLATFORMS } from "./platforms.js";
+
+const PLATFORM_IDS = Object.keys(PLATFORMS);
+
+function emptyPlatformMap(fill) {
+  return Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, fill()]));
+}
 
 export const DEFAULT_STATE = Object.freeze({
   accounts: [],
   messages: [],
   cursor: 0,
-  messagesByPlatform: {
-    gosh: [],
-    loco: [],
-  },
-  cursorsByPlatform: {
-    gosh: 0,
-    loco: 0,
-  },
+  messagesByPlatform: emptyPlatformMap(() => []),
+  cursorsByPlatform: emptyPlatformMap(() => 0),
   settings: {
     channelUrl: "",
-    channelUrls: {
-      gosh: "",
-      loco: "",
-    },
-    channelLinks: {
-      gosh: [],
-      loco: [],
-    },
+    channelUrls: emptyPlatformMap(() => ""),
+    channelLinks: emptyPlatformMap(() => []),
     platform: "gosh",
     delaySeconds: 30,
     displayNames: [],
@@ -41,6 +35,7 @@ function createDefaultAccount() {
     name: "Tài khoản 1",
     profileName: "",
     platform: "gosh",
+    proxy: "",
     enabled: true,
     createdAt: new Date().toISOString(),
   };
@@ -81,10 +76,10 @@ function normalizePlatformLinks(value, platform) {
 }
 
 export function normalizeChannelLinks(value, legacyChannelUrls = "") {
-  const links = { gosh: [], loco: [] };
+  const links = emptyPlatformMap(() => []);
   const hasObjectValue = value && typeof value === "object" && !Array.isArray(value);
   if (hasObjectValue) {
-    for (const platform of Object.keys(links)) {
+    for (const platform of PLATFORM_IDS) {
       links[platform] = normalizePlatformLinks(value[platform], platform);
     }
   } else if (value !== null && value !== undefined && String(value).trim()) {
@@ -94,7 +89,7 @@ export function normalizeChannelLinks(value, legacyChannelUrls = "") {
   }
 
   if (legacyChannelUrls && typeof legacyChannelUrls === "object" && !Array.isArray(legacyChannelUrls)) {
-    for (const platform of Object.keys(links)) {
+    for (const platform of PLATFORM_IDS) {
       if (links[platform].length) continue;
       links[platform] = normalizePlatformLinks(legacyChannelUrls[platform], platform);
     }
@@ -111,13 +106,10 @@ export function normalizeChannelLinks(value, legacyChannelUrls = "") {
 
 export function normalizeChannelUrls(value, legacyChannelUrl = "") {
   const links = normalizeChannelLinks(value, legacyChannelUrl);
-  return {
-    gosh: links.gosh[0] || "",
-    loco: links.loco[0] || "",
-  };
+  return Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, links[platform][0] || ""]));
 }
 
-const COMMENT_PLATFORMS = ["gosh", "loco"];
+const COMMENT_PLATFORMS = PLATFORM_IDS;
 
 function resolveSettingsPlatform(channelUrls, preferredPlatform) {
   if (channelUrls[preferredPlatform]?.length) return preferredPlatform;
@@ -189,6 +181,54 @@ export function normalizeMessage(content) {
   return first;
 }
 
+export function parseProxy(value) {
+  if (!value || typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw) return null;
+
+  const parts = raw.split(":");
+  if (parts.length === 4 && !raw.includes("://")) {
+    const [host, port, username, password] = parts;
+    const portNum = Number(port);
+    if (!Number.isNaN(portNum) && portNum > 0 && portNum <= 65535) {
+      return { server: `http://${host}:${port}`, username, password };
+    }
+  }
+
+  if (parts.length === 2 && !raw.includes("://")) {
+    const [host, port] = parts;
+    const portNum = Number(port);
+    if (!Number.isNaN(portNum) && portNum > 0 && portNum <= 65535) {
+      return { server: `http://${host}:${port}` };
+    }
+  }
+
+  try {
+    const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    const port = url.port || (url.protocol === "https:" ? "443" : url.protocol.startsWith("socks") ? "1080" : "80");
+    const server = `${url.protocol}//${url.hostname}:${port}`;
+    const res = { server };
+    if (url.username) res.username = decodeURIComponent(url.username);
+    if (url.password) res.password = decodeURIComponent(url.password);
+    return res;
+  } catch {
+    throw new Error("Định dạng proxy không hợp lệ (hỗ trợ http://user:pass@host:port, socks5://... hoặc host:port:user:pass).");
+  }
+}
+
+export function normalizeProxyUrl(value) {
+  if (!value || typeof value !== "string") return "";
+  const raw = value.trim();
+  if (!raw) return "";
+  const parsed = parseProxy(raw);
+  if (!parsed) return "";
+  if (parsed.username && parsed.password) {
+    const url = new URL(parsed.server);
+    return `${url.protocol}//${encodeURIComponent(parsed.username)}:${encodeURIComponent(parsed.password)}@${url.host}`;
+  }
+  return parsed.server;
+}
+
 function normalizeAccounts(value) {
   if (!Array.isArray(value) || !value.length) return [createDefaultAccount()];
 
@@ -213,6 +253,7 @@ function normalizeAccounts(value) {
       name,
       profileName: typeof item.profileName === "string" ? item.profileName.trim().slice(0, 40) : "",
       platform: normalizePlatform(item.platform, "gosh"),
+      proxy: typeof item.proxy === "string" ? normalizeProxyUrl(item.proxy) : "",
       enabled: item.enabled !== false,
       createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
     });
@@ -230,33 +271,30 @@ function normalizeState(value) {
   const legacyMessages = normalizeStoredMessages(value.messages);
   const hasPlatformMessages = value.messagesByPlatform && typeof value.messagesByPlatform === "object"
     && !Array.isArray(value.messagesByPlatform);
-  const messagesByPlatform = {
-    gosh: normalizeStoredMessages(hasPlatformMessages ? value.messagesByPlatform.gosh : legacyMessages),
-    loco: normalizeStoredMessages(hasPlatformMessages ? value.messagesByPlatform.loco : legacyMessages),
-  };
+  const messagesByPlatform = Object.fromEntries(PLATFORM_IDS.map((platform) => [
+    platform,
+    normalizeStoredMessages(hasPlatformMessages ? value.messagesByPlatform[platform] : legacyMessages),
+  ]));
   const legacyCursor = Number.isInteger(value.cursor) ? value.cursor : 0;
   const hasPlatformCursors = value.cursorsByPlatform && typeof value.cursorsByPlatform === "object"
     && !Array.isArray(value.cursorsByPlatform);
-  const cursorsByPlatform = {
-    gosh: normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform.gosh : legacyCursor, messagesByPlatform.gosh.length),
-    loco: normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform.loco : legacyCursor, messagesByPlatform.loco.length),
-  };
+  const cursorsByPlatform = Object.fromEntries(PLATFORM_IDS.map((platform) => [
+    platform,
+    normalizeCursor(hasPlatformCursors ? value.cursorsByPlatform[platform] : legacyCursor, messagesByPlatform[platform].length),
+  ]));
 
-  let channelLinks = { gosh: [], loco: [] };
+  let channelLinks = emptyPlatformMap(() => []);
   try {
     const storedLinks = Object.hasOwn(value.settings || {}, "channelLinks")
       ? value.settings.channelLinks
       : value.settings?.channelUrls;
     channelLinks = normalizeChannelLinks(storedLinks, value.settings?.channelUrl);
   } catch {
-    channelLinks = { gosh: [], loco: [] };
+    channelLinks = emptyPlatformMap(() => []);
   }
   const preferredPlatform = normalizePlatform(value.settings?.platform, platformFromUrl(value.settings?.channelUrl) || "gosh");
   const platform = resolveSettingsPlatform(channelLinks, preferredPlatform);
-  const channelUrls = {
-    gosh: channelLinks.gosh[0] || "",
-    loco: channelLinks.loco[0] || "",
-  };
+  const channelUrls = Object.fromEntries(PLATFORM_IDS.map((item) => [item, channelLinks[item][0] || ""]));
   const channelUrl = channelUrls[platform] || "";
 
   let delaySeconds = fallback.settings.delaySeconds;
@@ -352,8 +390,8 @@ export class JsonStore {
       name: cleanName,
       profileName: "",
       platform: cleanPlatform,
+      proxy: "",
       enabled: true,
-      createdAt: new Date().toISOString(),
     };
     this.state.accounts.push(account);
     await this.persist();
@@ -371,6 +409,9 @@ export class JsonStore {
       ));
       if (duplicated) throw new Error("Tên tài khoản đã tồn tại.");
       account.name = cleanName;
+    }
+    if (Object.hasOwn(input, "proxy")) {
+      account.proxy = normalizeProxyUrl(input.proxy);
     }
 
     if (Object.hasOwn(input, "enabled")) {
@@ -496,10 +537,7 @@ export class JsonStore {
       channelLinks = normalizeChannelLinks(this.state.settings.channelLinks, this.state.settings.channelUrls);
     }
     const platform = resolveSettingsPlatform(channelLinks, preferredPlatform);
-    const channelUrls = {
-      gosh: channelLinks.gosh[0] || "",
-      loco: channelLinks.loco[0] || "",
-    };
+    const channelUrls = Object.fromEntries(PLATFORM_IDS.map((item) => [item, channelLinks[item][0] || ""]));
     const nextSettings = {
       channelUrl: channelUrls[platform] || "",
       channelUrls,

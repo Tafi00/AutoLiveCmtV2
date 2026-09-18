@@ -21,20 +21,26 @@ export class AccountSessionManager {
     this.sessions = new Map();
   }
 
-  get(accountId, platform = "gosh") {
+  get(accountId, platform = "gosh", proxy = "") {
     const safeId = assertAccountId(accountId);
     if (!this.sessions.has(safeId)) {
       this.sessions.set(safeId, new BrowserSession({
         profileDirectory: accountProfileDirectory(this.dataDirectory, safeId),
         platform,
+        proxy,
       }));
+    } else {
+      const session = this.sessions.get(safeId);
+      if (proxy && session.proxy !== proxy) {
+        session.proxy = proxy;
+      }
     }
     return this.sessions.get(safeId);
   }
 
   async status(account) {
     try {
-      return { ...account, session: await this.get(account.id, account.platform).status() };
+      return { ...account, session: await this.get(account.id, account.platform, account.proxy).status() };
     } catch (error) {
       return {
         ...account,
@@ -53,27 +59,31 @@ export class AccountSessionManager {
     return Promise.all(accounts.map((account) => this.status(account)));
   }
 
-  async open(accountId, targetUrl, platform) {
-    return this.get(accountId, platform).open(targetUrl);
+  async open(accountId, targetUrl, platform, proxy) {
+    return this.get(accountId, platform, proxy).open(targetUrl);
   }
 
-  async openForManualLogin(accountId, targetUrl, platform, options) {
-    return this.get(accountId, platform).openForManualLogin(targetUrl, options);
+  async openForManualLogin(accountId, targetUrl, platform, options, proxy) {
+    return this.get(accountId, platform, proxy).openForManualLogin(targetUrl, options);
   }
 
-  async openProfile(accountId, platform, options) {
-    return this.get(accountId, platform).openProfile(options);
+  async login(accountId, credentials, platform, proxy) {
+    return this.get(accountId, platform, proxy).login(credentials);
   }
 
-  async updateDisplayName(accountId, displayName, platform) {
-    if (platform !== "gosh") {
-      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+  async openProfile(accountId, platform, options, proxy) {
+    return this.get(accountId, platform, proxy).openProfile(options);
+  }
+
+  async updateDisplayName(accountId, displayName, platform, proxy) {
+    if (platform !== "gosh" && platform !== "gaquaytv") {
+      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh và GaQuayTV.");
     }
-    return this.get(accountId, platform).updateDisplayName(displayName);
+    return this.get(accountId, platform, proxy).updateDisplayName(displayName);
   }
 
-  async sendComment(accountId, input, platform) {
-    return this.get(accountId, platform).sendComment(input);
+  async sendComment(accountId, input, platform, proxy) {
+    return this.get(accountId, platform, proxy).sendComment(input);
   }
 
   async close(accountId) {

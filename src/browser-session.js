@@ -3,20 +3,23 @@ import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { ProxyAgent } from "undici";
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import {
+  sendCommentViaGaquaytvTransport,
   sendCommentViaLocoTransport,
   sendCommentViaWebsiteTransport,
   shouldBlockBrowserResource,
 } from "./direct-comment-transport.js";
 import {
   assertPlatformUrl,
+  getGaquaytvRoomId,
   getLocoStreamId,
   normalizePlatform,
   PLATFORMS,
 } from "./platforms.js";
-
+import { parseProxy } from "./store.js";
 chromium.use(StealthPlugin());
 
 const CONFIRM_BUTTON_NAME = /^(Xác nhận(?: thay đổi)?|Đồng ý|Có|Tiếp tục|Confirm(?: change)?|Agree|Yes|Continue|OK)$/i;
@@ -76,27 +79,32 @@ export function recordObservedEndpoint(url, method = "GET", status = 200) {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    if (!host.includes("loco") && !host.includes("gosh") && !host.includes("getloconow") && !host.includes("vizzlive")) return;
+    if (!host.includes("loco") && !host.includes("gosh") && !host.includes("getloconow") && !host.includes("vizzlive") && !host.includes("gaquaytv")) return;
 
     const path = parsed.pathname;
     let category = "other";
     let name = path;
-
     if (path.includes("/chat/") || url.includes("send=true") || path.includes("/send_msg")) {
       category = "chat";
       name = "Gửi Chat";
-    } else if (path.includes("/profile/update") || path.includes("/user_center")) {
+    } else if (path.includes("/profile/update") || path.includes("/user_center") || path.includes("/update-profile")) {
       category = "profile_update";
       name = "Đổi tên";
-    } else if (path.includes("/refresh_token")) {
+    } else if (path.includes("/refresh_token") || path.includes("/refresh-token")) {
       category = "auth_refresh";
       name = "Làm mới Token";
-    } else if (path.includes("/profile/me") || path.includes("/user_info")) {
+    } else if (path.includes("/profile/me") || path.includes("/user_info") || path.includes("/auth/me")) {
       category = "profile_info";
       name = "Hồ sơ tài khoản";
+    } else if (path.includes("/auth/login") || path.includes("/auth/register") || path.includes("/auth/logout")) {
+      category = "auth";
+      name = "Đăng nhập";
     } else if (path.includes("/live/") || path.includes("/streams/")) {
       category = "live_stream";
       name = "Phòng Live";
+    } else if (path.includes("/schedule")) {
+      category = "schedule";
+      name = "Lịch Live";
     } else if (path.includes("/config")) {
       category = "config";
       name = "Cấu hình Website";
@@ -410,6 +418,46 @@ export function locoLoginProbeExpression() {
   })()`;
 }
 
+export function gaquaytvLoginProbeExpression() {
+  return `(async () => {
+    const cookieMap = Object.fromEntries((document.cookie || '').split(';').map((part) => {
+      const index = part.indexOf('=');
+      return index < 0 ? [part.trim(), ''] : [part.slice(0, index).trim(), part.slice(index + 1)];
+    }).filter(([key]) => key));
+    const accessToken = cookieMap.access_token || '';
+    if (!accessToken) return { loggedIn: false };
+
+    // The site's own client calls the v2 API with the cookie-held JWT. Reuse
+    // that call so the detected name matches what the chat composer will send.
+    try {
+      const res = await fetch('https://api.gaquaytv.com/api/v2/auth/me', {
+        headers: { Authorization: 'Bearer ' + accessToken },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const data = json?.data || json;
+        if (data && (data.display_name || data.username)) {
+          return { loggedIn: true, data };
+        }
+      }
+    } catch (e) {}
+
+    // Fall back to the JWT payload itself when the API is unreachable.
+    try {
+      const payload = accessToken.split('.')[1];
+      if (payload) {
+        const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const decoded = JSON.parse(decodeURIComponent(Array.from(atob(normalized), (char) =>
+          '%' + char.charCodeAt(0).toString(16).padStart(2, '0')).join('')));
+        const name = decoded.display_name || decoded.username || decoded.name || decoded.uid;
+        if (name) return { loggedIn: true, data: { display_name: String(name) } };
+      }
+    } catch (e) {}
+
+    return { loggedIn: true, data: { token: true } };
+  })()`;
+}
+
 export function isBrowserProcessRunning(process) {
   return Boolean(process && process.exitCode === null);
 }
@@ -551,11 +599,12 @@ function roomPageKey(value) {
 }
 
 export class BrowserSession {
-  constructor({ profileDirectory, platform = "gosh" }) {
+  constructor({ profileDirectory, platform = "gosh", proxy = "" }) {
     this.profileDirectory = profileDirectory;
     this.platform = normalizePlatform(platform);
     this.definition = PLATFORMS[this.platform];
-    this.context = null;
+    this.proxy = proxy || "";
+    this.dispatcher = this.proxy ? new ProxyAgent(this.proxy) : undefined;
     this.commentPage = null;
     this.profilePage = null;
     this.roomPages = new Map();
@@ -692,11 +741,13 @@ export class BrowserSession {
 
     await mkdir(this.profileDirectory, { recursive: true });
     await waitForProfileUnlock(this.profileDirectory);
+    const proxyConfig = parseProxy(this.proxy);
     this.context = await chromium.launchPersistentContext(this.profileDirectory, {
       executablePath,
       headless: true,
       viewport: null,
       locale: "vi-VN",
+      proxy: proxyConfig || undefined,
       // Google rejects OAuth in Chrome instances carrying Playwright's default
       // automation switch. The app still controls the browser after login, but
       // the sign-in flow sees a regular installed Chrome profile.
@@ -725,6 +776,36 @@ export class BrowserSession {
       }
       await route.continue();
     });
+
+    if (this.platform === "gaquaytv") {
+      await this.context.route("**/api.gaquaytv.com/**", async (route) => {
+        const req = route.request();
+        try {
+          const headers = { ...req.headers(), origin: "https://api.gaquaytv.com" };
+          const fetchOptions = {
+            method: req.method(),
+            headers,
+            body: req.postDataBuffer() || undefined,
+          };
+          if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
+          const response = await fetch(req.url(), fetchOptions);
+          const responseHeaders = {};
+          for (const [k, v] of response.headers.entries()) {
+            responseHeaders[k] = v;
+          }
+          responseHeaders["access-control-allow-origin"] = "https://gaquaytv.com";
+          responseHeaders["access-control-allow-credentials"] = "true";
+          const body = await response.text();
+          await route.fulfill({
+            status: response.status,
+            headers: responseHeaders,
+            body,
+          });
+        } catch {
+          await route.continue();
+        }
+      });
+    }
 
     this.context.on("response", (res) => {
       recordObservedEndpoint(res.url(), res.request().method(), res.status());
@@ -779,14 +860,19 @@ export class BrowserSession {
     this.suppressManualLoginReopen = false;
     this.manualLoginError = null;
     const debugPort = await availableLocalPort();
-    const child = spawn(executablePath, [
+    const proxyConfig = parseProxy(this.proxy);
+    const chromeArgs = [
       `--user-data-dir=${this.profileDirectory}`,
       `--remote-debugging-port=${debugPort}`,
       "--remote-debugging-address=127.0.0.1",
       "--no-first-run",
       "--no-default-browser-check",
-      safeUrl,
-    ], {
+    ];
+    if (proxyConfig?.server) {
+      chromeArgs.push(`--proxy-server=${proxyConfig.server}`);
+    }
+    chromeArgs.push(safeUrl);
+    const child = spawn(executablePath, chromeArgs, {
       stdio: "ignore",
     });
     this.manualLoginProcess = child;
@@ -829,10 +915,11 @@ export class BrowserSession {
         if (response.ok) {
           const targets = await response.json();
           const targetList = Array.isArray(targets) ? targets : [];
-
           const expression = this.platform === "loco"
             ? locoLoginProbeExpression()
-            : goshLoginProbeExpression();
+            : this.platform === "gaquaytv"
+              ? gaquaytvLoginProbeExpression()
+              : goshLoginProbeExpression();
 
           const pageTargets = targetList.filter((target) => {
             if (!target.webSocketDebuggerUrl) return false;
@@ -962,7 +1049,9 @@ export class BrowserSession {
     const commentBox = this.commentPage
       .getByPlaceholder(this.platform === "loco"
         ? /Slow mode|Send a message|Chat|Say something/i
-        : /Nói gì đó|Say something|Write a message/i)
+        : this.platform === "gaquaytv"
+          ? /tin nhắn trò chuyện|trò chuyện|chat/i
+          : /Nói gì đó|Say something|Write a message/i)
       .first();
 
     const [loginVisible, commentVisible] = await Promise.all([
@@ -999,6 +1088,19 @@ export class BrowserSession {
   async #detectIdentity() {
     await this.#ensureContext();
     const apiPayload = await this.commentPage.evaluate(async (platform) => {
+      if (platform === "gaquaytv") {
+        const cookieMap = Object.fromEntries((document.cookie || "").split(";").map((part) => {
+          const index = part.indexOf("=");
+          return index < 0 ? [part.trim(), ""] : [part.slice(0, index).trim(), part.slice(index + 1)];
+        }).filter(([key]) => key));
+        const token = cookieMap.access_token || "";
+        if (!token) throw new Error("no_token");
+        const response = await fetch("https://api.gaquaytv.com/api/v2/auth/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      }
       const endpoint = platform === "loco"
         ? "https://api.loco.com/auth/v3/user/device_profile/"
         : "/gosh_base/app/user/user_info";
@@ -1006,9 +1108,10 @@ export class BrowserSession {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     }, this.platform).catch(() => null);
-    const apiName = extractDisplayName(apiPayload);
+    const apiName = extractDisplayName(apiPayload?.data || apiPayload);
     if (apiName) {
-      return { displayName: apiName, source: this.platform === "loco" ? "device_profile" : "user_info", detectedAt: new Date().toISOString() };
+      const source = this.platform === "loco" ? "device_profile" : this.platform === "gaquaytv" ? "auth_me" : "user_info";
+      return { displayName: apiName, source, detectedAt: new Date().toISOString() };
     }
 
     const storagePayload = await this.commentPage.evaluate(() => {
@@ -1055,6 +1158,12 @@ export class BrowserSession {
       throw error;
     }
 
+    if (this.platform === "gaquaytv") {
+      const error = new Error("Chưa đọc được tên tài khoản GaQuayTV. Hãy hoàn tất đăng nhập rồi làm mới.");
+      error.code = "LOGIN_REQUIRED";
+      throw error;
+    }
+
     const profilePage = await this.#getProfilePage();
     const loginButton = profilePage.getByRole("button", {
       name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
@@ -1069,6 +1178,46 @@ export class BrowserSession {
     const displayName = (await nameInput.inputValue()).trim();
     if (!displayName) throw new Error("Không đọc được tên từ hồ sơ.");
     return { displayName, source: "profile", detectedAt: new Date().toISOString() };
+  }
+
+  async login({ usernameOrEmail, password }) {
+    await this.#ensureContext();
+    if (this.platform === "gaquaytv") {
+      const fetchOptions = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          origin: "https://api.gaquaytv.com",
+        },
+        body: JSON.stringify({
+          username_or_email: usernameOrEmail,
+          password,
+        }),
+      };
+      if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
+      const loginRes = await fetch("https://api.gaquaytv.com/api/v2/auth/login", fetchOptions);
+      if (!loginRes.ok) {
+        const err = await loginRes.json().catch(() => ({}));
+        throw new Error(err.message || `Đăng nhập thất bại (HTTP ${loginRes.status})`);
+      }
+      const data = (await loginRes.json())?.data;
+      if (!data?.access_token) throw new Error("Không nhận được token đăng nhập từ GaQuayTV.");
+
+      const expires = Math.floor(Date.now() / 1000) + 3600 * 24 * 7;
+      await this.context.addCookies([
+        { name: "access_token", value: data.access_token, domain: ".gaquaytv.com", path: "/", expires },
+        { name: "accessToken", value: data.access_token, domain: ".gaquaytv.com", path: "/", expires },
+        { name: "refresh_token", value: data.refresh_token, domain: ".gaquaytv.com", path: "/", expires },
+        { name: "refreshToken", value: data.refresh_token, domain: ".gaquaytv.com", path: "/", expires },
+      ]);
+
+      if (!this.commentPage || isAtTarget(this.commentPage.url(), "about:blank")) {
+        await this.open();
+      } else {
+        await this.commentPage.reload({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      }
+      return this.detectIdentity({ force: true });
+    }
   }
 
   async openProfile() {
@@ -1112,14 +1261,65 @@ export class BrowserSession {
   async updateDisplayName(displayName) {
     const cleanName = String(displayName ?? "").trim();
     if (!cleanName) throw new Error("Tên hiển thị không được để trống.");
-    if (this.platform !== "gosh") {
-      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+    if (this.platform !== "gosh" && this.platform !== "gaquaytv") {
+      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh và GaQuayTV.");
     }
     const maxLength = 20;
     if (cleanName.length > maxLength) {
       throw new Error(`Tên hiển thị không được vượt quá ${maxLength} ký tự.`);
     }
     await this.#closeManualLoginForProfileUse();
+
+    if (this.platform === "gaquaytv") {
+      // The profile editor is a modal, not a route: reuse the profile page tab
+      // on the homepage and call the same v2 endpoints the site calls, with
+      // the cookie-held JWT never leaving Chrome.
+      const profilePage = await this.#getProfilePage();
+      const result = await profilePage.evaluate(async (displayName) => {
+        const cookieMap = Object.fromEntries((document.cookie || "").split(";").map((part) => {
+          const index = part.indexOf("=");
+          return index < 0 ? [part.trim(), ""] : [part.slice(0, index).trim(), part.slice(index + 1)];
+        }).filter(([key]) => key));
+        const token = cookieMap.access_token || "";
+        if (!token) return { ok: false, status: 401, reason: "no_token" };
+        const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+        const meResponse = await fetch("https://api.gaquaytv.com/api/v2/auth/me", { headers });
+        if (meResponse.status === 401) return { ok: false, status: 401, reason: "unauthorized" };
+        if (!meResponse.ok) return { ok: false, status: meResponse.status, reason: "profile_fetch_failed" };
+        const me = (await meResponse.json().catch(() => ({})))?.data || {};
+        const updateResponse = await fetch("https://api.gaquaytv.com/api/v2/auth/update-profile", {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({
+            avatar: me.avatar ?? null,
+            cover: me.cover ?? null,
+            display_name: displayName,
+            bio: me.bio ?? null,
+            social_links: Array.isArray(me.social_links) ? me.social_links : [],
+          }),
+        });
+        const data = await updateResponse.json().catch(() => ({}));
+        if (updateResponse.status === 401) return { ok: false, status: 401, reason: "unauthorized" };
+        if (!updateResponse.ok) {
+          return { ok: false, status: updateResponse.status, reason: data?.message || "update_failed" };
+        }
+        return { ok: true, status: updateResponse.status, data };
+      }, cleanName).catch((error) => ({ ok: false, status: 0, reason: String(error?.message || error) }));
+
+      if (!result.ok) {
+        const error = new Error(
+          result.status === 401
+            ? "Bạn cần đăng nhập GaQuayTV trước khi đổi tên."
+            : `Lỗi cập nhật tên GaQuayTV (${result.reason || `HTTP ${result.status}`})`,
+        );
+        if (result.status === 401) error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
+
+      this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
+      await this.#refreshCommentPageIdentity();
+      return { displayName: cleanName, updatedAt: new Date().toISOString() };
+    }
 
     if (this.platform === "loco") {
       let createdContext = false;
@@ -1437,10 +1637,37 @@ export class BrowserSession {
       }
     }
 
+    if (this.platform === "gaquaytv") {
+      directResult = await page.evaluate(sendCommentViaGaquaytvTransport, {
+        content: cleanContent,
+      }).catch(() => ({
+        status: "failed",
+        attempted: false,
+        reason: "page_evaluate_failed",
+      }));
+
+      if (directResult.status === "sent") {
+        return {
+          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
+          url: page.url(),
+          transport: "websocket",
+          provider: directResult.provider,
+          providerMessageId: directResult.providerMessageId,
+        };
+      }
+      if (directResult.reason === "login_required") {
+        const error = new Error("Bạn cần đăng nhập GaQuayTV trong cửa sổ Chrome trước khi gửi.");
+        error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
+    }
+
     const textBox = page
       .locator(this.platform === "loco"
         ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
-        : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
+        : this.platform === "gaquaytv"
+          ? '[class*="bg-surface-chat"] textarea, textarea[placeholder*="trò chuyện" i], textarea[placeholder*="tin nhắn" i], [contenteditable="true"]'
+          : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
       .first();
     await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
       if (directResult?.attempted && directResult?.reason) {
@@ -1474,10 +1701,15 @@ export class BrowserSession {
       }
     }
 
-    await textBox.press("Enter");
+    // GaQuayTV's composer is a textarea where Enter inserts a newline; its
+    // send button carries an aria-label instead of text content.
+    if (this.platform !== "gaquaytv") {
+      await textBox.press("Enter");
+    }
 
-    const sendButton = page.locator(
-      'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
+    const sendButton = page.locator(this.platform === "gaquaytv"
+      ? '[class*="bg-surface-chat"] button[aria-label*="Gửi tin nhắn" i], [class*="bg-surface-chat"] button[aria-label*="send" i]'
+      : 'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
     ).first();
 
     if (await sendButton.isVisible({ timeout: 1000 }).catch(() => false)) {

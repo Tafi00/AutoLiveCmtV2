@@ -30,6 +30,9 @@ export async function createServerApp({
 
   const sessions = new AccountSessionManager({ dataDirectory });
 
+const PLATFORM_IDS = Object.keys(PLATFORMS);
+const RENAME_PLATFORMS = new Set(["gosh", "gaquaytv"]);
+
 const bulkSend = {
   running: false,
   stopRequested: false,
@@ -44,9 +47,9 @@ const bulkSend = {
   failures: [],
   currentAccount: "",
   activePlatforms: [],
-  linkTotals: { gosh: 0, loco: 0 },
-  messageTotals: { gosh: 0, loco: 0 },
-  completedByPlatform: { gosh: 0, loco: 0 },
+  linkTotals: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
+  messageTotals: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
+  completedByPlatform: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
   phase: "idle",
   wakeWaiter: null,
 };
@@ -101,10 +104,7 @@ async function dashboardState() {
   return {
     ...state,
     accounts: state.accounts.map((account) => ({ ...account, session: sessionsById.get(account.id) })),
-    nextMessages: {
-      gosh: store.getNextMessage("gosh"),
-      loco: store.getNextMessage("loco"),
-    },
+    nextMessages: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, store.getNextMessage(platform)])),
     nextMessage: store.getNextMessage(state.settings.platform),
     cooldown: store.cooldown(),
     bulkSend: bulkSendState(),
@@ -169,7 +169,7 @@ function destinationsWithMessages(state, platforms = null) {
 }
 
 function assertDestinations(state, { requireMessages = false, platforms = null } = {}) {
-  const requestedPlatforms = platforms || Object.keys(PLATFORMS);
+  const requestedPlatforms = platforms || PLATFORM_IDS;
   const destinations = availableDestinations(state)
     .filter(({ platform }) => requestedPlatforms.includes(platform));
   if (destinations.length && !requireMessages) return destinations;
@@ -179,7 +179,10 @@ function assertDestinations(state, { requireMessages = false, platforms = null }
     throw new Error("Kho bình luận của website đang hoạt động đang trống.");
   }
   const hasRoom = requestedPlatforms.some((platform) => channelLinksForPlatform(state, platform).length);
-  if (!hasRoom) throw new Error("Hãy lưu URL phòng live cho Gosh hoặc Loco trước.");
+  if (!hasRoom) {
+    const names = Object.values(PLATFORMS).map((platform) => platform.name).join(" hoặc ");
+    throw new Error(`Hãy lưu URL phòng live cho ${names} trước.`);
+  }
   throw new Error("Cần bật ít nhất một tài khoản phù hợp với website đã nhập URL.");
 }
 
@@ -198,8 +201,9 @@ function waitForBulk(milliseconds) {
 
 async function updateDisplayName(accountId, displayName) {
   const account = accountOrThrow(accountId);
-  if (account.platform !== "gosh") {
-    const error = new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh.");
+  if (!RENAME_PLATFORMS.has(account.platform)) {
+    const names = [...RENAME_PLATFORMS].map((platform) => PLATFORMS[platform].name).join(" và ");
+    const error = new Error(`Chức năng đổi tên chỉ áp dụng cho tài khoản ${names}.`);
     error.status = 400;
     throw error;
   }
@@ -208,7 +212,7 @@ async function updateDisplayName(accountId, displayName) {
   }
   displayNameUpdates.add(accountId);
   try {
-    const result = await sessions.updateDisplayName(accountId, displayName, account.platform);
+    const result = await sessions.updateDisplayName(accountId, displayName, account.platform, account.proxy);
     await store.updateAccountProfileName(accountId, result.displayName);
     return result;
   } finally {
@@ -218,18 +222,18 @@ async function updateDisplayName(accountId, displayName) {
 
 async function updateAutomaticDisplayNames(accounts) {
   if (!store.shouldRename()) return null;
-  const goshAccounts = [...new Map(
+  const renameAccounts = [...new Map(
     accounts
-      .filter((account) => account.platform === "gosh")
+      .filter((account) => RENAME_PLATFORMS.has(account.platform))
       .map((account) => [account.id, account]),
   ).values()];
-  if (!goshAccounts.length) return null;
+  if (!renameAccounts.length) return null;
   if (bulkSend.running) bulkSend.phase = "renaming";
 
   const results = [];
   const chosenNames = [];
 
-  for (const account of goshAccounts) {
+  for (const account of renameAccounts) {
     const currentName = account.profileName || account.name;
     const displayName = store.getRandomDisplayName(currentName);
     if (!displayName) continue;
@@ -289,7 +293,7 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
     sessions.sendComment(account.id, {
       channelUrl,
       content: message.content,
-    }, account.platform)
+    }, account.platform, account.proxy)
   )));
   const results = settled.map((outcome, index) => {
     const { platform, channelUrl, account, message } = selected[index];
@@ -331,15 +335,15 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
     : successes.map(({ platform }) => platform);
   await store.markSent({
     platforms: platformsToAdvance,
-    countForRename: successes.some((result) => result.platform === "gosh"),
+    countForRename: successes.some((result) => RENAME_PLATFORMS.has(result.platform)),
   });
 
   let rename = null;
-  const successfulGoshAccounts = selected
-    .filter(({ account, platform }) => successes.some((result) => result.accountId === account.id && result.platform === platform && platform === "gosh"))
+  const successfulRenameAccounts = selected
+    .filter(({ account, platform }) => successes.some((result) => result.accountId === account.id && result.platform === platform && RENAME_PLATFORMS.has(platform)))
     .map(({ account }) => account);
-  if (successfulGoshAccounts.length && store.shouldRename()) {
-    rename = await updateAutomaticDisplayNames(successfulGoshAccounts);
+  if (successfulRenameAccounts.length && store.shouldRename()) {
+    rename = await updateAutomaticDisplayNames(successfulRenameAccounts);
   }
 
   return {
@@ -456,7 +460,7 @@ app.post("/api/accounts/:id/browser/open", asyncRoute(async (request, response) 
   const account = accountOrThrow(request.params.id);
   const state = store.snapshot();
   const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
-  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: false });
+  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: false }, account.proxy);
   response.json({ account: { ...account, session } });
 }));
 
@@ -467,8 +471,24 @@ app.post("/api/accounts/:id/browser/login", asyncRoute(async (request, response)
   const account = accountOrThrow(request.params.id);
   const state = store.snapshot();
   const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
-  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: true });
+  const session = await sessions.openForManualLogin(account.id, targetUrl, account.platform, { autoCloseOnLogin: true }, account.proxy);
   response.json({ account: { ...account, session } });
+}));
+
+app.post("/api/accounts/:id/login", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi đăng nhập." });
+  }
+  const account = accountOrThrow(request.params.id);
+  const { usernameOrEmail, password } = request.body || {};
+  if (!usernameOrEmail || !password) {
+    return response.status(400).json({ error: "Vui lòng nhập tài khoản và mật khẩu." });
+  }
+  const identity = await sessions.login(account.id, { usernameOrEmail, password }, account.platform, account.proxy);
+  if (identity?.displayName) {
+    await store.updateAccount(account.id, { profileName: identity.displayName });
+  }
+  response.json(await dashboardState());
 }));
 
 app.post("/api/accounts/:id/browser/profile", asyncRoute(async (request, response) => {
@@ -476,7 +496,7 @@ app.post("/api/accounts/:id/browser/profile", asyncRoute(async (request, respons
     return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi mở hồ sơ." });
   }
   const account = accountOrThrow(request.params.id);
-  const session = await sessions.openProfile(account.id, account.platform, { autoCloseOnLogin: false });
+  const session = await sessions.openProfile(account.id, account.platform, { autoCloseOnLogin: false }, account.proxy);
   response.json({ account: { ...account, session } });
 }));
 
@@ -499,13 +519,13 @@ app.post("/api/browser/open", asyncRoute(async (request, response) => {
   const account = store.getEnabledAccounts(state.settings.platform)[0];
   if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
   const targetUrl = request.body?.targetUrl || channelUrlForPlatform(state, account.platform) || undefined;
-  response.json({ browser: await sessions.open(account.id, targetUrl, account.platform) });
+  response.json({ browser: await sessions.open(account.id, targetUrl, account.platform, account.proxy) });
 }));
 
 app.post("/api/browser/profile", asyncRoute(async (_request, response) => {
   const account = store.getEnabledAccounts(store.snapshot().settings.platform)[0];
   if (!account) return response.status(400).json({ error: "Cần bật ít nhất một tài khoản." });
-  response.json({ browser: await sessions.openProfile(account.id, account.platform) });
+  response.json({ browser: await sessions.openProfile(account.id, account.platform, { autoCloseOnLogin: false }, account.proxy) });
 }));
 
 app.post("/api/profile/display-name", asyncRoute(async (request, response) => {
@@ -594,20 +614,23 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
   let available;
   try { available = assertDestinations(state); }
   catch (error) { return response.status(400).json({ error: error.message }); }
-  const messageTotals = Object.fromEntries(Object.keys(PLATFORMS).map((platform) => [
+  const messageTotals = Object.fromEntries(PLATFORM_IDS.map((platform) => [
     platform,
     available.some((destination) => destination.platform === platform) ? store.getMessages(platform).length : 0,
   ]));
-  const linkTotals = Object.fromEntries(Object.keys(PLATFORMS).map((platform) => [
+  const linkTotals = Object.fromEntries(PLATFORM_IDS.map((platform) => [
     platform,
     available.filter((destination) => destination.platform === platform).length,
   ]));
-  const totalMessages = Object.keys(PLATFORMS).reduce(
+  const totalMessages = PLATFORM_IDS.reduce(
     (sum, platform) => sum + messageTotals[platform] * linkTotals[platform],
     0,
   );
   const roundCount = Math.max(...Object.values(messageTotals), 0);
-  if (!totalMessages) return response.status(400).json({ error: "Kho bình luận của Gosh và Loco đang trống." });
+  if (!totalMessages) {
+    const names = Object.values(PLATFORMS).map((platform) => platform.name).join(" và ");
+    return response.status(400).json({ error: `Kho bình luận của ${names} đang trống.` });
+  }
   const destinations = available.filter(({ platform }) => messageTotals[platform] > 0);
 
   Object.assign(bulkSend, {
@@ -626,7 +649,7 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
     activePlatforms: [...new Set(destinations.map(({ platform }) => platform))],
     linkTotals,
     messageTotals,
-    completedByPlatform: { gosh: 0, loco: 0 },
+    completedByPlatform: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
     phase: "starting",
     wakeWaiter: null,
   });

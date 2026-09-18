@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
+  sendCommentViaGaquaytvTransport,
   sendCommentViaLocoTransport,
   sendCommentViaWebsiteTransport,
   shouldBlockBrowserResource,
@@ -528,4 +530,53 @@ test("Gosh stream segments are blocked when the CDN hostname changes", () => {
     assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: `https://new-cdn.example/live/video.${extension}?token=test` }), true);
   }
   assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: "https://api.gosh.com/live/join" }), false);
+});
+
+test("GaQuayTV gửi bình luận qua onSendBody của chính website", async () => {
+  const sent = [];
+  const composer = {
+    __reactFiber$test: {
+      memoizedProps: {
+        isLoggedIn: true,
+        onSendBody: (body) => {
+          sent.push(body);
+        },
+      },
+      return: null,
+    },
+  };
+  const sandbox = {
+    document: {
+      querySelector: (selector) => (selector.includes("bg-surface-chat") ? composer : null),
+    },
+    setTimeout,
+  };
+  const result = await runInNewContext(`(${sendCommentViaGaquaytvTransport})`, sandbox)({ content: "Chào GaQuayTV" });
+  assert.equal(result.status, "sent");
+  assert.equal(result.provider, "gaquaytv-socket");
+  assert.deepEqual(sent, ["Chào GaQuayTV"]);
+});
+
+test("GaQuayTV báo cần đăng nhập khi modal đăng nhập xuất hiện sau khi gửi", async () => {
+  const composer = {
+    __reactFiber$test: {
+      memoizedProps: {
+        isLoggedIn: true,
+        onSendBody: () => {},
+      },
+      return: null,
+    },
+  };
+  const sandbox = {
+    document: {
+      querySelector: (selector) => {
+        if (selector === 'input[name="usernameOrEmail"]') return {};
+        return selector.includes("bg-surface-chat") ? composer : null;
+      },
+    },
+    setTimeout,
+  };
+  const result = await runInNewContext(`(${sendCommentViaGaquaytvTransport})`, sandbox)({ content: "Xin chào" });
+  assert.equal(result.status, "failed");
+  assert.equal(result.reason, "login_required");
 });

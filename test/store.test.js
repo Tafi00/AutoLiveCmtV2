@@ -11,10 +11,11 @@ import {
   normalizeChannelLinks,
   normalizeChannelUrl,
   normalizeAccountName,
-  normalizeRenameEveryComments,
   normalizeMessages,
+  normalizeProxyUrl,
+  normalizeRenameEveryComments,
+  parseProxy,
 } from "../src/store.js";
-
 test("chấp nhận URL HTTPS của cả hai miền Gosh", () => {
   assert.equal(normalizeGoshUrl("https://gosh6.app/15942759"), "https://gosh6.app/15942759");
   assert.equal(normalizeGoshUrl("https://gosh.com/vi/16427037"), "https://gosh.com/vi/16427037");
@@ -23,9 +24,12 @@ test("chấp nhận URL HTTPS của cả hai miền Gosh", () => {
   assert.throws(() => normalizeGoshUrl("https://example.com/15942759"));
 });
 
-test("chấp nhận phòng live Gosh và Loco, từ chối URL ngoài hệ thống", () => {
+test("chấp nhận phòng live Gosh, Loco và GaQuayTV, từ chối URL ngoài hệ thống", () => {
   assert.equal(normalizeChannelUrl("https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"), "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
   assert.equal(normalizeChannelUrl("https://loco.com/streamers/Supreme.Heart109"), "https://loco.com/streamers/Supreme.Heart109");
+  assert.equal(normalizeChannelUrl("https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd"), "https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd");
+  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/hotgirl-live"), /chưa phải phòng live/);
+  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/live/not-a-uuid"), /chưa phải phòng live/);
   assert.throws(() => normalizeChannelUrl("https://loco.com/browse"), /chưa phải phòng live/);
   assert.throws(() => normalizeChannelUrl("https://example.com/live"));
 });
@@ -40,6 +44,7 @@ test("chuẩn hóa nhiều phòng live riêng cho từng website", () => {
   }), {
     gosh: [goshOne, goshTwo],
     loco: [locoOne],
+    gaquaytv: [],
   });
   assert.throws(() => normalizeChannelLinks({
     gosh: ["https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"],
@@ -88,7 +93,7 @@ test("tự chuyển dữ liệu một tài khoản cũ thành tài khoản mặc
     assert.equal(state.messages[0].content, "Tin cũ");
     assert.equal(state.messagesByPlatform.gosh[0].content, "Tin cũ");
     assert.equal(state.messagesByPlatform.loco[0].content, "Tin cũ");
-    assert.deepEqual(state.settings.channelUrls, { gosh: "", loco: "" });
+    assert.deepEqual(state.settings.channelUrls, { gosh: "", loco: "", gaquaytv: "" });
     assert.match(await readFile(join(directory, "state.json"), "utf8"), /"accounts"/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -115,6 +120,7 @@ test("lưu đồng thời phòng live Gosh và Loco", async () => {
     assert.deepEqual(settings.channelLinks, {
       gosh: ["https://gosh.com/vi/16427037"],
       loco: ["https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"],
+      gaquaytv: [],
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -139,13 +145,13 @@ test("lưu và tải lại nhiều phòng live trong cùng một website", async
       displayNames: [],
       renameEveryComments: 1,
     });
-    assert.deepEqual(settings.channelLinks, channelLinks);
+    assert.deepEqual(settings.channelLinks, { ...channelLinks, gaquaytv: [] });
     assert.equal(settings.channelUrls.gosh, channelLinks.gosh[0]);
     assert.equal(settings.channelUrls.loco, channelLinks.loco[0]);
 
     const reloaded = new JsonStore(directory);
     const state = await reloaded.init();
-    assert.deepEqual(state.settings.channelLinks, channelLinks);
+    assert.deepEqual(state.settings.channelLinks, { ...channelLinks, gaquaytv: [] });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -406,6 +412,57 @@ test("nhiều tài khoản gửi các bình luận khác nhau theo thứ tự h�
     // Tiếp tục tài khoản tiếp theo sẽ lấy Comment D
     const nextMsg = store.getNextMessage();
     assert.equal(nextMsg.content, "Comment D");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parseProxy và normalizeProxyUrl chuẩn hóa các định dạng proxy", () => {
+  assert.deepEqual(parseProxy("http://user:pass@127.0.0.1:8080"), {
+    server: "http://127.0.0.1:8080",
+    username: "user",
+    password: "pass",
+  });
+  assert.deepEqual(parseProxy("socks5://127.0.0.1:1080"), {
+    server: "socks5://127.0.0.1:1080",
+  });
+  assert.deepEqual(parseProxy("127.0.0.1:8080:myuser:mypass"), {
+    server: "http://127.0.0.1:8080",
+    username: "myuser",
+    password: "mypass",
+  });
+  assert.deepEqual(parseProxy("127.0.0.1:8080"), {
+    server: "http://127.0.0.1:8080",
+  });
+  assert.equal(parseProxy(""), null);
+  assert.equal(parseProxy(null), null);
+  assert.throws(() => parseProxy("not_a_valid_proxy:xyz:abc"), /Định dạng proxy không hợp lệ/);
+
+  assert.equal(normalizeProxyUrl("127.0.0.1:8080:u1:p1"), "http://u1:p1@127.0.0.1:8080");
+  assert.equal(normalizeProxyUrl("socks5://127.0.0.1:1080"), "socks5://127.0.0.1:1080");
+  assert.equal(normalizeProxyUrl("   "), "");
+});
+
+test("lưu và cập nhật proxy riêng cho từng tài khoản", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "account-proxy-test-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    const account = await store.addAccount("GQ Proxy", "gaquaytv");
+    assert.equal(account.proxy, "");
+
+    const updated = await store.updateAccount(account.id, {
+      proxy: "127.0.0.1:8080:usr:pwd",
+    });
+    assert.equal(updated.proxy, "http://usr:pwd@127.0.0.1:8080");
+
+    const reloaded = new JsonStore(directory);
+    await reloaded.init();
+    const loadedAccount = reloaded.getAccount(account.id);
+    assert.equal(loadedAccount.proxy, "http://usr:pwd@127.0.0.1:8080");
+
+    const cleared = await reloaded.updateAccount(account.id, { proxy: "" });
+    assert.equal(cleared.proxy, "");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

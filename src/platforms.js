@@ -16,6 +16,18 @@ export const PLATFORMS = Object.freeze({
     hostPattern: /(^|\.)loco\.com$/i,
     roomPathPattern: /^\/(?:stream|streamers)\//i,
   }),
+  // GaQuayTV (gaquaytv.com) is a Next.js site whose live rooms live at
+  // /live/{uuid}; the uuid doubles as the chat room id on its socket.io server.
+  gaquaytv: Object.freeze({
+    id: "gaquaytv",
+    name: "GaQuayTV",
+    homeUrl: "https://gaquaytv.com/",
+    // Profile editing happens inside a modal on any page; there is no
+    // dedicated profile route, so the homepage hosts the profile session.
+    profileUrl: "https://gaquaytv.com/",
+    hostPattern: /(^|\.)gaquaytv\.com$/i,
+    roomPathPattern: /^\/live\/[0-9a-f-]{20,}/i,
+  }),
 });
 
 export function normalizePlatform(value, fallback = "gosh") {
@@ -46,7 +58,7 @@ export function normalizeChannelUrl(value, { allowEmpty = true, platform } = {})
   }
   const detectedPlatform = platformFromUrl(url.href);
   if (url.protocol !== "https:" || !detectedPlatform) {
-    throw new Error("Chỉ chấp nhận URL HTTPS của Gosh hoặc Loco.");
+    throw new Error("Chỉ chấp nhận URL HTTPS của các website được hỗ trợ.");
   }
   if (platform && detectedPlatform !== normalizePlatform(platform)) {
     throw new Error("URL phòng live không khớp nền tảng đã chọn.");
@@ -70,6 +82,15 @@ export function assertPlatformUrl(value, platform) {
 export function getLocoStreamId(value) {
   try {
     const match = new URL(value).pathname.match(/^\/stream\/([a-f0-9-]{20,})/i);
+    return match?.[1] || "";
+  } catch {
+    return "";
+  }
+}
+
+export function getGaquaytvRoomId(value) {
+  try {
+    const match = new URL(value).pathname.match(/^\/live\/([0-9a-f-]{20,})/i);
     return match?.[1] || "";
   } catch {
     return "";
