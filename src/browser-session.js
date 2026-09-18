@@ -1590,13 +1590,40 @@ export class BrowserSession {
     // headless context instead of failing with USER_ACTION_REQUIRED.
     await this.#closeManualLoginForProfileUse();
     const page = await this.#getRoomPage(safeUrl);
-    const loginButton = page.getByRole("button", {
-      name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-    });
-    if (await loginButton.isVisible().catch(() => false)) {
-      const error = new Error("Bạn cần đăng nhập trong cửa sổ Chrome trước khi gửi.");
-      error.code = "LOGIN_REQUIRED";
-      throw error;
+    let textBox = null;
+    if (this.platform === "gaquaytv") {
+      textBox = page
+        .locator('[class*="bg-surface-chat"] textarea, textarea[placeholder*="trò chuyện" i], textarea[placeholder*="tin nhắn" i], textarea, [contenteditable="true"]')
+        .first();
+      await textBox.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
+        throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
+      });
+
+      // Next.js SSR renders an anonymous placeholder ("Đăng nhập để trò chuyện")
+      // before client hydration completes. Wait up to 6s for hydration to load
+      // the user session and switch to an active chat composer.
+      const hydrationDeadline = Date.now() + 6_000;
+      while (Date.now() < hydrationDeadline) {
+        const placeholder = await textBox.getAttribute("placeholder").catch(() => "") || "";
+        if (!placeholder.toLowerCase().includes("đăng nhập")) break;
+        await page.waitForTimeout(250);
+      }
+
+      const finalPlaceholder = await textBox.getAttribute("placeholder").catch(() => "") || "";
+      if (finalPlaceholder.toLowerCase().includes("đăng nhập")) {
+        const error = new Error("Bạn cần đăng nhập GaQuayTV trong cửa sổ Chrome trước khi gửi.");
+        error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
+    } else {
+      const loginButton = page.getByRole("button", {
+        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
+      });
+      if (await loginButton.isVisible().catch(() => false)) {
+        const error = new Error("Bạn cần đăng nhập trong cửa sổ Chrome trước khi gửi.");
+        error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
     }
 
     let directResult = null;
@@ -1662,19 +1689,19 @@ export class BrowserSession {
       }
     }
 
-    const textBox = page
-      .locator(this.platform === "loco"
-        ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
-        : this.platform === "gaquaytv"
-          ? '[class*="bg-surface-chat"] textarea, textarea[placeholder*="trò chuyện" i], textarea[placeholder*="tin nhắn" i], [contenteditable="true"]'
+    if (!textBox) {
+      textBox = page
+        .locator(this.platform === "loco"
+          ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
           : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
-      .first();
-    await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
-      if (directResult?.attempted && directResult?.reason) {
-        throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason}`);
-      }
-      throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
-    });
+        .first();
+      await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
+        if (directResult?.attempted && directResult?.reason) {
+          throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason}`);
+        }
+        throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
+      });
+    }
 
     await textBox.fill(cleanContent);
 
