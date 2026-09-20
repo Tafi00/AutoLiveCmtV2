@@ -26,7 +26,7 @@ export const PLATFORMS = Object.freeze({
     // dedicated profile route, so the homepage hosts the profile session.
     profileUrl: "https://gaquaytv.com/",
     hostPattern: /(^|\.)gaquaytv\.com$/i,
-    roomPathPattern: /^\/live\/[0-9a-f-]{20,}/i,
+    roomPathPattern: null,
   }),
 });
 
@@ -63,7 +63,8 @@ export function normalizeChannelUrl(value, { allowEmpty = true, platform } = {})
   if (platform && detectedPlatform !== normalizePlatform(platform)) {
     throw new Error("URL phòng live không khớp nền tảng đã chọn.");
   }
-  if (!PLATFORMS[detectedPlatform].roomPathPattern.test(url.pathname)) {
+  const pattern = PLATFORMS[detectedPlatform].roomPathPattern;
+  if (pattern && !pattern.test(url.pathname)) {
     throw new Error(`URL chưa phải phòng live hợp lệ của ${PLATFORMS[detectedPlatform].name}.`);
   }
   url.hash = "";
@@ -90,9 +91,8 @@ export function getLocoStreamId(value) {
 
 export function getGaquaytvRoomId(value) {
   try {
-    const match = new URL(value).pathname.match(/^\/live\/([0-9a-f-]{20,})/i);
+    const match = new URL(value).pathname.match(/^\/live\/([^/?#]+)/i);
     return match?.[1] || "";
   } catch {
-    return "";
   }
 }

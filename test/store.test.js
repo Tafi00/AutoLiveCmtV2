@@ -28,8 +28,7 @@ test("chấp nhận phòng live Gosh, Loco và GaQuayTV, từ chối URL ngoài 
   assert.equal(normalizeChannelUrl("https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"), "https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a");
   assert.equal(normalizeChannelUrl("https://loco.com/streamers/Supreme.Heart109"), "https://loco.com/streamers/Supreme.Heart109");
   assert.equal(normalizeChannelUrl("https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd"), "https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd");
-  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/hotgirl-live"), /chưa phải phòng live/);
-  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/live/not-a-uuid"), /chưa phải phòng live/);
+  assert.equal(normalizeChannelUrl("https://gaquaytv.com/live/livestream-tipclub-abcd-do111lly234-9696d57d"), "https://gaquaytv.com/live/livestream-tipclub-abcd-do111lly234-9696d57d");
   assert.throws(() => normalizeChannelUrl("https://loco.com/browse"), /chưa phải phòng live/);
   assert.throws(() => normalizeChannelUrl("https://example.com/live"));
 });
