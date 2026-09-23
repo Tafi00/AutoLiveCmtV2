@@ -108,8 +108,7 @@ async function checkForUpdate() {
   try {
     const result = await window.desktopUpdater.check();
     if (result.status === "available") {
-      setUpdateStatus(`Có bản ${result.version}` , "success");
-      if (window.confirm(`Đã có bản ${result.version}. Tải xuống ngay?`)) await window.desktopUpdater.download();
+      setUpdateStatus(`Có bản ${result.version}; đang tải`, "saving");
     } else if (result.status === "up-to-date") setUpdateStatus("Đang dùng bản mới nhất", "success");
     else setUpdateStatus(result.message || "Không thể kiểm tra", "warning");
   } catch (error) { setUpdateStatus(error.message, "error"); }
@@ -120,9 +119,8 @@ elements.checkUpdate?.addEventListener("click", checkForUpdate);
 window.desktopUpdater?.onStatus((event) => {
   if (event.status === "downloading") setUpdateStatus(`Đang tải ${event.percent}%`, "saving");
   else if (event.status === "downloaded") {
-    setUpdateStatus("Đã tải xong", "success");
-    if (window.confirm("Đã tải bản cập nhật. Khởi động lại để cài đặt?")) window.desktopUpdater.install();
-  } else if (event.status === "available") setUpdateStatus(`Có bản ${event.version}`, "success");
+    setUpdateStatus("Đã tải xong; đóng ứng dụng để cài đặt bản mới", "success");
+  } else if (event.status === "available") setUpdateStatus(`Có bản ${event.version}; đang tải`, "saving");
   else if (event.status === "error") setUpdateStatus(event.message, "error");
 });
 

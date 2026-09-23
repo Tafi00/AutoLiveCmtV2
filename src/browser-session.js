@@ -749,7 +749,7 @@ export class BrowserSession {
     this.context = await chromium.launchPersistentContext(this.profileDirectory, {
       executablePath,
       headless: true,
-      viewport: null,
+      viewport: this.platform === "loco" ? { width: 1440, height: 900 } : null,
       locale: "vi-VN",
       proxy: proxyConfig || undefined,
       // Google rejects OAuth in Chrome instances carrying Playwright's default
@@ -1622,6 +1622,14 @@ export class BrowserSession {
 
     let directResult = null;
     if (this.platform === "loco") {
+      const loginButton = page.getByRole("button", {
+        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
+      });
+      if (await loginButton.isVisible().catch(() => false)) {
+        const error = new Error("Bạn cần đăng nhập Loco trong cửa sổ Chrome trước khi gửi chat.");
+        error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
       const matureConfirmation = page
         .getByRole("button", { name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i })
         .first();
@@ -1643,7 +1651,7 @@ export class BrowserSession {
           attempted: false,
           reason: "page_evaluate_failed",
         }));
-        if (directResult.status === "sent" || Date.now() >= transportDeadline) break;
+        if (directResult.status === "sent" || directResult.attempted || Date.now() >= transportDeadline) break;
         await page.waitForTimeout(400);
       } while (true);
 
@@ -1655,6 +1663,11 @@ export class BrowserSession {
           provider: directResult.provider,
           providerMessageId: directResult.providerMessageId,
         };
+      }
+      // Once the website has started a request, a missing acknowledgement does
+      // not prove that the message was rejected. Retrying via the UI can post it twice.
+      if (directResult.attempted) {
+        throw new Error(`Loco chưa xác nhận gửi chat: ${directResult.reason || "không có phản hồi"}. Hãy kiểm tra lịch sử chat trước khi thử lại.`);
       }
     }
 
@@ -1686,15 +1699,32 @@ export class BrowserSession {
     if (!textBox) {
       textBox = page
         .locator(this.platform === "loco"
-          ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i]'
+          ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i], textarea[placeholder*="message" i], textarea[placeholder*="chat" i], [data-test-id*="chat-input" i] input, [data-testid*="chat-input" i] input, [role="textbox"][contenteditable="true"]'
           : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
         .first();
       await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
         if (directResult?.attempted && directResult?.reason) {
           throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason}`);
         }
+        if (this.platform === "loco") {
+          throw new Error(`Không tìm thấy ô chat Loco tại ${page.url()}. Trang chưa mở phòng live có chat, chưa đăng nhập, hoặc giao diện chat đã thay đổi (gửi qua HTTPS: ${directResult?.reason || "không khả dụng"}).`);
+        }
         throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
       });
+    }
+
+    if (this.platform === "loco" && await textBox.evaluate((element) =>
+      element.readOnly || element.disabled || element.getAttribute("aria-disabled") === "true"
+    ).catch(() => false)) {
+      const loginButton = page.getByRole("button", {
+        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
+      });
+      if (await loginButton.isVisible().catch(() => false)) {
+        const error = new Error("Bạn cần đăng nhập Loco trong cửa sổ Chrome trước khi gửi chat.");
+        error.code = "LOGIN_REQUIRED";
+        throw error;
+      }
+      throw new Error("Ô chat Loco đang khóa. Hãy kiểm tra trạng thái đăng nhập, chế độ chat và phòng live.");
     }
 
     await textBox.fill(cleanContent);
@@ -1733,13 +1763,28 @@ export class BrowserSession {
       : 'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
     ).first();
 
-    if (await sendButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+    const inputStillContainsComment = this.platform !== "loco"
+      || (await textBox.inputValue().catch(() => cleanContent)) === cleanContent;
+    if (inputStillContainsComment && await sendButton.isVisible({ timeout: 1000 }).catch(() => false)) {
       if (await sendButton.isEnabled().catch(() => false)) {
         await sendButton.click().catch(() => {});
       }
     }
 
     await page.waitForTimeout(500);
+    if (this.platform === "loco") {
+      const ageGate = page.getByRole("button", {
+        name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i,
+      }).first();
+      if (await ageGate.isVisible().catch(() => false)) {
+        const error = new Error("Phòng Loco yêu cầu xác nhận độ tuổi trong Chrome trước khi gửi chat.");
+        error.code = "USER_ACTION_REQUIRED";
+        throw error;
+      }
+      if ((await textBox.inputValue().catch(() => "")) === cleanContent) {
+        throw new Error("Loco chưa gửi bình luận; nội dung vẫn còn trong ô chat.");
+      }
+    }
     return {
       sentAt: new Date().toISOString(),
       url: page.url(),

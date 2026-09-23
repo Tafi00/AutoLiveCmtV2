@@ -113,6 +113,26 @@ test("một browser session giữ tab riêng và gửi song song tới nhiều p
   assert.deepEqual(results.map((result) => result.transport), ["websocket", "websocket"]);
 });
 
+test("Loco không gửi lại qua ô chat khi HTTPS đã bắt đầu nhưng chưa được xác nhận", async () => {
+  const url = "https://loco.com/stream/12345678-1234-1234-1234-123456789abc";
+  let composerUsed = false;
+  const page = {
+    isClosed: () => false,
+    url: () => url,
+    once: () => {},
+    getByRole: () => ({ first: () => ({ isVisible: async () => false }), isVisible: async () => false }),
+    evaluate: async () => ({ status: "failed", attempted: true, reason: "website_transport_timeout" }),
+    locator: () => { composerUsed = true; throw new Error("UI fallback must not run"); },
+  };
+  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
+  browser.commentPage = page;
+  browser.context = { pages: () => [page] };
+
+  await assert.rejects(browser.sendComment({ channelUrl: url, content: "Xin chào" }),
+    /Loco chưa xác nhận gửi chat: website_transport_timeout/);
+  assert.equal(composerUsed, false);
+});
+
 test("chờ Chrome nhả khóa profile trước khi mở tiến trình tiếp theo", async () => {
   const directory = await mkdtemp(join(tmpdir(), "live-comment-profile-"));
   const lockPath = join(directory, "SingletonLock");

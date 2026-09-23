@@ -42,7 +42,8 @@ ipcMain.handle("updater:download", async () => {
 });
 ipcMain.handle("updater:install", () => { autoUpdater.quitAndInstall(); return { status: "installing" }; });
 
-autoUpdater.autoDownload = false;
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
 autoUpdater.on("update-available", (info) => sendUpdaterStatus("available", { version: info.version }));
 autoUpdater.on("update-not-available", () => sendUpdaterStatus("up-to-date", { version: app.getVersion() }));
 autoUpdater.on("download-progress", (progress) => sendUpdaterStatus("downloading", { percent: Math.round(progress.percent) }));
@@ -114,6 +115,7 @@ app.whenReady().then(async () => {
 
   serverInstance = await startServer({ port, dataDirectory });
   await createWindow();
+  if (app.isPackaged) void checkForUpdates();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();
