@@ -29,6 +29,7 @@ export async function createServerApp({
   await store.init();
 
   const sessions = new AccountSessionManager({ dataDirectory });
+  await sessions.init();
 
 const PLATFORM_IDS = Object.keys(PLATFORMS);
 const RENAME_PLATFORMS = new Set(["gosh", "gaquaytv"]);
@@ -372,6 +373,16 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
   };
 }
 
+// Starts connecting the accounts that will send next while the delay runs.
+function prepareNextAccounts(platforms) {
+  if (!platforms.length) return;
+  for (const destination of destinationsWithMessages(store.snapshot(), platforms)) {
+    const cursor = accountCursors.get(destinationCursorKey(destination)) || 0;
+    const account = destination.accounts[cursor % destination.accounts.length];
+    void sessions.prepare(account.id, { channelUrl: destination.channelUrl }, account.platform, account.proxy);
+  }
+}
+
 async function runBulkSend() {
   try {
     while (!bulkSend.stopRequested && bulkSend.completedMessages < bulkSend.totalMessages) {
@@ -379,6 +390,9 @@ async function runBulkSend() {
       if (!cooldown.ready) {
         bulkSend.phase = "waiting";
         bulkSend.currentAccount = "";
+        prepareNextAccounts(Object.keys(PLATFORMS).filter((platform) => (
+          bulkSend.completedByPlatform[platform] < bulkSend.messageTotals[platform]
+        )));
         await waitForBulk(cooldown.remainingSeconds * 1000);
         if (bulkSend.stopRequested) break;
       }
@@ -489,6 +503,15 @@ app.post("/api/accounts/:id/login", asyncRoute(async (request, response) => {
     await store.updateAccount(account.id, { profileName: identity.displayName });
   }
   response.json(await dashboardState());
+}));
+
+app.post("/api/accounts/tokens/load", asyncRoute(async (request, response) => {
+  if (bulkSend.running) {
+    return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi nạp token." });
+  }
+  const accounts = store.snapshot().accounts.filter((account) => account.enabled);
+  const result = await sessions.loadTokens(accounts, { onlyMissing: request.body?.onlyMissing !== false });
+  response.json({ ...(await dashboardState()), tokenLoad: result });
 }));
 
 app.post("/api/accounts/:id/browser/profile", asyncRoute(async (request, response) => {

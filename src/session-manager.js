@@ -1,6 +1,8 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserSession } from "./browser-session.js";
+import { TokenSession } from "./token-session.js";
+import { TokenVault } from "./token-vault.js";
 
 function assertAccountId(accountId) {
   const value = String(accountId ?? "");
@@ -16,31 +18,67 @@ export function accountProfileDirectory(dataDirectory, accountId) {
 }
 
 export class AccountSessionManager {
-  constructor({ dataDirectory }) {
+  constructor({ dataDirectory, tokenDeps = {} }) {
     this.dataDirectory = dataDirectory;
+    this.tokenDeps = tokenDeps;
+    this.vault = new TokenVault(join(dataDirectory, "account-tokens.json"));
     this.sessions = new Map();
   }
 
-  get(accountId, platform = "gosh", proxy = "") {
+  init() {
+    return this.vault.init();
+  }
+
+  #entry(accountId, platform = "gosh", proxy = "") {
     const safeId = assertAccountId(accountId);
-    if (!this.sessions.has(safeId)) {
-      this.sessions.set(safeId, new BrowserSession({
+    let entry = this.sessions.get(safeId);
+    if (entry && entry.token.platform !== platform) {
+      // The account was switched to another website: the old tokens and
+      // realtime clients belong to the previous one.
+      void entry.token.close();
+      this.sessions.delete(safeId);
+      entry = null;
+    }
+    if (!entry) {
+      const browser = new BrowserSession({
         profileDirectory: accountProfileDirectory(this.dataDirectory, safeId),
         platform,
         proxy,
-      }));
-    } else {
-      const session = this.sessions.get(safeId);
-      if (proxy && session.proxy !== proxy) {
-        session.proxy = proxy;
-      }
+        onManualLoginExit: () => {
+          // The profile may hold a new login (or none): reload tokens from it.
+          token.markProfileChanged();
+          void token.loadFromProfile().catch(() => {});
+        },
+      });
+      const token = new TokenSession({
+        accountId: safeId,
+        platform,
+        proxy,
+        vault: this.vault,
+        browser,
+        deps: this.tokenDeps,
+      });
+      entry = { browser, token };
+      this.sessions.set(safeId, entry);
+    } else if (proxy !== undefined && entry.browser.proxy !== (proxy || "")) {
+      entry.browser.proxy = proxy || "";
+      entry.token.setProxy(proxy);
     }
-    return this.sessions.get(safeId);
+    return entry;
+  }
+
+  get(accountId, platform = "gosh", proxy = "") {
+    return this.#entry(accountId, platform, proxy).browser;
+  }
+
+  token(accountId, platform = "gosh", proxy = "") {
+    return this.#entry(accountId, platform, proxy).token;
   }
 
   async status(account) {
     try {
-      return { ...account, session: await this.get(account.id, account.platform, account.proxy).status() };
+      await this.vault.init();
+      return { ...account, session: this.token(account.id, account.platform, account.proxy).status() };
     } catch (error) {
       return {
         ...account,
@@ -64,39 +102,78 @@ export class AccountSessionManager {
   }
 
   async openForManualLogin(accountId, targetUrl, platform, options, proxy) {
-    return this.get(accountId, platform, proxy).openForManualLogin(targetUrl, options);
+    const { browser, token } = this.#entry(accountId, platform, proxy);
+    await this.vault.init();
+    if (!browser.isManualLoginRunning()) await token.syncToProfile().catch(() => {});
+    return browser.openForManualLogin(targetUrl, options);
   }
 
   async login(accountId, credentials, platform, proxy) {
-    return this.get(accountId, platform, proxy).login(credentials);
+    await this.vault.init();
+    return this.token(accountId, platform, proxy).login(credentials);
   }
 
   async openProfile(accountId, platform, options, proxy) {
-    return this.get(accountId, platform, proxy).openProfile(options);
+    const { browser, token } = this.#entry(accountId, platform, proxy);
+    await this.vault.init();
+    if (!browser.isManualLoginRunning()) await token.syncToProfile().catch(() => {});
+    return browser.openProfile(options);
   }
 
   async updateDisplayName(accountId, displayName, platform, proxy) {
     if (platform !== "gosh" && platform !== "gaquaytv") {
       throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh và GaQuayTV.");
     }
-    return this.get(accountId, platform, proxy).updateDisplayName(displayName);
+    await this.vault.init();
+    return this.token(accountId, platform, proxy).updateDisplayName(displayName);
   }
 
   async sendComment(accountId, input, platform, proxy) {
-    return this.get(accountId, platform, proxy).sendComment(input);
+    await this.vault.init();
+    return this.token(accountId, platform, proxy).sendComment(input);
+  }
+
+  // Warms up an account's connection for its next send; failures surface on
+  // the real send instead.
+  async prepare(accountId, input, platform, proxy) {
+    await this.vault.init();
+    await this.token(accountId, platform, proxy).prepare(input).catch(() => {});
+  }
+
+  // Reads tokens out of the Chrome profiles of accounts that have none saved
+  // yet. Profile reads are throttled inside BrowserSession.
+  async loadTokens(accounts, { onlyMissing = true } = {}) {
+    await this.vault.init();
+    const results = await Promise.all(accounts.map(async (account) => {
+      const token = this.token(account.id, account.platform, account.proxy);
+      if (onlyMissing && token.hasCredentials()) return { accountId: account.id, ok: true, skipped: true };
+      try {
+        await token.loadFromProfile();
+        return { accountId: account.id, ok: true };
+      } catch (error) {
+        return { accountId: account.id, ok: false, error: error.message };
+      }
+    }));
+    return {
+      loaded: results.filter((result) => result.ok && !result.skipped).length,
+      skipped: results.filter((result) => result.skipped).length,
+      failed: results.filter((result) => !result.ok),
+    };
   }
 
   async close(accountId) {
     const safeId = assertAccountId(accountId);
-    const session = this.sessions.get(safeId);
-    if (!session) return;
-    await session.close();
+    const entry = this.sessions.get(safeId);
+    if (!entry) return;
+    await Promise.allSettled([entry.token.close(), entry.browser.close()]);
     this.sessions.delete(safeId);
   }
 
   async deleteSession(accountId) {
     const safeId = assertAccountId(accountId);
     await this.close(safeId);
+    await this.vault.init();
+    await this.vault.delete(safeId);
     const targetDir = accountProfileDirectory(this.dataDirectory, safeId);
 
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -124,7 +201,7 @@ export class AccountSessionManager {
   }
 
   async closeAll() {
-    await Promise.allSettled([...this.sessions.values()].map((session) => session.close()));
+    await Promise.allSettled([...this.sessions.values()].flatMap(({ browser, token }) => [token.close(), browser.close()]));
     this.sessions.clear();
   }
 }

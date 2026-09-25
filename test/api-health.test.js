@@ -34,7 +34,7 @@ test("kiểm tra endpoint chat cho từng phòng Loco đã cấu hình", () => {
 test("bao gồm các endpoint GaQuayTV trong danh sách kiểm tra", () => {
   const targets = healthTargets({ gosh: "", loco: "", gaquaytv: "" });
   const gaquaytvTargets = targets.filter((item) => item.platform === "gaquaytv");
-  assert.deepEqual(gaquaytvTargets.map((item) => item.id), ["gaquaytv-web", "gaquaytv-auth", "gaquaytv-schedule"]);
+  assert.deepEqual(gaquaytvTargets.map((item) => item.id), ["gaquaytv-web", "gaquaytv-auth", "gaquaytv-chat", "gaquaytv-schedule"]);
 });
 
 test("đo endpoint bằng fetch có thể thay thế trong test", async () => {

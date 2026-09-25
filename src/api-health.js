@@ -8,10 +8,10 @@ export function classifyHttpStatus(status) {
 
 export function healthTargets(channelUrls = "") {
   const targets = [
-    { id: "gosh-web", platform: "gosh", name: "Website", url: "https://gosh6.app/" },
-    { id: "gosh-user", platform: "gosh", name: "User Info API", url: "https://gosh6.app/gosh_base/app/user/user_info" },
-    { id: "gosh-profile", platform: "gosh", name: "Đổi tên API", url: "https://gosh6.app/gosh_base/app/user/user_center?scene=avatar" },
-    { id: "gosh-refresh", platform: "gosh", name: "Refresh Token API", url: "https://gosh6.app/gosh_base/app/user/refresh_token" },
+    { id: "gosh-web", platform: "gosh", name: "Website", url: "https://gosh.com/" },
+    { id: "gosh-user", platform: "gosh", name: "User Info API", url: "https://api.gosh.com/gosh_base/app/user/user_info" },
+    { id: "gosh-profile", platform: "gosh", name: "Đổi tên API", url: "https://api.gosh.com/gosh_base/app/user/user_center?scene=avatar" },
+    { id: "gosh-refresh", platform: "gosh", name: "Refresh Token API", url: "https://api.gosh.com/gosh_base/app/user/refresh_token" },
     { id: "loco-web", platform: "loco", name: "Website", url: "https://loco.com/" },
     { id: "loco-home", platform: "loco", name: "Discovery API", url: "https://api.loco.com/ivr/v3/homepage/sub_recipe/?limit=1&offset=0&r_id=web_home_global" },
     { id: "loco-config", platform: "loco", name: "Config API", url: "https://api.loco.com/auth/v1/ivory/config/?ivory=true" },
@@ -19,6 +19,7 @@ export function healthTargets(channelUrls = "") {
     { id: "loco-token-refresh", platform: "loco", name: "Refresh Token API", url: "https://api.loco.com/auth/v3/user/refresh_token/" },
     { id: "gaquaytv-web", platform: "gaquaytv", name: "Website", url: "https://gaquaytv.com/" },
     { id: "gaquaytv-auth", platform: "gaquaytv", name: "Auth API", url: "https://api.gaquaytv.com/api/v2/auth/me" },
+    { id: "gaquaytv-chat", platform: "gaquaytv", name: "Chat Socket", url: "https://chat.gaquaytv.com/socket.io/?EIO=4&transport=polling" },
     { id: "gaquaytv-schedule", platform: "gaquaytv", name: "Lịch Live API", url: "https://gaquaytv.com/api/schedule" },
   ];
   const locoChannelUrls = channelUrls && typeof channelUrls === "object"

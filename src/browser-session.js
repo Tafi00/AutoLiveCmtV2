@@ -3,26 +3,12 @@ import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { ProxyAgent } from "undici";
 import { chromium } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import {
-  sendCommentViaGaquaytvTransport,
-  sendCommentViaLocoTransport,
-  sendCommentViaWebsiteTransport,
-  shouldBlockBrowserResource,
-} from "./direct-comment-transport.js";
-import {
-  assertPlatformUrl,
-  getGaquaytvRoomId,
-  getLocoStreamId,
-  normalizePlatform,
-  PLATFORMS,
-} from "./platforms.js";
+import { assertPlatformUrl, normalizePlatform, PLATFORMS } from "./platforms.js";
 import { parseProxy } from "./store.js";
 chromium.use(StealthPlugin());
 
-const CONFIRM_BUTTON_NAME = /^(Xác nhận(?: thay đổi)?|Đồng ý|Có|Tiếp tục|Confirm(?: change)?|Agree|Yes|Continue|OK)$/i;
 export function getChromeCandidatePaths() {
   if (process.platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA || "";
@@ -58,22 +44,8 @@ export const CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
 ];
-export const LOCO_API_ENDPOINTS = {
-  // Loco's web client refreshes sessions through auth v3.  The old v1 path
-  // returns INVALID_ROUTE; leaving it here makes a successful username
-  // update invalidate the access token without issuing the replacement token,
-  // so the next chat request is rejected.
-  refreshToken: "https://api.loco.com/auth/v3/user/refresh_token/",
-  legacyRefreshToken: "https://api.getloconow.com/v3/user/refresh_token/",
-  profile: "https://api.loco.com/ivr/v1/profile/me/",
-  updateProfile: "https://api.loco.com/ivr/v1/profile/update/",
-  legacyUpdateProfile: "https://ivory.loco.gg/v1/profile/update/",
-};
-
 export const discoveredApiEndpoints = new Map();
 export const MAX_OBSERVED_ENDPOINTS = 200;
-export const ROOM_PAGE_MAX_AGE_MS = 20 * 60_000;
-export const ROOM_PAGE_IDLE_MS = 10 * 60_000;
 
 export function recordObservedEndpoint(url, method = "GET", status = 200) {
   try {
@@ -590,39 +562,125 @@ function isAtTarget(currentValue, targetValue) {
   }
 }
 
-// A browser profile can have several live rooms open at once.  Use the
-// origin/path (without locale prefixes or tracking query strings) as the
-// stable key so each room gets its own page and its own send queue.
-function roomPageKey(value) {
+export function shouldBlockBrowserResource({ platform = "gosh", resourceType, url }) {
+  if (resourceType === "media" || resourceType === "font") return true;
+
+  let parsed;
   try {
-    const url = new URL(value);
-    return `${url.origin}${canonicalPath(url.href)}`;
+    parsed = new URL(url);
   } catch {
-    return String(value || "");
+    return false;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const pathname = parsed.pathname.toLowerCase();
+
+  if (hostname === "static.cloudflareinsights.com") return true;
+  if (
+    platform === "loco"
+    && (
+      hostname === "www.googletagmanager.com"
+      || hostname === "www.google-analytics.com"
+      || hostname === "firebaselogging.googleapis.com"
+    )
+  ) return true;
+
+  if (platform === "gaquaytv") {
+    if (resourceType === "image") return true;
+    if (
+      hostname === "clikk.cc" || hostname.endsWith(".clikk.cc")
+      || hostname === "logriancesenius.com" || hostname.endsWith(".logriancesenius.com")
+      || hostname === "connect.facebook.net"
+      || hostname === "stats.g.doubleclick.net"
+      || hostname === "www.googletagmanager.com"
+      || hostname === "www.google-analytics.com"
+      || hostname === "analytics.google.com"
+      || hostname === "www.google.com.vn"
+      || hostname === "cdn.mxpnl.com" || hostname.endsWith(".mxpnl.com")
+      || hostname === "c.clarity.ms" || hostname.endsWith(".clarity.ms")
+      || hostname === "f003.backblazeb2.com" || hostname.endsWith(".backblazeb2.com")
+    ) return true;
+  }
+
+  if (
+    /\.(?:m3u8|m4s|ts|mp4|flv|mpd|aac)$/.test(pathname)
+  ) return true;
+
+  if (
+    hostname === "api.vizzlive.com"
+    && /\/gosh_admin\/admin\/(?:web_log|log)\//.test(pathname)
+  ) return true;
+
+  if (
+    hostname === "pull.gosh6.app"
+    && (pathname.startsWith("/live/") || /\.(?:m3u8|m4s|ts|flv)$/.test(pathname))
+  ) return true;
+
+  if (
+    resourceType === "image"
+    && /(^|\.)goshcdn\.com$/.test(hostname)
+    && (/\/avatar\//.test(pathname) || /\/live\/screenshot\//.test(pathname))
+  ) return true;
+
+  return false;
+}
+
+// Reading tokens out of a profile needs a short headless Chrome launch. Cap how
+// many run at once so loading tokens for hundreds of accounts stays smooth.
+const MAX_PROFILE_READS = 3;
+let activeProfileReads = 0;
+const profileReadQueue = [];
+
+async function withProfileReadSlot(task) {
+  if (activeProfileReads >= MAX_PROFILE_READS) {
+    // The finishing task hands its slot straight to the next waiter.
+    await new Promise((resolve) => profileReadQueue.push(resolve));
+  } else {
+    activeProfileReads += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = profileReadQueue.shift();
+    if (next) next();
+    else activeProfileReads -= 1;
   }
 }
 
 export class BrowserSession {
-  constructor({ profileDirectory, platform = "gosh", proxy = "" }) {
+  constructor({ profileDirectory, platform = "gosh", proxy = "", onManualLoginExit = null }) {
     this.profileDirectory = profileDirectory;
     this.platform = normalizePlatform(platform);
     this.definition = PLATFORMS[this.platform];
     this.proxy = proxy || "";
-    this.dispatcher = this.proxy ? new ProxyAgent(this.proxy) : undefined;
+    this.onManualLoginExit = onManualLoginExit;
+    this.context = null;
     this.commentPage = null;
-    this.profilePage = null;
-    this.roomPages = new Map();
-    this.roomLocks = new Map();
-    this.roomPageTimes = new Map();
-    this.roomCleanupTimer = null;
     this.launching = null;
     this.identity = null;
-    this.identityDetection = null;
-    this.lastIdentityAttempt = 0;
     this.manualLoginProcess = null;
     this.manualLoginDebugPort = null;
     this.manualLoginError = null;
     this.suppressManualLoginReopen = false;
+  }
+
+  isManualLoginRunning() {
+    return isBrowserProcessRunning(this.manualLoginProcess);
+  }
+
+  isRunning() {
+    return this.isManualLoginRunning() || Boolean(this.context);
+  }
+
+  status() {
+    return {
+      running: this.isRunning(),
+      loginState: this.isManualLoginRunning() ? "manual_login" : "unknown",
+      readyToComment: false,
+      url: this.commentPage && !this.commentPage.isClosed() ? this.commentPage.url() : "",
+      identity: this.identity,
+      ...(this.manualLoginError ? { error: this.manualLoginError } : {}),
+    };
   }
 
   async open(targetUrl = this.definition.homeUrl) {
@@ -656,85 +714,6 @@ export class BrowserSession {
     if (!this.commentPage || this.commentPage.isClosed()) {
       this.commentPage = this.context.pages()[0] || (await this.context.newPage());
     }
-  }
-
-  #rememberRoomPage(key, page) {
-    this.roomPages.set(key, page);
-    this.roomPageTimes.set(key, { createdAt: Date.now(), lastUsedAt: Date.now() });
-    page.once?.("close", () => {
-      if (this.roomPages.get(key) === page) {
-        this.roomPages.delete(key);
-        this.roomPageTimes.delete(key);
-      }
-    });
-    return page;
-  }
-
-  async #getRoomPage(safeUrl) {
-    await this.#ensureContext();
-    const key = roomPageKey(safeUrl);
-    let page = this.roomPages.get(key);
-    if (!page || page.isClosed()) {
-      const assignedPages = new Set(this.roomPages.values());
-      page = this.context.pages().find((candidate) => {
-        if (candidate.isClosed() || candidate === this.profilePage || assignedPages.has(candidate)) return false;
-        try {
-          return isAtTarget(candidate.url(), safeUrl);
-        } catch {
-          return false;
-        }
-      });
-
-      if (!page) {
-        // Reuse the primary page when it is still blank; otherwise create a
-        // dedicated tab so another configured room cannot navigate it away.
-        const primaryUrl = this.commentPage && !this.commentPage.isClosed()
-          ? this.commentPage.url()
-          : "";
-        if (this.commentPage && !this.commentPage.isClosed()
-          && !assignedPages.has(this.commentPage)
-          && (!primaryUrl || primaryUrl === "about:blank")) {
-          page = this.commentPage;
-        } else {
-          page = await this.context.newPage();
-        }
-      }
-      this.#rememberRoomPage(key, page);
-    }
-
-    const timing = this.roomPageTimes.get(key);
-    if (!isAtTarget(page.url(), safeUrl)) {
-      await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      timing.createdAt = Date.now();
-    } else if (Date.now() - timing.createdAt >= ROOM_PAGE_MAX_AGE_MS) {
-      // Called inside this room's send lock, before touching its composer.
-      // Release the live site's accumulated chat/player state between sends.
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
-      timing.createdAt = Date.now();
-    }
-    timing.lastUsedAt = Date.now();
-    return page;
-  }
-
-  async pruneIdleRoomPages(now = Date.now()) {
-    const pending = [];
-    for (const [key, page] of this.roomPages) {
-      const timing = this.roomPageTimes.get(key);
-      if (!timing || now - timing.lastUsedAt < ROOM_PAGE_IDLE_MS || this.roomLocks.has(key)) continue;
-      const cleanup = Promise.resolve().then(async () => {
-        await page.close();
-        if (this.roomPages.get(key) === page) {
-          this.roomPages.delete(key);
-          this.roomPageTimes.delete(key);
-        }
-        if (this.commentPage === page) this.commentPage = null;
-      }).finally(() => {
-        if (this.roomLocks.get(key) === cleanup) this.roomLocks.delete(key);
-      });
-      this.roomLocks.set(key, cleanup);
-      pending.push(cleanup);
-    }
-    await Promise.allSettled(pending);
   }
 
   async #launch() {
@@ -790,21 +769,54 @@ export class BrowserSession {
       recordObservedEndpoint(res.url(), res.request().method(), res.status());
     });
 
-    this.roomCleanupTimer = setInterval(() => {
-      void this.pruneIdleRoomPages();
-    }, 60_000);
-    this.roomCleanupTimer.unref?.();
     this.context.on("close", () => {
-      clearInterval(this.roomCleanupTimer);
-      this.roomCleanupTimer = null;
-      this.roomPageTimes.clear();
       this.context = null;
       this.commentPage = null;
-      this.profilePage = null;
-      this.roomPages.clear();
-      this.roomLocks.clear();
     });
     this.commentPage = this.context.pages()[0] || (await this.context.newPage());
+  }
+
+
+  // Runs `task` with a browser context for this profile: the open one when it
+  // exists, otherwise a short-lived headless one that is closed afterwards.
+  async #withProfileContext(task) {
+    if (this.isManualLoginRunning()) {
+      const error = new Error("Hãy hoàn tất đăng nhập rồi đóng cửa sổ Chrome của tài khoản trước.");
+      error.code = "USER_ACTION_REQUIRED";
+      throw error;
+    }
+    if (this.launching) await this.launching.catch(() => {});
+    if (this.context) return task(this.context);
+    return withProfileReadSlot(async () => {
+      const executablePath = await findChrome();
+      if (!executablePath) {
+        throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
+      }
+      await mkdir(this.profileDirectory, { recursive: true });
+      await waitForProfileUnlock(this.profileDirectory);
+      const context = await chromium.launchPersistentContext(this.profileDirectory, {
+        executablePath,
+        headless: true,
+        // Same keychain handling as the login window so encrypted cookies
+        // stay readable.
+        ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
+        args: ["--headless=new", "--mute-audio"],
+      });
+      try {
+        return await task(context);
+      } finally {
+        await this.#closeTemporaryContext(context);
+      }
+    });
+  }
+
+  async readCookies() {
+    return this.#withProfileContext((context) => context.cookies());
+  }
+
+  async writeCookies(cookies) {
+    if (!cookies?.length) return;
+    await this.#withProfileContext((context) => context.addCookies(cookies));
   }
 
   async openForManualLogin(targetUrl = this.definition.homeUrl, { autoCloseOnLogin = false } = {}) {
@@ -830,9 +842,6 @@ export class BrowserSession {
     if (activeContext) await this.#closeTemporaryContext(activeContext);
     this.context = null;
     this.commentPage = null;
-    this.profilePage = null;
-    this.roomPages.clear();
-    this.roomLocks.clear();
     await mkdir(this.profileDirectory, { recursive: true });
     await waitForProfileUnlock(this.profileDirectory);
 
@@ -869,6 +878,7 @@ export class BrowserSession {
         this.manualLoginProcess = null;
         this.manualLoginDebugPort = null;
       }
+      this.onManualLoginExit?.();
     });
     void this.#monitorManualLogin(child, debugPort, new URL(safeUrl).origin, { autoCloseOnLogin });
 
@@ -983,843 +993,17 @@ export class BrowserSession {
     await waitForProfileUnlock(this.profileDirectory);
   }
 
-  async #closeManualLoginForProfileUse() {
-    const child = this.manualLoginProcess;
-    if (!isBrowserProcessRunning(child)) return;
-    this.suppressManualLoginReopen = true;
-    try {
-      await this.#terminateManualLogin(child, this.manualLoginDebugPort);
-    } finally {
-      if (this.manualLoginProcess === child) this.manualLoginProcess = null;
-      this.manualLoginDebugPort = null;
-      this.suppressManualLoginReopen = false;
-    }
-  }
-
   async #closeTemporaryContext(context) {
     await context.close().catch(() => {});
     await waitForProfileUnlock(this.profileDirectory);
   }
 
-  async status() {
-    if (isBrowserProcessRunning(this.manualLoginProcess)) {
-      return {
-        running: true,
-        loginState: this.identity ? "unknown_or_signed_in" : "manual_login",
-        readyToComment: false,
-        url: this.definition.homeUrl,
-        identity: this.identity,
-      };
-    }
-    if (!this.context || !this.commentPage || this.commentPage.isClosed()) {
-      return {
-        running: false,
-        loginState: this.identity ? "unknown_or_signed_in" : "unknown",
-        readyToComment: false,
-        url: "",
-        identity: this.identity,
-        ...(this.manualLoginError ? { error: this.manualLoginError } : {}),
-      };
-    }
-
-    const loginButton = this.commentPage.getByRole("button", {
-      name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-    });
-    const commentBox = this.commentPage
-      .getByPlaceholder(this.platform === "loco"
-        ? /Slow mode|Send a message|Chat|Say something/i
-        : this.platform === "gaquaytv"
-          ? /tin nhắn trò chuyện|trò chuyện|chat/i
-          : /Nói gì đó|Say something|Write a message/i)
-      .first();
-
-    const [loginVisible, commentVisible] = await Promise.all([
-      loginButton.isVisible().catch(() => false),
-      commentBox.isVisible().catch(() => false),
-    ]);
-
-    if (!loginVisible && !this.identity && Date.now() - this.lastIdentityAttempt > 5_000) {
-      void this.detectIdentity().catch(() => {});
-    }
-
-    return {
-      running: true,
-      loginState: loginVisible ? "signed_out" : "unknown_or_signed_in",
-      readyToComment: commentVisible && !loginVisible,
-      url: this.commentPage.url(),
-      identity: this.identity,
-    };
-  }
-
-  async detectIdentity({ force = false } = {}) {
-    if (this.identity && !force) return this.identity;
-    if (this.identityDetection) return this.identityDetection;
-    this.lastIdentityAttempt = Date.now();
-    this.identityDetection = this.#detectIdentity();
-    try {
-      this.identity = await this.identityDetection;
-      return this.identity;
-    } finally {
-      this.identityDetection = null;
-    }
-  }
-
-  async #detectIdentity() {
-    await this.#ensureContext();
-    const apiPayload = await this.commentPage.evaluate(async (platform) => {
-      if (platform === "gaquaytv") {
-        const cookieMap = Object.fromEntries((document.cookie || "").split(";").map((part) => {
-          const index = part.indexOf("=");
-          return index < 0 ? [part.trim(), ""] : [part.slice(0, index).trim(), part.slice(index + 1)];
-        }).filter(([key]) => key));
-        const token = cookieMap.access_token || "";
-        if (!token) throw new Error("no_token");
-        // The API needs the cookie JWT as an explicit Bearer header (plus
-        // the automatic same-origin Origin); cookie-only calls get 401.
-        const response = await fetch("https://api.gaquaytv.com/api/v2/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-      }
-      const endpoint = platform === "loco"
-        ? "https://api.loco.com/auth/v3/user/device_profile/"
-        : "/gosh_base/app/user/user_info";
-      const response = await fetch(endpoint, { credentials: "include" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
-    }, this.platform).catch(() => null);
-    const apiName = extractDisplayName(apiPayload?.data || apiPayload);
-    if (apiName) {
-      const source = this.platform === "loco" ? "device_profile" : this.platform === "gaquaytv" ? "auth_me" : "user_info";
-      return { displayName: apiName, source, detectedAt: new Date().toISOString() };
-    }
-
-    const storagePayload = await this.commentPage.evaluate(() => {
-      try {
-        for (const key of Object.keys(localStorage)) {
-          if (key.includes("profile") || key.includes("TIM") || key.includes("user") || key.includes("auth")) {
-            const val = localStorage.getItem(key);
-            try {
-              const parsed = JSON.parse(val);
-              const items = Array.isArray(parsed) ? parsed : [parsed];
-              for (const item of items) {
-                if (item && typeof item === "object") {
-                  const nick = item.nick || item.nickname || item.nickName || item.displayName || item.name || item.username;
-                  if (nick && nick !== "Service Assistant" && typeof nick === "string" && nick.trim().length <= 40) {
-                    return item;
-                  }
-                }
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-      return null;
-    }).catch(() => null);
-    const storageName = extractDisplayName(storagePayload);
-    if (storageName) {
-      return { displayName: storageName, source: "localStorage", detectedAt: new Date().toISOString() };
-    }
-
-    if (this.platform === "loco") {
-      const profileButton = this.commentPage.getByRole("button", { name: /^Your profile$/i }).first();
-      if (await profileButton.isVisible().catch(() => false)) {
-        await profileButton.click().catch(() => {});
-        const profileLink = this.commentPage.locator('a[href^="/streamers/"]').filter({ hasText: /Channel preview/i }).first();
-        const href = await profileLink.getAttribute("href").catch(() => "");
-        const profileName = href?.split("/").filter(Boolean).at(-1) || "";
-        await profileButton.click().catch(() => {});
-        if (profileName) {
-          return { displayName: decodeURIComponent(profileName), source: "profile_menu", detectedAt: new Date().toISOString() };
-        }
-      }
-      const error = new Error("Chưa đọc được tên tài khoản Loco. Hãy hoàn tất đăng nhập rồi làm mới.");
-      error.code = "LOGIN_REQUIRED";
-      throw error;
-    }
-
-    if (this.platform === "gaquaytv") {
-      const error = new Error("Chưa đọc được tên tài khoản GaQuayTV. Hãy hoàn tất đăng nhập rồi làm mới.");
-      error.code = "LOGIN_REQUIRED";
-      throw error;
-    }
-
-    const profilePage = await this.#getProfilePage();
-    const loginButton = profilePage.getByRole("button", {
-      name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-    });
-    if (await loginButton.isVisible().catch(() => false)) {
-      const error = new Error("Phiên chưa đăng nhập.");
-      error.code = "LOGIN_REQUIRED";
-      throw error;
-    }
-    const nameInput = profilePage.getByPlaceholder(/^(Tên|Name)$/i).first();
-    await nameInput.waitFor({ state: "visible", timeout: 10_000 });
-    const displayName = (await nameInput.inputValue()).trim();
-    if (!displayName) throw new Error("Không đọc được tên từ hồ sơ.");
-    return { displayName, source: "profile", detectedAt: new Date().toISOString() };
-  }
-
-  async login({ usernameOrEmail, password }) {
-    await this.#ensureContext();
-    if (this.platform === "gaquaytv") {
-      // api.gaquaytv.com checks the browser Origin header: requests sent
-      // with the API origin (or no origin) are rejected even with valid
-      // credentials, while the site origin succeeds.
-      const fetchOptions = {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: "https://gaquaytv.com",
-          Referer: "https://gaquaytv.com/",
-        },
-        body: JSON.stringify({
-          username_or_email: usernameOrEmail,
-          password,
-        }),
-      };
-      if (this.dispatcher) fetchOptions.dispatcher = this.dispatcher;
-      const loginRes = await fetch("https://api.gaquaytv.com/api/v2/auth/login", fetchOptions);
-      if (!loginRes.ok) {
-        const err = await loginRes.json().catch(() => ({}));
-        throw new Error(err.message || `Đăng nhập thất bại (HTTP ${loginRes.status})`);
-      }
-      const data = (await loginRes.json())?.data;
-      if (!data?.access_token) throw new Error("Không nhận được token đăng nhập từ GaQuayTV.");
-
-      // The site only reads `access_token`/`refresh_token` (lowercase with
-      // underscore); the camelCase duplicates the old code wrote are never
-      // sent back, so drop them. Cookies must also carry the attributes the
-      // site sets on register (Secure + SameSite=Lax) or the browser will not
-      // attach them on the HTTPS live pages.
-      const expires = Math.floor(Date.now() / 1000) + 3600 * 24 * 7;
-      await this.context.clearCookies({ domain: ".gaquaytv.com", name: "access_token" }).catch(() => {});
-      await this.context.clearCookies({ domain: ".gaquaytv.com", name: "refresh_token" }).catch(() => {});
-      await this.context.addCookies([
-        { name: "access_token", value: data.access_token, url: "https://gaquaytv.com/", expires, secure: true, sameSite: "Lax" },
-        ...(data.refresh_token
-          ? [{ name: "refresh_token", value: data.refresh_token, url: "https://gaquaytv.com/", expires, secure: true, sameSite: "Lax" }]
-          : []),
-      ]);
-
-      if (!this.commentPage || isAtTarget(this.commentPage.url(), "about:blank")) {
-        await this.open();
-      } else {
-        await this.commentPage.reload({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-      }
-      return this.detectIdentity({ force: true });
-    }
-  }
 
   async openProfile() {
     return this.openForManualLogin(this.definition.profileUrl);
   }
 
-  async #getProfilePage() {
-    await this.#ensureContext();
-    if (!this.profilePage || this.profilePage.isClosed()) {
-      this.profilePage = await this.context.newPage();
-    }
-    if (!isAtTarget(this.profilePage.url(), this.definition.profileUrl)) {
-      await this.profilePage.goto(this.definition.profileUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    }
-    return this.profilePage;
-  }
-
-  async #refreshCommentPageIdentity() {
-    const pages = [...new Set([this.commentPage, ...this.roomPages.values()])]
-      .filter((page) => page && !page.isClosed());
-    if (!pages.length) return false;
-
-    // Every open room keeps a small client-side store with the account name.
-    // Refresh all of them after a successful rename so a later send from any
-    // configured link uses the new identity. A transient failure on one tab
-    // must not turn an already-successful profile update into an error.
-    const refreshed = await Promise.all(pages.map(async (page) => {
-      try {
-        const pageUrl = page.url();
-        if (!pageUrl || pageUrl === "about:blank") return false;
-        await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
-        await page.waitForTimeout(250);
-        return true;
-      } catch {
-        return false;
-      }
-    }));
-    return refreshed.some(Boolean);
-  }
-
-  async updateDisplayName(displayName) {
-    const cleanName = String(displayName ?? "").trim();
-    if (!cleanName) throw new Error("Tên hiển thị không được để trống.");
-    if (this.platform !== "gosh" && this.platform !== "gaquaytv") {
-      throw new Error("Chức năng đổi tên chỉ áp dụng cho tài khoản Gosh và GaQuayTV.");
-    }
-    const maxLength = 20;
-    if (cleanName.length > maxLength) {
-      throw new Error(`Tên hiển thị không được vượt quá ${maxLength} ký tự.`);
-    }
-    await this.#closeManualLoginForProfileUse();
-
-    if (this.platform === "gaquaytv") {
-      // The profile editor is a modal, not a route: reuse the profile page tab
-      // on the homepage and call the same v2 endpoints the site calls, with
-      // the cookie-held JWT never leaving Chrome.
-      const profilePage = await this.#getProfilePage();
-      const result = await profilePage.evaluate(async (displayName) => {
-        const cookieMap = Object.fromEntries((document.cookie || "").split(";").map((part) => {
-          const index = part.indexOf("=");
-          return index < 0 ? [part.trim(), ""] : [part.slice(0, index).trim(), part.slice(index + 1)];
-        }).filter(([key]) => key));
-        const token = cookieMap.access_token || "";
-        if (!token) return { ok: false, status: 401, reason: "no_token" };
-        // Same-origin fetch sets the required site Origin; the cookie JWT
-        // must still ride as an explicit Bearer header (cookie-only: 401).
-        const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-        const meResponse = await fetch("https://api.gaquaytv.com/api/v2/auth/me", { headers });
-        if (meResponse.status === 401) return { ok: false, status: 401, reason: "unauthorized" };
-        if (!meResponse.ok) return { ok: false, status: meResponse.status, reason: "profile_fetch_failed" };
-        const me = (await meResponse.json().catch(() => ({})))?.data || {};
-        const updateResponse = await fetch("https://api.gaquaytv.com/api/v2/auth/update-profile", {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify({
-            avatar: me.avatar ?? null,
-            cover: me.cover ?? null,
-            display_name: displayName,
-            bio: me.bio ?? null,
-            social_links: Array.isArray(me.social_links) ? me.social_links : [],
-          }),
-        });
-        const data = await updateResponse.json().catch(() => ({}));
-        if (updateResponse.status === 401) return { ok: false, status: 401, reason: "unauthorized" };
-        if (!updateResponse.ok) {
-          return { ok: false, status: updateResponse.status, reason: data?.message || "update_failed" };
-        }
-        return { ok: true, status: updateResponse.status, data };
-      }, cleanName).catch((error) => ({ ok: false, status: 0, reason: String(error?.message || error) }));
-
-      if (!result.ok) {
-        const error = new Error(
-          result.status === 401
-            ? "Bạn cần đăng nhập GaQuayTV trước khi đổi tên."
-            : `Lỗi cập nhật tên GaQuayTV (${result.reason || `HTTP ${result.status}`})`,
-        );
-        if (result.status === 401) error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-
-      this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
-      await this.#refreshCommentPageIdentity();
-      return { displayName: cleanName, updatedAt: new Date().toISOString() };
-    }
-
-    if (this.platform === "loco") {
-      let createdContext = false;
-      let context = this.context;
-
-      if (!context) {
-        const executablePath = await findChrome();
-        if (!executablePath) throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
-        await mkdir(this.profileDirectory, { recursive: true });
-        await waitForProfileUnlock(this.profileDirectory);
-        context = await chromium.launchPersistentContext(this.profileDirectory, {
-          executablePath,
-          headless: true,
-          ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
-          args: ["--headless=new", "--mute-audio", "--no-sandbox"],
-        });
-        createdContext = true;
-      }
-
-      try {
-        let cookies = [];
-        try {
-          // Scope cookie lookup to the active Loco origin. Profiles can retain
-          // obsolete loco11.com tokens; an unscoped `.find()` may select those
-          // before the valid .loco.com session.
-          cookies = await context.cookies([this.definition.homeUrl]);
-        } catch {
-          const page = context.pages()[0] || (await context.newPage());
-          const cdp = await context.newCDPSession(page);
-          const cdpRes = await cdp.send("Network.getAllCookies");
-          cookies = (cdpRes.cookies || []).filter((cookie) =>
-            cookie.domain === "loco.com" || cookie.domain === ".loco.com");
-        }
-        const tokenCookie = cookies.find((c) => c.name === "access_token");
-        const refreshCookie = cookies.find((c) => c.name === "refresh_token");
-        const deviceCookie = cookies.find((c) => c.name === "device_id");
-
-        let accessToken = tokenCookie ? tokenCookie.value : "";
-        let refreshToken = refreshCookie ? refreshCookie.value : "";
-        const deviceId = deviceCookie ? deviceCookie.value : "85c577c86fa0447fe9ec70606897e71flive";
-
-        if (!accessToken && !refreshToken) {
-          const error = new Error("Bạn cần đăng nhập Loco trước khi đổi tên.");
-          error.code = "LOGIN_REQUIRED";
-          throw error;
-        }
-
-        const callRefresh = async (currToken, currRefresh) => {
-          if (!currRefresh) return null;
-          const refRes = await fetch(LOCO_API_ENDPOINTS.refreshToken, {
-            method: "POST",
-            headers: {
-              Authorization: currToken,
-              "DEVICE-ID": deviceId,
-              "X-PLATFORM": "7",
-              "X-CLIENT-ID": "TlwKp1zmF6eKFpcisn3FyR18WkhcPkZtzwPVEEC3",
-              "X-CLIENT-SECRET": "Kp7tYlUN7LXvtcSpwYvIitgYcLparbtsQSe5AdyyCdiEJBP53Vt9J8eB4AsLdChIpcO2BM19RA3HsGtqDJFjWmwoonvMSG3ZQmnS8x1YIM8yl82xMXZGbE3NKiqmgBVU",
-              "Content-Type": "application/json",
-              Origin: "https://loco.com",
-              Referer: "https://loco.com/",
-              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            body: JSON.stringify({ refresh_token: currRefresh }),
-          });
-          const refData = await refRes.json().catch(() => ({}));
-          if (refData?.access_token && typeof refData.access_token === "string") {
-            accessToken = refData.access_token;
-            if (refData.refresh_token && typeof refData.refresh_token === "string") refreshToken = refData.refresh_token;
-            const oneYear = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
-            await context.addCookies([
-              { name: "access_token", value: accessToken, domain: ".loco.com", path: "/", expires: oneYear, secure: true, sameSite: "Lax" },
-              ...(refreshToken ? [{ name: "refresh_token", value: refreshToken, domain: ".loco.com", path: "/", expires: oneYear, secure: true, sameSite: "Lax" }] : []),
-              { name: "mode", value: "logged-in", domain: ".loco.com", path: "/", expires: oneYear },
-            ]);
-            return refData;
-          }
-          return null;
-        };
-
-        const callUpdate = async (token) => {
-          let dob = "24/08/2001";
-          let gender = 0;
-          let bio = "";
-          try {
-            const pRes = await fetch(LOCO_API_ENDPOINTS.profile, {
-              headers: {
-                Authorization: token,
-                Origin: "https://loco.com",
-                Referer: "https://loco.com/",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-              },
-            });
-            if (pRes.ok) {
-              const pJson = await pRes.json();
-              if (pJson?.data) {
-                if (pJson.data.dob) dob = pJson.data.dob;
-                if (pJson.data.gender !== undefined) gender = pJson.data.gender;
-                if (pJson.data.bio) bio = pJson.data.bio;
-              }
-            }
-          } catch {}
-
-          const res = await fetch(LOCO_API_ENDPOINTS.updateProfile, {
-            method: "POST",
-            headers: {
-              Authorization: token,
-              "Content-Type": "application/json",
-              Origin: "https://loco.com",
-              Referer: "https://loco.com/",
-              "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
-            body: JSON.stringify({
-              username: cleanName,
-              bio,
-              dob,
-              gender,
-            }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (data.message === "User Action Not allowed") {
-            throw new Error("Tài khoản Loco này đã đổi username trước đó và nền tảng không cho phép đổi lại lần thứ hai.");
-          }
-          if (/not allowed to login|login not allowed|invalid.*token|token.*expired/i.test(String(data.message || ""))) {
-            return { ok: false, status: 401, data: { ...data, message: "Phiên Loco đã hết hạn hoặc chưa đăng nhập đầy đủ." } };
-          }
-          if (res.status === 401 || data.status_code === 401 || data.error_code === "E005") {
-            return { ok: false, status: 401, data };
-          }
-          const isSuccess = res.ok && Boolean(data.success && (data.message === "Profile updated successfully" || data.data?.username?.toLowerCase() === cleanName.toLowerCase()));
-          if (!isSuccess) {
-            throw new Error(data.message || `Lỗi cập nhật tên Loco (HTTP ${res.status})`);
-          }
-          return { ok: true, status: res.status, data };
-        };
-
-        let updateResult = await callUpdate(accessToken);
-
-        // If 401 / expired token, refresh token and retry
-        if (!updateResult.ok && (updateResult.status === 401 || updateResult.data?.status_code === 401 || updateResult.data?.error_code === "E005")) {
-          const refreshed = await callRefresh(accessToken, refreshToken);
-          if (refreshed?.access_token) {
-            updateResult = await callUpdate(accessToken);
-          }
-        }
-
-        if (!updateResult.ok) {
-          const error = new Error(updateResult.data?.message || `Lỗi cập nhật tên Loco (HTTP ${updateResult.status})`);
-          if (updateResult.status === 401) error.code = "LOGIN_REQUIRED";
-          throw error;
-        }
-
-        // Always refresh token after successful rename so new JWT contains updated username
-        await callRefresh(accessToken, refreshToken);
-
-        this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
-        await this.#refreshCommentPageIdentity();
-        return { displayName: cleanName, updatedAt: new Date().toISOString() };
-      } finally {
-        if (createdContext) {
-          await this.#closeTemporaryContext(context);
-        }
-      }
-    }
-
-    let createdContext = false;
-    let profilePage = this.profilePage;
-    let context = this.context;
-
-    if (!context) {
-      const executablePath = await findChrome();
-      if (!executablePath) throw new Error("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy tính của bạn.");
-      await mkdir(this.profileDirectory, { recursive: true });
-      await waitForProfileUnlock(this.profileDirectory);
-      try {
-        context = await chromium.launchPersistentContext(this.profileDirectory, {
-          executablePath,
-          headless: true,
-          ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
-          args: ["--headless=new", "--mute-audio", "--no-sandbox"],
-        });
-        createdContext = true;
-        profilePage = await context.newPage();
-        await profilePage.goto(this.definition.profileUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      } catch (error) {
-        if (createdContext) await this.#closeTemporaryContext(context);
-        throw error;
-      }
-    } else {
-      profilePage = await this.#getProfilePage();
-    }
-
-    const loginButton = profilePage.getByRole("button", {
-      name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-    });
-    if (await loginButton.isVisible().catch(() => false)) {
-      if (createdContext) await this.#closeTemporaryContext(context);
-      else await profilePage.bringToFront().catch(() => {});
-      const error = new Error("Bạn cần đăng nhập trước khi đổi tên.");
-      error.code = "LOGIN_REQUIRED";
-      throw error;
-    }
-
-    const acceptBrowserDialog = (dialog) => dialog.accept().catch(() => {});
-    profilePage.on("dialog", acceptBrowserDialog);
-
-    try {
-      const nameInput = profilePage.getByPlaceholder(/^(Tên|Name)$/i).first();
-      await nameInput.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
-        throw new Error("Không tìm thấy trường tên trong trang hồ sơ.");
-      });
-      if ((await nameInput.inputValue()).trim() === cleanName) {
-        this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
-        await this.#refreshCommentPageIdentity();
-        return { displayName: cleanName, updatedAt: new Date().toISOString(), unchanged: true };
-      }
-      await nameInput.fill(cleanName);
-
-      const saveButton = profilePage.getByRole("button", { name: /^(Lưu|Save)$/i }).first();
-      const discardButton = profilePage
-        .getByRole("button", { name: /^(Bỏ|Hủy|Cancel|Discard)$/i })
-        .first();
-      await saveButton.waitFor({ state: "visible", timeout: 10_000 });
-      if (!(await saveButton.isEnabled())) {
-        throw new Error("Tên mới chưa hợp lệ hoặc không khác tên hiện tại.");
-      }
-
-      await saveButton.click();
-      let saved = false;
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        await profilePage.waitForTimeout(250);
-
-        const confirmButton = profilePage
-          .getByRole("button", { name: CONFIRM_BUTTON_NAME })
-          .last();
-        if (
-          (await confirmButton.isVisible().catch(() => false))
-          && (await confirmButton.isEnabled().catch(() => false))
-        ) {
-          await confirmButton.click();
-          continue;
-        }
-
-        if (!(await discardButton.isEnabled().catch(() => true))) {
-          saved = true;
-          break;
-        }
-      }
-      if (!saved) {
-        throw new Error("Trang hồ sơ không phản hồi sau khi ứng dụng tự xác nhận đổi tên.");
-      }
-
-      this.identity = { displayName: cleanName, source: "explicit_update", detectedAt: new Date().toISOString() };
-      await this.#refreshCommentPageIdentity();
-      return { displayName: cleanName, updatedAt: new Date().toISOString() };
-    } finally {
-      profilePage.off("dialog", acceptBrowserDialog);
-      if (createdContext) {
-        await this.#closeTemporaryContext(context);
-      } else if (this.commentPage && !this.commentPage.isClosed()) {
-        await this.commentPage.bringToFront().catch(() => {});
-      }
-    }
-  }
-
-  async #sendCommentOnRoom({ safeUrl, cleanContent }) {
-    // A visible/manual Chrome instance owns the same persistent profile. A
-    // user-triggered send should hand that profile over to the controlled
-    // headless context instead of failing with USER_ACTION_REQUIRED.
-    await this.#closeManualLoginForProfileUse();
-    const page = await this.#getRoomPage(safeUrl);
-    let textBox = null;
-    if (this.platform === "gaquaytv") {
-      textBox = page
-        .locator('[class*="bg-surface-chat"] textarea, textarea[placeholder*="trò chuyện" i], textarea[placeholder*="tin nhắn" i], textarea, [contenteditable="true"]')
-        .first();
-      await textBox.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
-        throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
-      });
-
-      // Next.js SSR renders an anonymous placeholder ("Đăng nhập để trò chuyện")
-      // before client hydration completes. Wait up to 6s for hydration to load
-      // the user session and switch to an active chat composer.
-      const hydrationDeadline = Date.now() + 6_000;
-      while (Date.now() < hydrationDeadline) {
-        const placeholder = await textBox.getAttribute("placeholder").catch(() => "") || "";
-        if (!placeholder.toLowerCase().includes("đăng nhập")) break;
-        await page.waitForTimeout(250);
-      }
-
-      const finalPlaceholder = await textBox.getAttribute("placeholder").catch(() => "") || "";
-      if (finalPlaceholder.toLowerCase().includes("đăng nhập")) {
-        const error = new Error("Bạn cần đăng nhập GaQuayTV trong cửa sổ Chrome trước khi gửi.");
-        error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-    } else {
-      const loginButton = page.getByRole("button", {
-        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-      });
-      if (await loginButton.isVisible().catch(() => false)) {
-        const error = new Error("Bạn cần đăng nhập trong cửa sổ Chrome trước khi gửi.");
-        error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-    }
-
-    let directResult = null;
-    if (this.platform === "loco") {
-      const loginButton = page.getByRole("button", {
-        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-      });
-      if (await loginButton.isVisible().catch(() => false)) {
-        const error = new Error("Bạn cần đăng nhập Loco trong cửa sổ Chrome trước khi gửi chat.");
-        error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-      const matureConfirmation = page
-        .getByRole("button", { name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i })
-        .first();
-      if (await matureConfirmation.isVisible().catch(() => false)) {
-        const error = new Error("Phòng Loco yêu cầu xác nhận độ tuổi trong Chrome trước khi gửi chat.");
-        error.code = "USER_ACTION_REQUIRED";
-        throw error;
-      }
-
-      const transportDeadline = Date.now() + 8_000;
-      do {
-        directResult = await page.evaluate(sendCommentViaLocoTransport, {
-          content: cleanContent,
-          streamId: getLocoStreamId(safeUrl),
-          displayName: this.identity?.displayName || "",
-          timeoutMs: 6_000,
-        }).catch(() => ({
-          status: "failed",
-          attempted: false,
-          reason: "page_evaluate_failed",
-        }));
-        if (directResult.status === "sent" || directResult.attempted || Date.now() >= transportDeadline) break;
-        await page.waitForTimeout(400);
-      } while (true);
-
-      if (directResult.status === "sent") {
-        return {
-          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-          url: page.url(),
-          transport: "https",
-          provider: directResult.provider,
-          providerMessageId: directResult.providerMessageId,
-        };
-      }
-      // Once the website has started a request, a missing acknowledgement does
-      // not prove that the message was rejected. Retrying via the UI can post it twice.
-      if (directResult.attempted) {
-        throw new Error(`Loco chưa xác nhận gửi chat: ${directResult.reason || "không có phản hồi"}. Hãy kiểm tra lịch sử chat trước khi thử lại.`);
-      }
-    }
-
-    if (this.platform === "gaquaytv") {
-      directResult = await page.evaluate(sendCommentViaGaquaytvTransport, {
-        content: cleanContent,
-      }).catch(() => ({
-        status: "failed",
-        attempted: false,
-        reason: "page_evaluate_failed",
-      }));
-
-      if (directResult.status === "sent") {
-        return {
-          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-          url: page.url(),
-          transport: "websocket",
-          provider: directResult.provider,
-          providerMessageId: directResult.providerMessageId,
-        };
-      }
-      if (directResult.reason === "login_required") {
-        const error = new Error("Bạn cần đăng nhập GaQuayTV trong cửa sổ Chrome trước khi gửi.");
-        error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-    }
-
-    if (!textBox) {
-      textBox = page
-        .locator(this.platform === "loco"
-          ? 'input[data-test-id="loco-chat-input-container"], .loco-chat-input, input[placeholder*="Slow mode" i], input[placeholder*="message" i], input[placeholder*="chat" i], input[placeholder*="Say something" i], textarea[placeholder*="message" i], textarea[placeholder*="chat" i], [data-test-id*="chat-input" i] input, [data-testid*="chat-input" i] input, [role="textbox"][contenteditable="true"]'
-          : 'input[placeholder*="Nói gì đó" i], input[placeholder*="Say something" i], input[placeholder*="Write a message" i], textarea, [contenteditable="true"]')
-        .first();
-      await textBox.waitFor({ state: "visible", timeout: 12_000 }).catch(() => {
-        if (directResult?.attempted && directResult?.reason) {
-          throw new Error(`Gửi qua HTTPS thất bại: ${directResult.reason}`);
-        }
-        if (this.platform === "loco") {
-          throw new Error(`Không tìm thấy ô chat Loco tại ${page.url()}. Trang chưa mở phòng live có chat, chưa đăng nhập, hoặc giao diện chat đã thay đổi (gửi qua HTTPS: ${directResult?.reason || "không khả dụng"}).`);
-        }
-        throw new Error("Không tìm thấy ô chat. Hãy kiểm tra URL phòng live và trạng thái phòng.");
-      });
-    }
-
-    if (this.platform === "loco" && await textBox.evaluate((element) =>
-      element.readOnly || element.disabled || element.getAttribute("aria-disabled") === "true"
-    ).catch(() => false)) {
-      const loginButton = page.getByRole("button", {
-        name: /^(Đăng nhập|Log in|Login|Sign in)$/i,
-      });
-      if (await loginButton.isVisible().catch(() => false)) {
-        const error = new Error("Bạn cần đăng nhập Loco trong cửa sổ Chrome trước khi gửi chat.");
-        error.code = "LOGIN_REQUIRED";
-        throw error;
-      }
-      throw new Error("Ô chat Loco đang khóa. Hãy kiểm tra trạng thái đăng nhập, chế độ chat và phòng live.");
-    }
-
-    await textBox.fill(cleanContent);
-
-    if (this.platform === "gosh") {
-      directResult = await page.evaluate(sendCommentViaWebsiteTransport, {
-        content: cleanContent,
-        displayName: this.identity?.displayName || "",
-        timeoutMs: 10_000,
-      }).catch(() => ({
-        status: "failed",
-        attempted: false,
-        reason: "page_evaluate_failed",
-      }));
-
-      if (directResult.status === "sent") {
-        await textBox.fill("").catch(() => {});
-        return {
-          sentAt: new Date(directResult.sentAt || Date.now()).toISOString(),
-          url: page.url(),
-          transport: "websocket",
-          provider: directResult.provider,
-          providerMessageId: directResult.providerMessageId,
-        };
-      }
-    }
-
-    // GaQuayTV's composer is a textarea where Enter inserts a newline; its
-    // send button carries an aria-label instead of text content.
-    if (this.platform !== "gaquaytv") {
-      await textBox.press("Enter");
-    }
-
-    const sendButton = page.locator(this.platform === "gaquaytv"
-      ? '[class*="bg-surface-chat"] button[aria-label*="Gửi tin nhắn" i], [class*="bg-surface-chat"] button[aria-label*="send" i]'
-      : 'button:has-text("Gửi"), button:has-text("Send"), button[data-test-id*="send" i], button[aria-label="Send" i]'
-    ).first();
-
-    const inputStillContainsComment = this.platform !== "loco"
-      || (await textBox.inputValue().catch(() => cleanContent)) === cleanContent;
-    if (inputStillContainsComment && await sendButton.isVisible({ timeout: 1000 }).catch(() => false)) {
-      if (await sendButton.isEnabled().catch(() => false)) {
-        await sendButton.click().catch(() => {});
-      }
-    }
-
-    await page.waitForTimeout(500);
-    if (this.platform === "loco") {
-      const ageGate = page.getByRole("button", {
-        name: /Yes, I am 18\+|I am 18\+|Tôi đã đủ 18 tuổi/i,
-      }).first();
-      if (await ageGate.isVisible().catch(() => false)) {
-        const error = new Error("Phòng Loco yêu cầu xác nhận độ tuổi trong Chrome trước khi gửi chat.");
-        error.code = "USER_ACTION_REQUIRED";
-        throw error;
-      }
-      if ((await textBox.inputValue().catch(() => "")) === cleanContent) {
-        throw new Error("Loco chưa gửi bình luận; nội dung vẫn còn trong ô chat.");
-      }
-    }
-    return {
-      sentAt: new Date().toISOString(),
-      url: page.url(),
-      transport: "browser-ui",
-      provider: this.platform,
-    };
-  }
-
-  async sendComment({ channelUrl, content }) {
-    const safeUrl = assertPlatformUrl(channelUrl, this.platform);
-    const cleanContent = String(content ?? "").trim();
-    if (!cleanContent) throw new Error("Không có nội dung để gửi.");
-
-    // Serialize sends to the same room (so one account cannot overwrite its
-    // own composer), while allowing different configured rooms to run in
-    // parallel on separate tabs.
-    const key = roomPageKey(safeUrl);
-    const previous = this.roomLocks.get(key) || Promise.resolve();
-    const current = previous
-      .catch(() => {})
-      .then(() => this.#sendCommentOnRoom({ safeUrl, cleanContent }));
-    this.roomLocks.set(key, current);
-    try {
-      return await current;
-    } finally {
-      const timing = this.roomPageTimes.get(key);
-      if (timing) timing.lastUsedAt = Date.now();
-      if (this.roomLocks.get(key) === current) this.roomLocks.delete(key);
-    }
-  }
-
   async close() {
-    clearInterval(this.roomCleanupTimer);
-    this.roomCleanupTimer = null;
-    this.roomPageTimes.clear();
     this.suppressManualLoginReopen = true;
     const manualLoginProcess = this.manualLoginProcess;
     if (isBrowserProcessRunning(manualLoginProcess)) {
@@ -1832,8 +1016,5 @@ export class BrowserSession {
     } catch {}
     this.context = null;
     this.commentPage = null;
-    this.profilePage = null;
-    this.roomPages.clear();
-    this.roomLocks.clear();
   }
 }

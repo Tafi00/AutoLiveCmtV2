@@ -71,6 +71,7 @@ const elements = {
   bulkError: $("#bulk-error"),
   accountSummary: $("#account-summary"),
   addAccount: $("#add-account"),
+  loadTokens: $("#load-tokens"),
   accountPlatform: $("#account-platform"),
   accountList: $("#account-list"),
   accountInspector: $("#account-inspector"),
@@ -242,19 +243,18 @@ function switchView(view) {
 
 function accountPresentation(account) {
   if (!account.enabled) return { label: "Tạm tắt", className: "" };
-  if (account.session?.error) return { label: "Lỗi session", className: "error" };
-  if (!account.session?.running) return { label: "Chưa mở", className: "" };
-  if (account.session.loginState === "manual_login") return { label: "Đang đăng nhập an toàn", className: "warning" };
-  if (account.session.loginState === "signed_out") return { label: "Chưa đăng nhập", className: "warning" };
-  if (account.session.readyToComment) return { label: "Sẵn sàng", className: "ready" };
-  return { label: "Chrome đang mở", className: "warning" };
+  if (account.session?.loginState === "manual_login") return { label: "Đang đăng nhập an toàn", className: "warning" };
+  if (account.session?.readyToComment) return { label: "Sẵn sàng (token)", className: "ready" };
+  if (account.session?.loginState === "signed_out") return { label: "Chưa đăng nhập", className: "warning" };
+  if (account.session?.error) return { label: "Lỗi token", className: "error" };
+  return { label: "Chưa có token", className: "" };
 }
 
 function aggregateStatus() {
   const accounts = enabledAccounts();
   const ready = accounts.filter((account) => account.session?.readyToComment).length;
-  const running = accounts.filter((account) => account.session?.running).length;
-  return { accounts, ready, running };
+  const missing = accounts.filter((account) => !account.session?.hasToken).length;
+  return { accounts, ready, missing };
 }
 
 function statusDot(className = "") {
@@ -264,11 +264,11 @@ function statusDot(className = "") {
 }
 
 function renderAggregateStatus() {
-  const { accounts, ready, running } = aggregateStatus();
-  const dotClass = accounts.length && ready === accounts.length ? "ready" : running ? "warning" : "";
+  const { accounts, ready, missing } = aggregateStatus();
+  const dotClass = accounts.length && ready === accounts.length ? "ready" : ready ? "warning" : "";
   elements.navStatusDot.className = `status-dot${dotClass ? ` ${dotClass}` : ""}`;
   elements.navReadyCount.textContent = `${ready}/${accounts.length} sẵn sàng`;
-  elements.navRunningCount.textContent = `${running} Chrome đang mở`;
+  elements.navRunningCount.textContent = `${missing} chưa có token`;
   elements.navAccountCount.textContent = state.accounts.length;
   const down = healthChecks.filter((item) => item.status === "down").length;
   elements.navHealthCount.textContent = down ? String(down) : "";
@@ -431,6 +431,7 @@ function renderBulkSend() {
     elements.addLocoMessage,
     elements.addGaquaytvMessage,
     elements.addAccount,
+    elements.loadTokens,
     elements.delaySeconds,
     elements.displayNames,
     elements.renameEveryComments,
@@ -988,6 +989,25 @@ function nextAccountName() {
   return `Tài khoản ${index}`;
 }
 
+async function loadTokens() {
+  setBusy(elements.loadTokens, true, "Đang nạp token…");
+  try {
+    const result = await api("/api/accounts/tokens/load", { method: "POST", body: "{}" });
+    const { tokenLoad, ...nextState } = result;
+    state = nextState;
+    render();
+    const failed = tokenLoad.failed.length;
+    showNotice(
+      `Đã nạp ${tokenLoad.loaded} token mới, ${tokenLoad.skipped} tài khoản đã có sẵn${failed ? `, ${failed} tài khoản cần đăng nhập lại` : ""}.`,
+      failed ? "warning" : "success",
+    );
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    setBusy(elements.loadTokens, false);
+  }
+}
+
 async function addAccount() {
   setBusy(elements.addAccount, true, "Đang thêm…");
   const previousIds = new Set(state.accounts.map((account) => account.id));
@@ -1106,6 +1126,7 @@ for (const control of [elements.channelUrlGosh, elements.channelUrlLoco, element
 }
 
 elements.addAccount.addEventListener("click", addAccount);
+elements.loadTokens.addEventListener("click", loadTokens);
 elements.refreshStatus.addEventListener("click", async () => {
   elements.refreshStatus.disabled = true;
   elements.refreshStatus.classList.add("is-spinning");

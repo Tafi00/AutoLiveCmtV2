@@ -11,6 +11,7 @@ import {
   gaquaytvLoginProbeExpression,
   locoLoginProbeExpression,
   observeManualLoginUrls,
+  shouldBlockBrowserResource,
   waitForProfileUnlock,
 } from "../src/browser-session.js";
 
@@ -38,99 +39,6 @@ test("probe GaQuayTV đọc token từ cookie và gọi auth/me", () => {
   assert.match(expression, /document\.cookie/);
   assert.match(expression, /api\.gaquaytv\.com\/api\/v2\/auth\/me/);
   assert.match(expression, /Authorization/);
-});
-
-test("từ chối tên hiển thị trống trước khi mở trình duyệt", async () => {
-  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-gosh-profile" });
-  await assert.rejects(browser.updateDisplayName("   "), /không được để trống/);
-});
-
-test("từ chối tên hiển thị dài hơn giới hạn của website", async () => {
-  const goshBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-gosh-profile", platform: "gosh" });
-  await assert.rejects(goshBrowser.updateDisplayName("a".repeat(21)), /không được vượt quá 20 ký tự/);
-});
-
-test("không cho phiên Loco dùng chức năng đổi tên", async () => {
-  const locoBrowser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
-  await assert.rejects(locoBrowser.updateDisplayName("Tên mới"), /chỉ áp dụng cho tài khoản Gosh và GaQuayTV/);
-});
-
-test("một browser session giữ tab riêng và gửi song song tới nhiều phòng", async () => {
-  let active = 0;
-  let maximumActive = 0;
-  const pages = [];
-  const createLocator = () => ({
-    first() { return this; },
-    async isVisible() { return false; },
-    async waitFor() {},
-    async fill() {},
-  });
-  const createPage = (name) => {
-    let currentUrl = "about:blank";
-    const page = {
-      name,
-      isClosed: () => false,
-      url: () => currentUrl,
-      once: () => {},
-      getByRole: () => createLocator(),
-      locator: () => createLocator(),
-      goto: async (url) => { currentUrl = url; },
-      waitForTimeout: async () => {},
-      evaluate: async () => {
-        active += 1;
-        maximumActive = Math.max(maximumActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        active -= 1;
-        return {
-          status: "sent",
-          sentAt: Date.now(),
-          provider: name,
-          providerMessageId: name,
-        };
-      },
-    };
-    pages.push(page);
-    return page;
-  };
-
-  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-multi-room-profile", platform: "gosh" });
-  browser.commentPage = createPage("room-1");
-  browser.context = {
-    pages: () => pages,
-    newPage: async () => createPage(`room-${pages.length + 1}`),
-  };
-
-  const urls = ["https://gosh.com/vi/16427037", "https://gosh6.app/15942759"];
-  const results = await Promise.all(urls.map((channelUrl) => browser.sendComment({
-    channelUrl,
-    content: "Cùng một mẫu",
-  })));
-
-  assert.equal(maximumActive, 2);
-  assert.equal(pages.length, 2);
-  assert.equal(browser.roomPages.size, 2);
-  assert.deepEqual(new Set(pages.map((page) => page.url())), new Set(urls));
-  assert.deepEqual(results.map((result) => result.transport), ["websocket", "websocket"]);
-});
-
-test("Loco không gửi lại qua ô chat khi HTTPS đã bắt đầu nhưng chưa được xác nhận", async () => {
-  const url = "https://loco.com/stream/12345678-1234-1234-1234-123456789abc";
-  let composerUsed = false;
-  const page = {
-    isClosed: () => false,
-    url: () => url,
-    once: () => {},
-    getByRole: () => ({ first: () => ({ isVisible: async () => false }), isVisible: async () => false }),
-    evaluate: async () => ({ status: "failed", attempted: true, reason: "website_transport_timeout" }),
-    locator: () => { composerUsed = true; throw new Error("UI fallback must not run"); },
-  };
-  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-loco-profile", platform: "loco" });
-  browser.commentPage = page;
-  browser.context = { pages: () => [page] };
-
-  await assert.rejects(browser.sendComment({ channelUrl: url, content: "Xin chào" }),
-    /Loco chưa xác nhận gửi chat: website_transport_timeout/);
-  assert.equal(composerUsed, false);
 });
 
 test("chờ Chrome nhả khóa profile trước khi mở tiến trình tiếp theo", async () => {
@@ -203,94 +111,54 @@ test("observed endpoints stay bounded and retain the most recently seen entry", 
   }
 });
 
-function createLifecycleSession() {
-  const browser = new BrowserSession({ profileDirectory: "/tmp/unused-lifecycle" });
-  const pages = [];
-  const locator = {
-    first() { return this; },
-    async isVisible() { return false; },
-    async waitFor() {},
-    async fill() {},
-  };
-  const newPage = () => {
-    let url = "about:blank";
-    let closed = false;
-    let onClose;
-    const page = {
-      reloads: 0,
-      sends: 0,
-      isClosed: () => closed,
-      url: () => url,
-      once: (_, callback) => { onClose = callback; },
-      async goto(value) { url = value; },
-      async reload() { this.reloads++; },
-      async close() { closed = true; onClose?.(); },
-      getByRole: () => locator,
-      locator: () => locator,
-      async evaluate() { this.sends++; return { status: "sent" }; },
-    };
-    pages.push(page);
-    return page;
-  };
-  browser.context = { pages: () => pages.filter((page) => !page.isClosed()), newPage: async () => newPage() };
-  browser.commentPage = newPage();
-  return { browser, pages };
-}
-
-test("old live pages reload only between sends and keep their room", async () => {
-  const { ROOM_PAGE_MAX_AGE_MS } = await import("../src/browser-session.js");
-  const { browser, pages } = createLifecycleSession();
-  const input = { channelUrl: "https://gosh.com/vi/16427037", content: "test" };
-  await browser.sendComment(input);
-  const timing = [...browser.roomPageTimes.values()][0];
-  timing.createdAt = Date.now() - ROOM_PAGE_MAX_AGE_MS;
-  await Promise.all([browser.sendComment(input), browser.sendComment(input)]);
-  assert.equal(pages.length, 1);
-  assert.equal(pages[0].reloads, 1);
-  assert.equal(pages[0].sends, 3);
-  assert.equal(pages[0].url(), input.channelUrl);
-  assert.equal(browser.roomLocks.size, 0);
-});
-
-test("idle cleanup skips active sends, releases pages, and permits sending again", async () => {
-  const { ROOM_PAGE_IDLE_MS } = await import("../src/browser-session.js");
-  const { browser, pages } = createLifecycleSession();
-  const input = { channelUrl: "https://gosh.com/vi/16427037", content: "test" };
-  await browser.sendComment(input);
-  const key = [...browser.roomPages.keys()][0];
-  const future = Date.now() + ROOM_PAGE_IDLE_MS + 1;
-  browser.roomLocks.set(key, Promise.resolve());
-  await browser.pruneIdleRoomPages(future);
-  assert.equal(pages[0].isClosed(), false);
-  browser.roomLocks.delete(key);
-  const cleanup = browser.pruneIdleRoomPages(future);
-  const send = browser.sendComment(input);
-  await Promise.all([cleanup, send]);
-  assert.equal(pages[0].isClosed(), true);
-  assert.equal(pages.length, 2);
-  assert.equal(pages[1].sends, 1);
-  assert.equal(browser.roomPages.size, 1);
-  assert.equal(browser.roomPageTimes.size, 1);
-  assert.equal(browser.roomLocks.size, 0);
-  await browser.pruneIdleRoomPages(Date.now() + ROOM_PAGE_IDLE_MS + 1);
-  assert.equal(browser.roomPages.size, 0);
-  assert.equal(browser.roomPageTimes.size, 0);
-  assert.equal(browser.commentPage, null);
-});
-
-test("BrowserSession khởi tạo proxy và dispatcher khi có cấu hình proxy", () => {
+test("BrowserSession giữ proxy riêng cho cửa sổ Chrome của tài khoản", () => {
   const sessionWithProxy = new BrowserSession({
     profileDirectory: "/tmp/fake-profile",
     platform: "gaquaytv",
     proxy: "http://usr:pwd@127.0.0.1:8080",
   });
   assert.equal(sessionWithProxy.proxy, "http://usr:pwd@127.0.0.1:8080");
-  assert.ok(sessionWithProxy.dispatcher);
+  assert.equal(sessionWithProxy.isRunning(), false);
 
   const sessionNoProxy = new BrowserSession({
     profileDirectory: "/tmp/fake-profile",
     platform: "gaquaytv",
   });
   assert.equal(sessionNoProxy.proxy, "");
-  assert.equal(sessionNoProxy.dispatcher, undefined);
+});
+
+test("chặn video và tài nguyên nền nhưng giữ API/JavaScript chat", () => {
+  assert.equal(shouldBlockBrowserResource({
+    resourceType: "xhr",
+    url: "https://pull.gosh6.app/live/channel.m3u8?signature=redacted",
+  }), true);
+  assert.equal(shouldBlockBrowserResource({
+    resourceType: "media",
+    url: "https://example.com/video.mp4",
+  }), true);
+  assert.equal(shouldBlockBrowserResource({
+    resourceType: "image",
+    url: "https://static.goshcdn.com/_ugc/avatar/example.png",
+  }), true);
+  assert.equal(shouldBlockBrowserResource({
+    resourceType: "script",
+    url: "https://static.goshcdn.com/fe_live/gosh/prod/chat-sdk.js",
+  }), false);
+  assert.equal(shouldBlockBrowserResource({
+    platform: "loco",
+    resourceType: "script",
+    url: "https://www.googletagmanager.com/gtm.js?id=redacted",
+  }), true);
+  assert.equal(shouldBlockBrowserResource({
+    platform: "loco",
+    resourceType: "fetch",
+    url: "https://api.loco.com/chat/v2/streams/stream-1/chat/?send=true",
+  }), false);
+});
+
+test("Gosh stream segments are blocked when the CDN hostname changes", () => {
+  for (const extension of ["m3u8", "m4s", "ts", "mp4", "flv", "mpd", "aac"]) {
+    assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: `https://new-cdn.example/live/video.${extension}?token=test` }), true);
+  }
+  assert.equal(shouldBlockBrowserResource({ platform: "gosh", resourceType: "fetch", url: "https://api.gosh.com/live/join" }), false);
 });

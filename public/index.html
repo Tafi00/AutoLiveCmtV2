@@ -30,7 +30,7 @@
             <span id="nav-status-dot" class="status-dot"></span>
             <div>
               <strong id="nav-ready-count">0/1 sẵn sàng</strong>
-              <small id="nav-running-count">0 Chrome đang mở</small>
+              <small id="nav-running-count">0 chưa có token</small>
             </div>
             <button id="refresh-status" class="icon-button" type="button" aria-label="Làm mới trạng thái" title="Làm mới"><span data-icon="refresh-cw" aria-hidden="true"></span></button>
           </div>
@@ -132,7 +132,7 @@
           <section id="view-accounts" class="view" data-view-panel="accounts" hidden>
             <header class="view-header">
               <div><h1>Tài khoản</h1><p id="account-summary">1 tài khoản</p></div>
-              <div class="header-actions"><select id="account-platform" aria-label="Nền tảng tài khoản"><option value="gosh">Gosh</option><option value="loco">Loco</option><option value="gaquaytv">GaQuayTV</option></select><button id="add-account" class="primary" type="button">Thêm tài khoản</button></div>
+              <div class="header-actions"><select id="account-platform" aria-label="Nền tảng tài khoản"><option value="gosh">Gosh</option><option value="loco">Loco</option><option value="gaquaytv">GaQuayTV</option></select><button id="load-tokens" type="button" title="Đọc token đăng nhập từ profile Chrome của các tài khoản chưa có token">Nạp token từ Chrome</button><button id="add-account" class="primary" type="button">Thêm tài khoản</button></div>
             </header>
 
             <div class="account-workspace">
