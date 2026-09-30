@@ -58,10 +58,14 @@ export class TokenSession {
     this.identityDetection = null;
     this.goshUser = null;
     this.goshIm = null;
-    this.gaquaytvSocket = null;
+    this.gaquaytvSockets = new Map();
     this.gaquaytvSender = null;
     this.idleTimer = null;
   }
+  get gaquaytvSocket() {
+    return this.gaquaytvSockets.values().next().value || null;
+  }
+
 
   get dispatcher() {
     return proxyDispatcher(this.proxy);
@@ -218,11 +222,15 @@ export class TokenSession {
   async closeRealtime() {
     clearTimeout(this.idleTimer);
     this.idleTimer = null;
-    const socket = this.gaquaytvSocket;
+    const sockets = Array.from(this.gaquaytvSockets.values());
+    this.gaquaytvSockets.clear();
     const im = this.goshIm;
-    this.gaquaytvSocket = null;
     this.goshIm = null;
-    socket?.close();
+    for (const socket of sockets) {
+      try {
+        socket.close();
+      } catch {}
+    }
     await im?.destroy();
   }
 
@@ -275,16 +283,19 @@ export class TokenSession {
     return sender;
   }
 
-  async #gaquaytvSocketFor(credentials) {
-    if (!this.gaquaytvSocket?.connected || this.gaquaytvSocket.token !== credentials.accessToken) {
-      this.gaquaytvSocket?.close();
-      this.gaquaytvSocket = new GaquaytvChatSocket({
+  async #gaquaytvSocketFor(credentials, room = "") {
+    const key = room || "__default__";
+    let socket = this.gaquaytvSockets.get(key);
+    if (!socket?.connected || socket.token !== credentials.accessToken) {
+      socket?.close();
+      socket = new GaquaytvChatSocket({
         token: credentials.accessToken,
+        room,
         dispatcher: this.dispatcher,
         ...(this.deps.WebSocket ? { WebSocketImpl: this.deps.WebSocket } : {}),
       });
+      this.gaquaytvSockets.set(key, socket);
     }
-    const socket = this.gaquaytvSocket;
     this.#touchRealtime();
     await socket.connect();
     return socket;
@@ -293,7 +304,7 @@ export class TokenSession {
   async #sendGaquaytv(credentials, channelUrl, content) {
     const room = await resolveGaquaytvRoom(channelUrl, this.transportOptions);
     const sender = await this.#gaquaytvSenderFor(credentials);
-    const socket = await this.#gaquaytvSocketFor(credentials);
+    const socket = await this.#gaquaytvSocketFor(credentials, room);
     const result = await socket.sendChat({ room, content, sender });
     return { confirmed: result.confirmed };
   }
@@ -334,7 +345,8 @@ export class TokenSession {
       } else if (this.platform === "gaquaytv") {
         const room = await resolveGaquaytvRoom(safeUrl, this.transportOptions);
         await this.#gaquaytvSenderFor(credentials);
-        (await this.#gaquaytvSocketFor(credentials)).joinRoom(room);
+        const socket = await this.#gaquaytvSocketFor(credentials, room);
+        socket.joinRoom(room);
       } else {
         const room = await resolveGoshRoom(safeUrl, this.transportOptions);
         await this.#goshUserFor(credentials);

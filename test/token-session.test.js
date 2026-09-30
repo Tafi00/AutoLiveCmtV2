@@ -212,6 +212,46 @@ test("làm nóng kết nối GaQuayTV trước rồi gửi trên cùng socket", 
   });
 });
 
+test("tách riêng socket GaQuayTV cho từng phòng live để không bị đá room khi gửi nhiều link", async () => {
+  await withVault(async (vault) => {
+    const room1 = "717ba03e-ab6c-4ccb-8ae5-0c26bf812beb";
+    const room2 = "5aeb94c4-b6f8-4c22-9e63-018f3f85d1b0";
+    await vault.set("gq", { platform: "gaquaytv", source: "chrome", credentials: { accessToken: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }), refreshToken: "r" } });
+    const { fetchImpl } = fakeFetch(() => ({ body: { data: { display_name: "GQ", username: "gq_user", avatar: "" } } }));
+    FakeWebSocket.instances = [];
+    const session = new TokenSession({ accountId: "gq", platform: "gaquaytv", vault, browser: fakeBrowser(), deps: { fetch: fetchImpl, WebSocket: FakeWebSocket } });
+
+    // Prepare both rooms
+    await session.prepare({ channelUrl: `https://gaquaytv.com/live/${room1}` });
+    await session.prepare({ channelUrl: `https://gaquaytv.com/live/${room2}` });
+
+    assert.equal(FakeWebSocket.instances.length, 2);
+    const ws1 = FakeWebSocket.instances[0];
+    const ws2 = FakeWebSocket.instances[1];
+    assert.ok(ws1.sent.some((packet) => packet.includes(room1)));
+    assert.ok(ws2.sent.some((packet) => packet.includes(room2)));
+
+    // Send to both rooms
+    for (const ws of [ws1, ws2]) {
+      ws.onEmit = (event, payload) => {
+        if (event === "send_message") queueMicrotask(() => ws.receive(`42${JSON.stringify(["onReceiveMessage", { msgs: [{ username: "gq_user", content: payload.data.msgs[0].content }] }])}`));
+      };
+    }
+    const [res1, res2] = await Promise.all([
+      session.sendComment({ channelUrl: `https://gaquaytv.com/live/${room1}`, content: "Tin nhắn 1" }),
+      session.sendComment({ channelUrl: `https://gaquaytv.com/live/${room2}`, content: "Tin nhắn 2" }),
+    ]);
+    assert.equal(res1.confirmed, true);
+    assert.equal(res2.confirmed, true);
+    // Still only 2 sockets total
+    assert.equal(FakeWebSocket.instances.length, 2);
+
+    await session.close();
+    assert.equal(ws1.closed, true);
+    assert.equal(ws2.closed, true);
+  });
+});
+
 test("không làm nóng tài khoản chưa có token để khỏi mở Chrome nền", async () => {
   await withVault(async (vault) => {
     const browser = fakeBrowser([]);

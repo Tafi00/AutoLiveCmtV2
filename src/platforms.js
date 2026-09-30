@@ -26,7 +26,7 @@ export const PLATFORMS = Object.freeze({
     // dedicated profile route, so the homepage hosts the profile session.
     profileUrl: "https://gaquaytv.com/",
     hostPattern: /(^|\.)gaquaytv\.com$/i,
-    roomPathPattern: null,
+    roomPathPattern: /^\/live\/[^/?#]+/i,
   }),
 });
 
@@ -47,8 +47,11 @@ export function platformFromUrl(value) {
 }
 
 export function normalizeChannelUrl(value, { allowEmpty = true, platform } = {}) {
-  const input = String(value ?? "").trim();
+  let input = String(value ?? "").replace(/\s+/g, "").trim();
   if (!input && allowEmpty) return "";
+  if (!/^https?:\/\//i.test(input)) {
+    input = `https://${input}`;
+  }
 
   let url;
   try {
@@ -73,7 +76,8 @@ export function normalizeChannelUrl(value, { allowEmpty = true, platform } = {})
 
 export function assertPlatformUrl(value, platform) {
   const definition = PLATFORMS[normalizePlatform(platform)];
-  const url = new URL(value || definition.homeUrl);
+  const clean = String(value || "").replace(/\s+/g, "").trim();
+  const url = new URL(clean || definition.homeUrl);
   if (url.protocol !== "https:" || !definition.hostPattern.test(url.hostname)) {
     throw new Error(`Chỉ có thể mở trang HTTPS thuộc ${definition.name}.`);
   }
@@ -82,7 +86,8 @@ export function assertPlatformUrl(value, platform) {
 
 export function getLocoStreamId(value) {
   try {
-    const match = new URL(value).pathname.match(/^\/stream\/([a-f0-9-]{20,})/i);
+    const clean = String(value ?? "").replace(/\s+/g, "").trim();
+    const match = new URL(clean).pathname.match(/^\/stream\/([a-f0-9-]{20,})/i);
     return match?.[1] || "";
   } catch {
     return "";
@@ -91,8 +96,10 @@ export function getLocoStreamId(value) {
 
 export function getGaquaytvRoomId(value) {
   try {
-    const match = new URL(value).pathname.match(/^\/live\/([^/?#]+)/i);
+    const clean = String(value ?? "").replace(/\s+/g, "").trim();
+    const match = new URL(clean).pathname.match(/^\/live\/([^/?#]+)/i);
     return match?.[1] || "";
   } catch {
+    return "";
   }
 }

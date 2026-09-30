@@ -29,7 +29,11 @@ test("chấp nhận phòng live Gosh, Loco và GaQuayTV, từ chối URL ngoài 
   assert.equal(normalizeChannelUrl("https://loco.com/streamers/Supreme.Heart109"), "https://loco.com/streamers/Supreme.Heart109");
   assert.equal(normalizeChannelUrl("https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd"), "https://gaquaytv.com/live/4a1e82cf-3b00-4bb0-b28e-e770807684cd");
   assert.equal(normalizeChannelUrl("https://gaquaytv.com/live/livestream-tipclub-abcd-do111lly234-9696d57d"), "https://gaquaytv.com/live/livestream-tipclub-abcd-do111lly234-9696d57d");
+  assert.equal(normalizeChannelUrl("https://gaquaytv.com /live/livestream-tipclub-ngay-30-09-2026-20-00-bf812beb"), "https://gaquaytv.com/live/livestream-tipclub-ngay-30-09-2026-20-00-bf812beb");
+  assert.equal(normalizeChannelUrl("gaquaytv.com/live/livestream-tipclub-ngay-30-09-2026-20-00-bf812beb"), "https://gaquaytv.com/live/livestream-tipclub-ngay-30-09-2026-20-00-bf812beb");
   assert.throws(() => normalizeChannelUrl("https://loco.com/browse"), /chưa phải phòng live/);
+  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/schedule"), /chưa phải phòng live/);
+  assert.throws(() => normalizeChannelUrl("https://gaquaytv.com/"), /chưa phải phòng live/);
   assert.throws(() => normalizeChannelUrl("https://example.com/live"));
 });
 

@@ -73,13 +73,22 @@ test("tìm phòng chat Gosh từ id streamer trong URL", async () => {
   assert.ok(calls[0].headers["x-signature"]);
 });
 
-test("tìm mã phòng GaQuayTV từ link slug", async () => {
+test("tìm mã phòng GaQuayTV từ link slug và link có khoảng trắng", async () => {
   const roomId = "fc51a33f-56a9-4238-8551-5dc56dde79b1";
   assert.equal(await resolveGaquaytvRoom(`https://gaquaytv.com/live/${roomId}`), roomId);
   const { fetchImpl } = fakeFetch(() => ({
     body: `<script>self.__next_f.push([1,"{\\"roomId\\":\\"${roomId}\\",\\"giftcode\\":{}}"])</script>`,
   }));
   assert.equal(await resolveGaquaytvRoom("https://gaquaytv.com/live/livestream-abc-6dde79b1", { fetchImpl }), roomId);
+  assert.equal(await resolveGaquaytvRoom("https://gaquaytv.com /live/livestream-abc-6dde79b1", { fetchImpl }), roomId);
+
+  const { fetchImpl: fetchReversed } = fakeFetch(() => ({
+    body: `{"streamSlug":"livestream-tipclub-ngay-30-09-2026-20-00-bf812beb","streamId":"717ba03e-ab6c-4ccb-8ae5-0c26bf812beb"}`,
+  }));
+  assert.equal(
+    await resolveGaquaytvRoom("https://gaquaytv.com/live/livestream-tipclub-ngay-30-09-2026-20-00-bf812beb", { fetchImpl: fetchReversed }),
+    "717ba03e-ab6c-4ccb-8ae5-0c26bf812beb",
+  );
 });
 
 test("socket GaQuayTV gửi token, vào phòng và xác nhận qua tin phản hồi", async () => {

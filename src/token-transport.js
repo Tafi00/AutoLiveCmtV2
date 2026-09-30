@@ -259,18 +259,29 @@ export async function gaquaytvUpdateDisplayName({ displayName, credentials, disp
 
 // Live links are /live/{uuid} or /live/{slug}; the chat room is the stream uuid.
 export async function resolveGaquaytvRoom(channelUrl, { dispatcher, fetchImpl } = {}) {
-  const pathId = getGaquaytvRoomId(channelUrl) || "";
+  const cleanUrl = String(channelUrl ?? "").replace(/\s+/g, "").trim();
+  const pathId = getGaquaytvRoomId(cleanUrl) || "";
   if (UUID_PATTERN.test(pathId)) return pathId;
-  return cachedRoom(`gaquaytv:${channelUrl}`, 10 * 60_000, async () => {
-    const page = await request(channelUrl, {
+  return cachedRoom(`gaquaytv:${cleanUrl}`, 10 * 60_000, async () => {
+    const page = await request(cleanUrl, {
       headers: { "user-agent": BROWSER_USER_AGENT, accept: "text/html" },
       dispatcher,
       fetchImpl,
     });
     if (!page.ok) throw new Error(`Không mở được phòng GaQuayTV (HTTP ${page.status}).`);
     const escapedSlug = decodeURIComponent(pathId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = page.text.match(/\\?"roomId\\?":\\?"([0-9a-f-]{36})\\?"/i)
-      || (pathId && page.text.match(new RegExp(`\\\\?"id\\\\?":\\\\?"([0-9a-f-]{36})\\\\?",\\\\?"slug\\\\?":\\\\?"${escapedSlug}\\\\?"`, "i")));
+    const match = (
+      (pathId && (
+        page.text.match(new RegExp(`\\\\?"(?:streamId|id)\\\\?":\\\\?"([0-9a-f-]{36})\\\\?"[^{}]*?\\\\?"(?:streamSlug|slug)\\\\?":\\\\?"${escapedSlug}\\\\?"`, "i"))
+        || page.text.match(new RegExp(`\\\\?"(?:streamSlug|slug)\\\\?":\\\\?"${escapedSlug}\\\\?"[^{}]*?\\\\?"(?:streamId|id)\\\\?":\\\\?"([0-9a-f-]{36})\\\\?"`, "i"))
+      ))
+      || page.text.match(/\\?"roomId\\?":\\?"([0-9a-f-]{36})\\?"/i)
+      || (() => {
+        const suffix = pathId.match(/-([0-9a-f]{6,12})$/i)?.[1];
+        if (!suffix) return null;
+        return page.text.match(new RegExp(`\\\\?"(?:streamId|id|roomId|streamUid)\\\\?":\\\\?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]*${suffix})\\\\?"`, "i"));
+      })()
+    );
     if (!match) throw new Error("Không tìm thấy mã phòng chat trong trang live GaQuayTV.");
     return match[1];
   });
@@ -299,8 +310,9 @@ function htmlToText(value) {
 // Minimal Socket.IO v4 client (Engine.IO 4, websocket transport only). It is
 // all the chat server needs and it lets each account use its own proxy.
 export class GaquaytvChatSocket {
-  constructor({ token = "", dispatcher, WebSocketImpl = UndiciWebSocket, url = GAQUAYTV_CHAT_URL } = {}) {
+  constructor({ token = "", room = "", dispatcher, WebSocketImpl = UndiciWebSocket, url = GAQUAYTV_CHAT_URL } = {}) {
     this.token = token;
+    this.room = room;
     this.dispatcher = dispatcher;
     this.WebSocketImpl = WebSocketImpl;
     this.url = url;
@@ -359,6 +371,9 @@ export class GaquaytvChatSocket {
     } else if (packet === "2") {
       this.ws.send("3");
     } else if (packet.startsWith("40")) {
+      if (this.room) {
+        this.joinRoom(this.room);
+      }
       finish();
     } else if (packet.startsWith("44")) {
       let message = "";
@@ -409,15 +424,15 @@ export class GaquaytvChatSocket {
     this.ws.send(`42${JSON.stringify([event, payload])}`);
   }
 
-  joinRoom(room) {
-    if (this.joinedRooms.has(room)) return;
+  joinRoom(room = this.room) {
+    if (!room || this.joinedRooms.has(room)) return;
     this.emit("join_room", { room });
     this.joinedRooms.add(room);
   }
 
   // The server does not acknowledge send_message. Success is the room echoing
   // the message back; an explicit error event means it was rejected.
-  async sendChat({ room, content, sender, confirmTimeoutMs = 2_500 }) {
+  async sendChat({ room = this.room, content, sender, confirmTimeoutMs = 2_500 }) {
     this.joinRoom(room);
     let cleanup = () => {};
     const outcome = new Promise((resolve) => {
@@ -431,6 +446,7 @@ export class GaquaytvChatSocket {
         if (echoed) resolve({ confirmed: true });
       });
       const offError = this.on("onErrorMessage", (payload) => {
+        if (room) this.joinedRooms.delete(room);
         resolve({ error: String(payload?.message || payload?.error || payload || "bị từ chối").slice(0, 240) });
       });
       cleanup = () => {
@@ -454,7 +470,10 @@ export class GaquaytvChatSocket {
         },
       });
       const result = await outcome;
-      if (result.error) throw new Error(`GaQuayTV từ chối bình luận: ${result.error}`);
+      if (result.error) {
+        if (room) this.joinedRooms.delete(room);
+        throw new Error(`GaQuayTV từ chối bình luận: ${result.error}`);
+      }
       return result;
     } finally {
       cleanup();
