@@ -6,6 +6,11 @@ import { JsonStore } from "./store.js";
 import { checkApiHealth, healthTargets } from "./api-health.js";
 import { PLATFORMS } from "./platforms.js";
 import { discoveredApiEndpoints } from "./browser-session.js";
+import {
+  activeScheduleOccurrence,
+  MIN_SCHEDULE_DELAY_SECONDS,
+  nextScheduleOccurrence,
+} from "./schedule.js";
 
 import { readFileSync } from "node:fs";
 
@@ -53,6 +58,19 @@ const bulkSend = {
   completedByPlatform: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
   phase: "idle",
   wakeWaiter: null,
+  // "all" sends every queued message once; "schedule" loops the queues until endsAt.
+  mode: "all",
+  endsAt: null,
+  scheduleSlotId: null,
+};
+const SCHEDULE_TICK_MS = 5_000;
+const SCHEDULE_RETRY_MS = 60_000;
+const scheduler = {
+  timer: null,
+  // Slots the user stopped by hand stay idle until their current window ends.
+  skippedUntil: new Map(),
+  retryAt: 0,
+  error: "",
 };
 let manualSendRunning = false;
 const displayNameUpdates = new Set();
@@ -87,6 +105,25 @@ function bulkSendState() {
     messageTotals: { ...bulkSend.messageTotals },
     completedByPlatform: { ...bulkSend.completedByPlatform },
     phase: bulkSend.phase,
+    mode: bulkSend.mode,
+    endsAt: bulkSend.endsAt,
+    scheduleSlotId: bulkSend.scheduleSlotId,
+  };
+}
+
+function scheduleStatus(now = new Date()) {
+  const { enabled, slots } = store.snapshot().schedule;
+  const runningSchedule = bulkSend.running && bulkSend.mode === "schedule";
+  const next = enabled ? nextScheduleOccurrence(slots, now) : null;
+  return {
+    runningSlotId: runningSchedule ? bulkSend.scheduleSlotId : null,
+    endsAt: runningSchedule ? bulkSend.endsAt : null,
+    nextStartAt: next ? next.startAt.toISOString() : null,
+    nextSlotId: next?.slotId || null,
+    skippedSlotIds: [...scheduler.skippedUntil]
+      .filter(([, until]) => until > now.getTime())
+      .map(([slotId]) => slotId),
+    error: enabled ? scheduler.error : "",
   };
 }
 
@@ -109,6 +146,7 @@ async function dashboardState() {
     nextMessage: store.getNextMessage(state.settings.platform),
     cooldown: store.cooldown(),
     bulkSend: bulkSendState(),
+    scheduleStatus: scheduleStatus(),
     platforms: Object.values(PLATFORMS).map(({ id, name, homeUrl }) => ({ id, name, homeUrl })),
     version: appVersion,
   };
@@ -383,23 +421,80 @@ function prepareNextAccounts(platforms) {
   }
 }
 
+function isScheduledRun() {
+  return bulkSend.mode === "schedule";
+}
+
+function scheduledTimeLeftMs() {
+  return Date.parse(bulkSend.endsAt) - Date.now();
+}
+
+function bulkShouldContinue() {
+  if (bulkSend.stopRequested) return false;
+  return isScheduledRun()
+    ? scheduledTimeLeftMs() > 0
+    : bulkSend.completedMessages < bulkSend.totalMessages;
+}
+
+// Platforms still owed a message this round. A scheduled run keeps looping the
+// queues, so every platform that can currently send takes part.
+function bulkRoundPlatforms() {
+  if (isScheduledRun()) {
+    const state = store.snapshot();
+    return PLATFORM_IDS.filter((platform) => destinationsWithMessages(state, [platform]).length);
+  }
+  return PLATFORM_IDS.filter((platform) => (
+    bulkSend.completedByPlatform[platform] < bulkSend.messageTotals[platform]
+  ));
+}
+
+function startBulkRun(fields) {
+  Object.assign(bulkSend, {
+    running: true,
+    stopRequested: false,
+    total: 0,
+    sent: 0,
+    failed: 0,
+    totalMessages: 0,
+    completedMessages: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    error: null,
+    failures: [],
+    currentAccount: "",
+    activePlatforms: [],
+    completedByPlatform: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
+    phase: "starting",
+    wakeWaiter: null,
+    mode: "all",
+    endsAt: null,
+    scheduleSlotId: null,
+    ...fields,
+  });
+  return runBulkSend();
+}
+
+function requestBulkStop() {
+  if (!bulkSend.running) return;
+  bulkSend.stopRequested = true;
+  bulkSend.phase = "stopping";
+  bulkSend.wakeWaiter?.();
+}
+
 async function runBulkSend() {
   try {
-    while (!bulkSend.stopRequested && bulkSend.completedMessages < bulkSend.totalMessages) {
-      const cooldown = store.cooldown();
+    while (bulkShouldContinue()) {
+      const cooldown = store.cooldown({ minimumSeconds: isScheduledRun() ? MIN_SCHEDULE_DELAY_SECONDS : 0 });
       if (!cooldown.ready) {
         bulkSend.phase = "waiting";
         bulkSend.currentAccount = "";
-        prepareNextAccounts(Object.keys(PLATFORMS).filter((platform) => (
-          bulkSend.completedByPlatform[platform] < bulkSend.messageTotals[platform]
-        )));
-        await waitForBulk(cooldown.remainingSeconds * 1000);
-        if (bulkSend.stopRequested) break;
+        prepareNextAccounts(bulkRoundPlatforms());
+        const waitMs = cooldown.remainingSeconds * 1000;
+        await waitForBulk(isScheduledRun() ? Math.min(waitMs, Math.max(0, scheduledTimeLeftMs())) : waitMs);
+        if (!bulkShouldContinue()) break;
       }
 
-      const roundPlatforms = Object.keys(PLATFORMS).filter((platform) => (
-        bulkSend.completedByPlatform[platform] < bulkSend.messageTotals[platform]
-      ));
+      const roundPlatforms = bulkRoundPlatforms();
       if (!roundPlatforms.length) break;
       bulkSend.phase = "sending";
       const batch = await sendNextComment({ advanceOnTotalFailure: true, platforms: roundPlatforms });
@@ -656,38 +751,145 @@ app.post("/api/comments/send-all", asyncRoute(async (_request, response) => {
   }
   const destinations = available.filter(({ platform }) => messageTotals[platform] > 0);
 
-  Object.assign(bulkSend, {
-    running: true,
-    stopRequested: false,
+  void startBulkRun({
     total: totalMessages,
-    sent: 0,
-    failed: 0,
     totalMessages: roundCount,
-    completedMessages: 0,
-    startedAt: new Date().toISOString(),
-    completedAt: null,
-    error: null,
-    failures: [],
-    currentAccount: "",
     activePlatforms: [...new Set(destinations.map(({ platform }) => platform))],
     linkTotals,
     messageTotals,
-    completedByPlatform: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, 0])),
-    phase: "starting",
-    wakeWaiter: null,
   });
-  void runBulkSend();
   response.status(202).json(await dashboardState());
 }));
 
 app.post("/api/comments/send-all/stop", asyncRoute(async (_request, response) => {
-  if (bulkSend.running) {
-    bulkSend.stopRequested = true;
-    bulkSend.phase = "stopping";
-    bulkSend.wakeWaiter?.();
+  if (bulkSend.running && isScheduledRun()) {
+    // A hand-stopped window stays idle until it ends instead of restarting on the next tick.
+    scheduler.skippedUntil.set(bulkSend.scheduleSlotId, Date.parse(bulkSend.endsAt));
   }
+  requestBulkStop();
   response.json(await dashboardState());
 }));
+
+// --- Comment schedule -------------------------------------------------------
+
+function scheduleRunFields(state) {
+  const destinations = assertDestinations(state, { requireMessages: true });
+  const platforms = [...new Set(destinations.map(({ platform }) => platform))];
+  return {
+    activePlatforms: platforms,
+    linkTotals: Object.fromEntries(PLATFORM_IDS.map((platform) => [
+      platform,
+      destinations.filter((destination) => destination.platform === platform).length,
+    ])),
+    messageTotals: Object.fromEntries(PLATFORM_IDS.map((platform) => [
+      platform,
+      platforms.includes(platform) ? store.getMessages(platform).length : 0,
+    ])),
+  };
+}
+
+// Starts and stops scheduled runs so they follow the saved slots. Called by the
+// timer and right after any schedule change so edits apply without waiting.
+function runScheduleTick(now = new Date()) {
+  const state = store.snapshot();
+  const { enabled, slots } = state.schedule;
+  const scheduledRunning = bulkSend.running && isScheduledRun();
+
+  if (scheduledRunning) {
+    const slot = slots.find((item) => item.id === bulkSend.scheduleSlotId);
+    const occurrence = enabled && slot?.enabled ? activeScheduleOccurrence([slot], now) : null;
+    if (!occurrence) {
+      requestBulkStop();
+    } else {
+      // Picks up edits to the running slot's end time.
+      bulkSend.endsAt = occurrence.endAt.toISOString();
+    }
+    return;
+  }
+  if (!enabled || bulkSend.running || manualSendRunning) return;
+
+  for (const [slotId, until] of scheduler.skippedUntil) {
+    if (until <= now.getTime() || !slots.some((slot) => slot.id === slotId)) scheduler.skippedUntil.delete(slotId);
+  }
+  const active = activeScheduleOccurrence(
+    slots.filter((slot) => !scheduler.skippedUntil.has(slot.id)),
+    now,
+  );
+  if (!active) {
+    scheduler.error = "";
+    return;
+  }
+  if (now.getTime() < scheduler.retryAt) return;
+
+  try {
+    const fields = scheduleRunFields(state);
+    scheduler.error = "";
+    void startBulkRun({
+      ...fields,
+      mode: "schedule",
+      endsAt: active.endAt.toISOString(),
+      scheduleSlotId: active.slotId,
+    }).then(() => {
+      if (!bulkSend.error) return;
+      scheduler.error = bulkSend.error;
+      scheduler.retryAt = Date.now() + SCHEDULE_RETRY_MS;
+    });
+  } catch (error) {
+    scheduler.error = error.message;
+    scheduler.retryAt = now.getTime() + SCHEDULE_RETRY_MS;
+  }
+}
+
+function scheduleChanged({ resume = false } = {}) {
+  if (resume) {
+    scheduler.skippedUntil.clear();
+    scheduler.retryAt = 0;
+  }
+  runScheduleTick();
+}
+
+function scheduleSlotOrThrow(id) {
+  const slot = store.getScheduleSlot(id);
+  if (!slot) {
+    const error = new Error("Không tìm thấy khung giờ.");
+    error.status = 404;
+    throw error;
+  }
+  return slot;
+}
+
+app.put("/api/schedule", asyncRoute(async (request, response) => {
+  await store.updateSchedule({ enabled: request.body?.enabled });
+  scheduleChanged({ resume: Boolean(request.body?.enabled) });
+  response.json(await dashboardState());
+}));
+
+app.post("/api/schedule/slots", asyncRoute(async (request, response) => {
+  await store.addScheduleSlot(request.body || {});
+  scheduleChanged();
+  response.status(201).json(await dashboardState());
+}));
+
+app.patch("/api/schedule/slots/:id", asyncRoute(async (request, response) => {
+  scheduleSlotOrThrow(request.params.id);
+  await store.updateScheduleSlot(request.params.id, request.body || {});
+  scheduler.skippedUntil.delete(request.params.id);
+  scheduler.retryAt = 0;
+  scheduleChanged();
+  response.json(await dashboardState());
+}));
+
+app.delete("/api/schedule/slots/:id", asyncRoute(async (request, response) => {
+  scheduleSlotOrThrow(request.params.id);
+  await store.deleteScheduleSlot(request.params.id);
+  scheduleChanged();
+  response.json(await dashboardState());
+}));
+
+scheduler.timer = setInterval(() => {
+  try { runScheduleTick(); } catch (error) { scheduler.error = error.message; }
+}, SCHEDULE_TICK_MS);
+scheduler.timer.unref();
 
   app.use((error, _request, response, _next) => {
     const status = error.status || (error.code === "LOGIN_REQUIRED" ? 401 : 400);
@@ -699,7 +901,9 @@ app.post("/api/comments/send-all/stop", asyncRoute(async (_request, response) =>
     store,
     sessions,
     bulkSend,
+    runScheduleTick,
     close: async () => {
+      clearInterval(scheduler.timer);
       bulkSend.stopRequested = true;
       bulkSend.wakeWaiter?.();
       await sessions.closeAll();
@@ -714,7 +918,7 @@ export async function startServer({
     : join(rootDirectory, "data"),
   host = "127.0.0.1",
 } = {}) {
-  const { app, store, sessions, bulkSend, close: closeSessions } = await createServerApp({ dataDirectory });
+  const { app, store, sessions, bulkSend, runScheduleTick, close: closeSessions } = await createServerApp({ dataDirectory });
 
   return new Promise((resolvePromise, rejectPromise) => {
     const server = app.listen(port, host, () => {
@@ -725,6 +929,7 @@ export async function startServer({
         store,
         sessions,
         bulkSend,
+        runScheduleTick,
         close: async () => {
           await new Promise((res) => server.close(res));
           await closeSessions();

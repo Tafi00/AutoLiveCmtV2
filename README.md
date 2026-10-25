@@ -23,7 +23,18 @@ Nếu cần chạy giao diện web cục bộ để phát triển, dùng `npm ru
 4. Bấm **Gửi song song** để gửi mẫu kế tiếp của từng khung đồng thời tới tất cả link đã nhập, hoặc **Chạy tất cả** để gửi toàn bộ các kho trên từng link.
 5. Mở **Kiểm tra API** để xem HTTP status, độ trễ và endpoint đang lỗi. Mở **Thiết lập** để đặt khoảng nghỉ; đổi tên tự động hiện áp dụng cho Gosh và GaQuayTV.
 
+6. Mở **Lịch** để đặt lịch bình luận tự động: bấm **Thêm khung giờ**, chọn giờ bắt đầu, giờ kết thúc và các ngày trong tuần, rồi bật công tắc của khung đó (khung mới luôn ở trạng thái tắt để không tự gửi trước khi bạn chỉnh xong). Công tắc ở đầu trang bật/tắt toàn bộ lịch.
+
 URL phòng và các thiết lập được tự lưu; không cần bấm nút lưu.
+
+### Lịch bình luận
+
+- Khi đến giờ bắt đầu của một khung đang bật, app tự gửi lần lượt các mẫu trong từng kho tới mọi link đã nhập (giống **Chạy tất cả**), hết kho thì quay lại mẫu đầu, và dừng khi tới giờ kết thúc. Khung có giờ kết thúc nhỏ hơn hoặc bằng giờ bắt đầu (ví dụ 23:00 → 01:00) kéo dài qua nửa đêm và tính theo ngày bắt đầu.
+- Khoảng nghỉ giữa hai mẫu lấy từ **Thiết lập**, tối thiểu 5 giây trong lượt chạy theo lịch.
+- Lịch chỉ chạy khi app đang mở. Nếu mở app giữa một khung giờ, lượt gửi bắt đầu ngay.
+- Tắt công tắc tổng hoặc tắt/xóa khung đang chạy sẽ dừng lượt gửi đó. Bấm **Dừng** ở màn Live cũng dừng lượt theo lịch và nó không tự chạy lại trong cùng khung giờ; tắt rồi bật lại công tắc tổng để chạy tiếp.
+- Nếu lúc đến giờ chưa thể gửi (thiếu link phòng, kho trống, không có tài khoản bật), màn Lịch hiện lý do và app thử lại sau mỗi phút trong khung giờ.
+- Trong lúc một lượt đang chạy (kể cả theo lịch), kho bình luận, link, cấu hình và tài khoản bị khóa như khi **Chạy tất cả**; màn Lịch vẫn chỉnh được.
 
 Token được lấy từ cookie của hồ sơ Chrome (Gosh: `token`, `uid`, `did`, `tim_user_sig`; Loco và GaQuayTV: `access_token`, `refresh_token`) rồi lưu vào `data/account-tokens.json`. Tên hiển thị lấy từ `user_info` (Gosh), JWT (Loco) hoặc `auth/me` (GaQuayTV).
 
@@ -41,7 +52,7 @@ Mỗi lượt chọn mẫu kế tiếp độc lập từ kho Gosh, kho Loco và 
 
 ## Dữ liệu cục bộ
 
-- `data/state.json`: tài khoản, cấu hình và kho bình luận.
+- `data/state.json`: tài khoản, cấu hình, kho bình luận và lịch bình luận.
 - `data/account-tokens.json`: token API của từng tài khoản (quyền đọc chỉ cho người dùng hiện tại). Xóa tài khoản sẽ xóa token của nó.
 - `data/browser-profile/`: session cũ, nay là **Tài khoản 1**.
 - `data/browser-profiles/{account-id}/`: session riêng của các tài khoản thêm mới.

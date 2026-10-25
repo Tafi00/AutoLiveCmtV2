@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
     <title>Live Comment</title>
-    <link rel="stylesheet" href="/styles.css?v=12" />
+    <link rel="stylesheet" href="/styles.css?v=13" />
   </head>
   <body>
     <div class="app-frame">
@@ -22,6 +22,7 @@
           <div class="nav-items">
             <button class="nav-item active" type="button" data-view="live"><span class="nav-icon" data-icon="radio" aria-hidden="true"></span><span>Live</span></button>
             <button class="nav-item" type="button" data-view="accounts"><span class="nav-icon" data-icon="users" aria-hidden="true"></span><span>Tài khoản</span><span id="nav-account-count" class="nav-count">1</span></button>
+            <button class="nav-item" type="button" data-view="schedule"><span class="nav-icon" data-icon="calendar-clock" aria-hidden="true"></span><span>Lịch</span><span id="nav-schedule-dot" class="status-dot" hidden></span></button>
             <button class="nav-item" type="button" data-view="health"><span class="nav-icon" data-icon="activity" aria-hidden="true"></span><span>Kiểm tra API</span><span id="nav-health-count" class="nav-count"></span></button>
             <button class="nav-item" type="button" data-view="settings"><span class="nav-icon" data-icon="settings" aria-hidden="true"></span><span>Thiết lập</span></button>
           </div>
@@ -144,6 +145,24 @@
             </div>
           </section>
 
+          <section id="view-schedule" class="view" data-view-panel="schedule" hidden>
+            <header class="view-header">
+              <div><h1>Lịch bình luận</h1><p id="schedule-summary">Đã tắt</p></div>
+              <label class="switch" for="schedule-enabled"><input id="schedule-enabled" type="checkbox" role="switch" aria-label="Bật lịch bình luận" /><span id="schedule-enabled-text">Tắt</span></label>
+            </header>
+
+            <div class="settings-layout schedule-layout">
+              <section class="settings-section schedule-section">
+                <div class="setting-copy"><h2>Khung giờ tự gửi</h2><p>Đến giờ bắt đầu, app tự gửi lần lượt các mẫu trong kho tới mọi link, hết kho thì quay lại từ đầu, đến giờ kết thúc thì dừng. Khoảng nghỉ lấy theo Thiết lập (tối thiểu 5 giây). App cần đang mở để lịch chạy.</p></div>
+                <div class="setting-control schedule-control">
+                  <ol id="schedule-slot-list" class="schedule-slot-list"></ol>
+                  <p id="schedule-empty" class="schedule-empty">Chưa có khung giờ nào</p>
+                  <button id="add-schedule-slot" class="secondary" type="button">Thêm khung giờ</button>
+                </div>
+              </section>
+            </div>
+          </section>
+
           <section id="view-health" class="view" data-view-panel="health" hidden>
             <header class="view-header">
               <div><h1>Kiểm tra & Theo dõi API</h1><p id="health-summary">Chưa kiểm tra</p></div>
@@ -200,6 +219,6 @@
         </main>
       </div>
     </div>
-    <script type="module" src="/app.js?v=18"></script>
+    <script type="module" src="/app.js?v=19"></script>
   </body>
 </html>

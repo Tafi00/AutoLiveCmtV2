@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeChannelUrl, normalizePlatform, platformFromUrl, PLATFORMS } from "./platforms.js";
+import { MAX_SCHEDULE_SLOTS, normalizeSchedule, normalizeScheduleSlot } from "./schedule.js";
 
 const PLATFORM_IDS = Object.keys(PLATFORMS);
 
@@ -24,6 +25,7 @@ export const DEFAULT_STATE = Object.freeze({
     displayNames: [],
     renameEveryComments: 1,
   },
+  schedule: { enabled: false, slots: [] },
   lastSentAt: null,
   commentsSinceRename: 0,
   displayNameCursor: 0,
@@ -335,6 +337,7 @@ function normalizeState(value) {
       displayNames,
       renameEveryComments,
     },
+    schedule: normalizeSchedule(value.schedule),
     lastSentAt: typeof value.lastSentAt === "string" ? value.lastSentAt : null,
     commentsSinceRename: Number.isInteger(value.commentsSinceRename)
       ? Math.max(0, value.commentsSinceRename)
@@ -558,13 +561,52 @@ export class JsonStore {
     return this.snapshot().settings;
   }
 
-  cooldown() {
+  getScheduleSlot(id) {
+    return this.state.schedule.slots.find((slot) => slot.id === id) || null;
+  }
+
+  async updateSchedule(input = {}) {
+    if (Object.hasOwn(input, "enabled")) this.state.schedule.enabled = Boolean(input.enabled);
+    await this.persist();
+    return this.snapshot().schedule;
+  }
+
+  async addScheduleSlot(input = {}) {
+    if (this.state.schedule.slots.length >= MAX_SCHEDULE_SLOTS) {
+      throw new Error(`Chỉ được tạo tối đa ${MAX_SCHEDULE_SLOTS} khung giờ.`);
+    }
+    const { id: _ignored, ...fields } = input;
+    const slot = normalizeScheduleSlot(fields);
+    this.state.schedule.slots.push(slot);
+    await this.persist();
+    return { ...slot };
+  }
+
+  async updateScheduleSlot(id, input = {}) {
+    const index = this.state.schedule.slots.findIndex((slot) => slot.id === id);
+    if (index < 0) return null;
+    const slot = normalizeScheduleSlot(input, this.state.schedule.slots[index]);
+    this.state.schedule.slots[index] = slot;
+    await this.persist();
+    return { ...slot };
+  }
+
+  async deleteScheduleSlot(id) {
+    const index = this.state.schedule.slots.findIndex((slot) => slot.id === id);
+    if (index < 0) return false;
+    this.state.schedule.slots.splice(index, 1);
+    await this.persist();
+    return true;
+  }
+
+  cooldown({ minimumSeconds = 0 } = {}) {
+    const delaySeconds = Math.max(this.state.settings.delaySeconds, minimumSeconds);
     const lastSent = this.state.lastSentAt ? Date.parse(this.state.lastSentAt) : 0;
     const elapsedSeconds = lastSent ? Math.floor((Date.now() - lastSent) / 1000) : Infinity;
     return {
-      ready: elapsedSeconds >= this.state.settings.delaySeconds,
+      ready: elapsedSeconds >= delaySeconds,
       remainingSeconds: Number.isFinite(elapsedSeconds)
-        ? Math.max(0, this.state.settings.delaySeconds - elapsedSeconds)
+        ? Math.max(0, delaySeconds - elapsedSeconds)
         : 0,
     };
   }

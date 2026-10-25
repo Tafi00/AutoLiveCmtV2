@@ -1,5 +1,6 @@
 import createIconElement from "/vendor/lucide/createElement.mjs";
 import ActivityIcon from "/vendor/lucide/icons/activity.mjs";
+import CalendarClockIcon from "/vendor/lucide/icons/calendar-clock.mjs";
 import RadioIcon from "/vendor/lucide/icons/radio.mjs";
 import RefreshCwIcon from "/vendor/lucide/icons/refresh-cw.mjs";
 import SettingsIcon from "/vendor/lucide/icons/settings.mjs";
@@ -9,6 +10,7 @@ const $ = (selector) => document.querySelector(selector);
 
 const icons = {
   activity: ActivityIcon,
+  "calendar-clock": CalendarClockIcon,
   radio: RadioIcon,
   "refresh-cw": RefreshCwIcon,
   settings: SettingsIcon,
@@ -90,6 +92,13 @@ const elements = {
   observedList: $("#observed-list"),
   observedEmpty: $("#observed-empty"),
   observedCount: $("#observed-count"),
+  navScheduleDot: $("#nav-schedule-dot"),
+  scheduleSummary: $("#schedule-summary"),
+  scheduleEnabled: $("#schedule-enabled"),
+  scheduleEnabledText: $("#schedule-enabled-text"),
+  scheduleSlotList: $("#schedule-slot-list"),
+  scheduleEmpty: $("#schedule-empty"),
+  addScheduleSlot: $("#add-schedule-slot"),
 };
 
 let observedEndpoints = [];
@@ -227,7 +236,7 @@ function accountLabel(account) {
 }
 
 function switchView(view) {
-  if (!["live", "accounts", "health", "settings"].includes(view)) return;
+  if (!["live", "accounts", "schedule", "health", "settings"].includes(view)) return;
   currentView = view;
   for (const button of document.querySelectorAll("[data-view]")) {
     button.classList.toggle("active", button.dataset.view === view);
@@ -238,6 +247,7 @@ function switchView(view) {
     panel.classList.toggle("active", active);
   }
   if (view === "accounts") renderAccounts();
+  if (view === "schedule") renderSchedule();
   if (view === "health") renderHealth();
 }
 
@@ -382,7 +392,40 @@ function bulkPhaseLabel(bulk) {
     completed_with_errors: "Đã xong, có lỗi",
     failed: bulk.error || "Gửi thất bại",
   };
-  return labels[bulk.phase] || "Sẵn sàng";
+  const label = labels[bulk.phase] || "Sẵn sàng";
+  return bulk.mode === "schedule" && bulk.phase !== "idle" ? `Theo lịch · ${label}` : label;
+}
+
+function formatDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (value) => String(value).padStart(2, "0");
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+// A scheduled run has no fixed message total, so it reports sends so far and
+// the time left in the window instead of a sent/total ratio.
+function bulkProgressView(bulk) {
+  const attempted = (bulk.sent || 0) + (bulk.failed || 0);
+  if (bulk.mode !== "schedule") {
+    return {
+      count: bulk.failed ? `${attempted}/${bulk.total} · ${bulk.failed} lỗi` : `${attempted}/${bulk.total}`,
+      percent: bulk.total ? Math.min(100, Math.round((attempted / bulk.total) * 100)) : 0,
+    };
+  }
+  const parts = [`${attempted} lượt`];
+  if (bulk.failed) parts.push(`${bulk.failed} lỗi`);
+  const startedAt = Date.parse(bulk.startedAt);
+  const endsAt = Date.parse(bulk.endsAt);
+  if (bulk.running && Number.isFinite(endsAt)) parts.push(`còn ${formatDuration(endsAt - Date.now())}`);
+  const span = endsAt - startedAt;
+  const elapsed = bulk.running ? Date.now() - startedAt : span;
+  return {
+    count: parts.join(" · "),
+    percent: span > 0 ? Math.max(0, Math.min(100, Math.round((elapsed / span) * 100))) : 0,
+  };
 }
 
 function renderBulkSend() {
@@ -392,15 +435,14 @@ function renderBulkSend() {
   const linkCount = activeLinkCount();
   const sendingWebsiteCount = sendablePlatformCount();
   const messageCount = sendableMessageCount();
-  const attempted = (bulk.sent || 0) + (bulk.failed || 0);
-  const percent = bulk.total ? Math.min(100, Math.round((attempted / bulk.total) * 100)) : 0;
   const failures = bulk.failures || [];
   const running = Boolean(bulk.running);
+  const progress = bulkProgressView(bulk);
 
   elements.bulkProgress.hidden = bulk.phase === "idle";
   elements.bulkStatus.textContent = bulkPhaseLabel(bulk);
-  elements.bulkCount.textContent = bulk.failed ? `${attempted}/${bulk.total} · ${bulk.failed} lỗi` : `${attempted}/${bulk.total}`;
-  elements.bulkProgressBar.style.width = `${percent}%`;
+  elements.bulkCount.textContent = progress.count;
+  elements.bulkProgressBar.style.width = `${progress.percent}%`;
   elements.bulkProgress.classList.toggle("failed", bulk.phase === "failed");
   elements.bulkProgress.classList.toggle("has-errors", Boolean(bulk.failed) && bulk.phase !== "failed");
   elements.bulkError.hidden = !failures.length;
@@ -838,6 +880,188 @@ function renderHealth() {
   }
 }
 
+const DAY_OPTIONS = [
+  [1, "T2", "Thứ hai"],
+  [2, "T3", "Thứ ba"],
+  [3, "T4", "Thứ tư"],
+  [4, "T5", "Thứ năm"],
+  [5, "T6", "Thứ sáu"],
+  [6, "T7", "Thứ bảy"],
+  [0, "CN", "Chủ nhật"],
+];
+let scheduleSlotsKey = "";
+
+function scheduleState() {
+  return state?.schedule || { enabled: false, slots: [] };
+}
+
+function formatNextStart(iso) {
+  const date = new Date(iso);
+  const dayStart = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const diffDays = Math.round((dayStart(date) - dayStart(new Date())) / 86_400_000);
+  const pad = (value) => String(value).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (diffDays === 0) return `hôm nay ${time}`;
+  if (diffDays === 1) return `ngày mai ${time}`;
+  const dayName = DAY_OPTIONS.find(([day]) => day === date.getDay())?.[1] || "";
+  return `${dayName} ${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
+}
+
+function renderScheduleStatus() {
+  if (!state) return;
+  const schedule = scheduleState();
+  const status = state.scheduleStatus || {};
+  const running = Boolean(status.runningSlotId);
+  let summary;
+  if (!schedule.enabled) summary = "Đã tắt";
+  else if (running) summary = `Đang chạy theo lịch · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
+  else if (status.error) summary = `Lịch gặp lỗi: ${status.error}`;
+  else if (!schedule.slots.some((slot) => slot.enabled)) summary = "Đã bật nhưng chưa có khung giờ nào đang bật";
+  else if (status.nextStartAt) summary = `Lần chạy kế tiếp: ${formatNextStart(status.nextStartAt)}`;
+  else summary = "Đã bật, chưa có lần chạy nào sắp tới";
+
+  elements.scheduleSummary.textContent = summary;
+  elements.scheduleEnabled.checked = schedule.enabled;
+  elements.scheduleEnabledText.textContent = schedule.enabled ? "Bật" : "Tắt";
+  elements.navScheduleDot.hidden = !schedule.enabled;
+  elements.navScheduleDot.className = `status-dot${running ? " ready" : status.error ? " error" : ""}`;
+
+  const runningNote = elements.scheduleSlotList.querySelector(".schedule-slot.is-running .schedule-slot-note");
+  if (runningNote && running) runningNote.textContent = `Đang chạy · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
+}
+
+async function patchScheduleSlot(id, body) {
+  try {
+    state = await api(`/api/schedule/slots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+  } catch (error) {
+    showNotice(error.message);
+  }
+  scheduleSlotsKey = "";
+  render();
+}
+
+function createScheduleSlotRow(slot, status) {
+  const running = status.runningSlotId === slot.id;
+  const skipped = (status.skippedSlotIds || []).includes(slot.id);
+  const row = document.createElement("li");
+  row.className = `schedule-slot${slot.enabled ? "" : " is-off"}${running ? " is-running" : ""}`;
+
+  const toggleLabel = document.createElement("label");
+  toggleLabel.className = "switch";
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.setAttribute("role", "switch");
+  toggle.checked = slot.enabled;
+  toggle.setAttribute("aria-label", `Bật khung giờ ${slot.start} đến ${slot.end}`);
+  toggle.addEventListener("change", () => patchScheduleSlot(slot.id, { enabled: toggle.checked }));
+  const toggleText = document.createElement("span");
+  toggleText.textContent = slot.enabled ? "Bật" : "Tắt";
+  toggleLabel.append(toggle, toggleText);
+
+  const times = document.createElement("div");
+  times.className = "schedule-times";
+  const timeInput = (field, label) => {
+    const input = document.createElement("input");
+    input.type = "time";
+    input.value = slot[field];
+    input.required = true;
+    input.setAttribute("aria-label", label);
+    input.addEventListener("change", () => {
+      if (!input.value) {
+        input.value = slot[field];
+        return;
+      }
+      void patchScheduleSlot(slot.id, { [field]: input.value });
+    });
+    return input;
+  };
+  const arrow = document.createElement("span");
+  arrow.textContent = "→";
+  arrow.setAttribute("aria-hidden", "true");
+  times.append(timeInput("start", "Giờ bắt đầu"), arrow, timeInput("end", "Giờ kết thúc"));
+
+  const days = document.createElement("div");
+  days.className = "schedule-days";
+  for (const [day, shortName, fullName] of DAY_OPTIONS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "day-chip";
+    chip.textContent = shortName;
+    chip.title = fullName;
+    chip.setAttribute("aria-label", fullName);
+    chip.setAttribute("aria-pressed", String(slot.days.includes(day)));
+    chip.addEventListener("click", () => {
+      const nextDays = slot.days.includes(day) ? slot.days.filter((item) => item !== day) : [...slot.days, day];
+      if (!nextDays.length) {
+        showNotice("Hãy chọn ít nhất một ngày cho khung giờ.", "warning");
+        return;
+      }
+      void patchScheduleSlot(slot.id, { days: nextDays });
+    });
+    days.append(chip);
+  }
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-slot";
+  remove.textContent = "Xóa";
+  remove.addEventListener("click", async () => {
+    const warning = running ? " Lượt đang chạy theo khung này sẽ dừng lại." : "";
+    if (!window.confirm(`Xóa khung giờ ${slot.start} → ${slot.end}?${warning}`)) return;
+    try {
+      state = await api(`/api/schedule/slots/${encodeURIComponent(slot.id)}`, { method: "DELETE" });
+    } catch (error) {
+      showNotice(error.message);
+    }
+    scheduleSlotsKey = "";
+    render();
+  });
+
+  row.append(toggleLabel, times, days, remove);
+
+  const overnight = slot.end <= slot.start;
+  const note = running
+    ? "Đang chạy"
+    : skipped
+      ? "Đã dừng thủ công; sẽ chạy lại ở lần sau"
+      : overnight ? "Kết thúc vào ngày hôm sau" : "";
+  if (note) {
+    const noteElement = document.createElement("p");
+    noteElement.className = "schedule-slot-note";
+    noteElement.textContent = note;
+    row.append(noteElement);
+  }
+  return row;
+}
+
+function renderSchedule() {
+  if (!state) return;
+  const { slots } = scheduleState();
+  const status = state.scheduleStatus || {};
+  elements.scheduleEmpty.hidden = slots.length > 0;
+  const key = JSON.stringify([slots, status.runningSlotId, status.skippedSlotIds]);
+  const editingTime = elements.scheduleSlotList.contains(document.activeElement)
+    && document.activeElement.type === "time";
+  // Rebuilding while a time field has focus would drop the user's edit.
+  if (key !== scheduleSlotsKey && !editingTime) {
+    scheduleSlotsKey = key;
+    elements.scheduleSlotList.replaceChildren(...slots.map((slot) => createScheduleSlotRow(slot, status)));
+  }
+  renderScheduleStatus();
+}
+
+// Keeps the countdowns moving between state refreshes.
+function tickScheduleClock() {
+  if (!state) return;
+  const bulk = state.bulkSend;
+  if (bulk?.running && bulk.mode === "schedule") {
+    const progress = bulkProgressView(bulk);
+    elements.bulkCount.textContent = progress.count;
+    elements.bulkProgressBar.style.width = `${progress.percent}%`;
+  }
+  renderScheduleStatus();
+}
+
 function stopBulkPolling() {
   window.clearTimeout(bulkPollTimer);
   bulkPollTimer = null;
@@ -887,6 +1111,7 @@ function render() {
   renderAggregateStatus();
   renderLive();
   renderSettings();
+  renderSchedule();
   if (currentView === "accounts") renderAccounts();
   if (currentView === "health") renderHealth();
   pollBulkSend();
@@ -1194,6 +1419,40 @@ elements.sendAll.addEventListener("click", async () => {
   }
 });
 
+elements.scheduleEnabled.addEventListener("change", async () => {
+  const enabled = elements.scheduleEnabled.checked;
+  elements.scheduleEnabled.disabled = true;
+  try {
+    state = await api("/api/schedule", { method: "PUT", body: JSON.stringify({ enabled }) });
+    render();
+    const error = state.scheduleStatus?.error;
+    if (enabled && error) showNotice(`Đã bật lịch nhưng chưa gửi được: ${error}`, "warning");
+    else showNotice(enabled ? "Đã bật lịch bình luận." : "Đã tắt lịch bình luận.", "success");
+  } catch (error) {
+    showNotice(error.message);
+    render();
+  } finally {
+    elements.scheduleEnabled.disabled = false;
+  }
+});
+
+elements.addScheduleSlot.addEventListener("click", async () => {
+  setBusy(elements.addScheduleSlot, true, "Đang thêm…");
+  try {
+    // New slots start switched off so they cannot begin sending before they are set up.
+    state = await api("/api/schedule/slots", {
+      method: "POST",
+      body: JSON.stringify({ start: "19:30", end: "21:30", days: DAY_OPTIONS.map(([day]) => day), enabled: false }),
+    });
+    scheduleSlotsKey = "";
+    render();
+  } catch (error) {
+    showNotice(error.message);
+  } finally {
+    setBusy(elements.addScheduleSlot, false);
+  }
+});
+
 elements.stopBulk.addEventListener("click", async () => {
   if (!window.confirm("Dừng lượt gửi đang chạy?")) return;
   setBusy(elements.stopBulk, true, "Đang dừng…");
@@ -1208,6 +1467,7 @@ elements.stopBulk.addEventListener("click", async () => {
 });
 
 void updateVersionDisplay();
+window.setInterval(tickScheduleClock, 1000);
 
 Promise.all([refreshState(), api("/api/health"), api("/api/endpoints/observed").catch(() => ({ endpoints: [] }))])
   .then(([, health, observed]) => {
