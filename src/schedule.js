@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { emptyPlatformMap, normalizeChannelLinks } from "./channel-links.js";
 
 export const MAX_SCHEDULE_SLOTS = 20;
 // Scheduled runs loop over the comment queues for the whole window, so a
@@ -33,13 +34,29 @@ export function normalizeScheduleSlot(input = {}, existing = null) {
   if (!start) throw new Error("Giờ bắt đầu phải có dạng HH:MM.");
   if (!end) throw new Error("Giờ kết thúc phải có dạng HH:MM.");
   if (start === end) throw new Error("Giờ kết thúc phải khác giờ bắt đầu.");
+  let channelLinks = existing?.channelLinks || emptyPlatformMap(() => []);
+  if (Object.hasOwn(input, "channelLinks")) {
+    const value = input.channelLinks;
+    if (value !== null && value !== undefined && (typeof value !== "object" || Array.isArray(value))) {
+      throw new Error("Link phòng live của khung giờ phải theo từng website.");
+    }
+    channelLinks = normalizeChannelLinks(value || {});
+  }
   return {
     id: existing?.id || (typeof input.id === "string" && /^[a-zA-Z0-9_-]+$/.test(input.id) ? input.id : randomUUID()),
     start,
     end,
     days: Object.hasOwn(input, "days") ? normalizeScheduleDays(input.days) : existing?.days || [...ALL_SCHEDULE_DAYS],
     enabled: Object.hasOwn(input, "enabled") ? input.enabled !== false : existing?.enabled ?? true,
+    channelLinks,
   };
+}
+
+// Room links a slot sends to. Empty means the slot has none of its own and the
+// run uses the links from the Live screen instead.
+export function slotChannelLinks(slot) {
+  const links = slot?.channelLinks;
+  return links && Object.values(links).some((list) => list?.length) ? links : null;
 }
 
 export function normalizeSchedule(value) {
@@ -50,7 +67,13 @@ export function normalizeSchedule(value) {
   for (const item of Array.isArray(value.slots) ? value.slots : []) {
     if (!item || typeof item !== "object" || schedule.slots.length >= MAX_SCHEDULE_SLOTS) continue;
     try {
-      const slot = normalizeScheduleSlot(item);
+      let slot;
+      try {
+        slot = normalizeScheduleSlot(item);
+      } catch {
+        // Links that no longer validate must not cost the user the whole slot.
+        slot = normalizeScheduleSlot({ ...item, channelLinks: null });
+      }
       if (usedIds.has(slot.id)) slot.id = randomUUID();
       usedIds.add(slot.id);
       schedule.slots.push(slot);

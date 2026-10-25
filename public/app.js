@@ -431,8 +431,10 @@ function bulkProgressView(bulk) {
 function renderBulkSend() {
   const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
   const accountCount = enabledAccounts().length;
-  const websiteCount = activePlatformCount();
-  const linkCount = activeLinkCount();
+  // A scheduled run may send to its slot's own links rather than the Live ones.
+  const runLinks = bulk.running && bulk.mode === "schedule" ? bulk.linkTotals : null;
+  const websiteCount = runLinks ? Object.values(runLinks).filter(Boolean).length : activePlatformCount();
+  const linkCount = runLinks ? Object.values(runLinks).reduce((sum, count) => sum + count, 0) : activeLinkCount();
   const sendingWebsiteCount = sendablePlatformCount();
   const messageCount = sendableMessageCount();
   const failures = bulk.failures || [];
@@ -930,14 +932,76 @@ function renderScheduleStatus() {
   if (runningNote && running) runningNote.textContent = `Đang chạy · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
 }
 
-async function patchScheduleSlot(id, body) {
+// Slots whose room-link section the user has expanded; kept across rebuilds.
+const openScheduleLinkSlots = new Set();
+
+async function patchScheduleSlot(id, body, { rebuildOnError = true } = {}) {
   try {
     state = await api(`/api/schedule/slots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
   } catch (error) {
     showNotice(error.message);
+    // Link edits stay on screen so a typo does not cost the user a pasted list.
+    if (!rebuildOnError) return;
   }
   scheduleSlotsKey = "";
   render();
+}
+
+function schedulePlatformIds() {
+  return state?.platforms?.length ? state.platforms.map((platform) => platform.id) : ["gosh", "loco", "gaquaytv"];
+}
+
+function scheduleLinksSummary(slot) {
+  const own = schedulePlatformIds()
+    .filter((platform) => slot.channelLinks?.[platform]?.length)
+    .map((platform) => `${platformName(platform)} ${slot.channelLinks[platform].length}`);
+  return own.length ? `Link phòng riêng: ${own.join(" · ")}` : "Link phòng: dùng link ở màn Live";
+}
+
+function createScheduleLinks(slot) {
+  const details = document.createElement("details");
+  details.className = "schedule-links";
+  details.open = openScheduleLinkSlots.has(slot.id);
+  details.addEventListener("toggle", () => {
+    if (details.open) openScheduleLinkSlots.add(slot.id);
+    else openScheduleLinkSlots.delete(slot.id);
+  });
+  const summary = document.createElement("summary");
+  summary.textContent = scheduleLinksSummary(slot);
+  const fields = document.createElement("div");
+  fields.className = "schedule-link-fields";
+
+  const inputs = new Map();
+  for (const platform of schedulePlatformIds()) {
+    const field = document.createElement("div");
+    field.className = "schedule-link-field";
+    const id = `slot-${slot.id}-${platform}`;
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    label.className = `room-platform ${platform}`;
+    label.textContent = `${platformName(platform)} · mỗi dòng 1 link`;
+    const textarea = document.createElement("textarea");
+    textarea.id = id;
+    textarea.rows = 2;
+    textarea.autocomplete = "off";
+    textarea.placeholder = `URL các phòng live ${platformName(platform)}…`;
+    textarea.value = (slot.channelLinks?.[platform] || []).join("\n");
+    textarea.addEventListener("change", () => {
+      const channelLinks = Object.fromEntries(
+        [...inputs].map(([item, input]) => [item, input.value.split(/\r?\n/)]),
+      );
+      void patchScheduleSlot(slot.id, { channelLinks }, { rebuildOnError: false });
+    });
+    inputs.set(platform, textarea);
+    field.append(label, textarea);
+    fields.append(field);
+  }
+
+  const hint = document.createElement("p");
+  hint.className = "schedule-links-hint";
+  hint.textContent = "Để trống tất cả thì khung này gửi tới link nhập ở màn Live. Nếu nhập ở đây, khung chỉ gửi tới các link này.";
+  details.append(summary, fields, hint);
+  return details;
 }
 
 function createScheduleSlotRow(slot, status) {
@@ -1017,7 +1081,7 @@ function createScheduleSlotRow(slot, status) {
     render();
   });
 
-  row.append(toggleLabel, times, days, remove);
+  row.append(toggleLabel, times, days, remove, createScheduleLinks(slot));
 
   const overnight = slot.end <= slot.start;
   const note = running
@@ -1040,10 +1104,10 @@ function renderSchedule() {
   const status = state.scheduleStatus || {};
   elements.scheduleEmpty.hidden = slots.length > 0;
   const key = JSON.stringify([slots, status.runningSlotId, status.skippedSlotIds]);
-  const editingTime = elements.scheduleSlotList.contains(document.activeElement)
-    && document.activeElement.type === "time";
-  // Rebuilding while a time field has focus would drop the user's edit.
-  if (key !== scheduleSlotsKey && !editingTime) {
+  const editingField = elements.scheduleSlotList.contains(document.activeElement)
+    && document.activeElement.matches("input[type=time], textarea");
+  // Rebuilding while a time or link field has focus would drop the user's edit.
+  if (key !== scheduleSlotsKey && !editingField) {
     scheduleSlotsKey = key;
     elements.scheduleSlotList.replaceChildren(...slots.map((slot) => createScheduleSlotRow(slot, status)));
   }

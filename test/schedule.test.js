@@ -9,6 +9,7 @@ import {
   normalizeSchedule,
   normalizeScheduleSlot,
   normalizeScheduleTime,
+  slotChannelLinks,
 } from "../src/schedule.js";
 import { JsonStore } from "../src/store.js";
 import { startServer } from "../src/server.js";
@@ -130,8 +131,10 @@ async function prepareScheduledServer() {
     session: { running: true, loginState: "signed_in", readyToComment: true },
   }));
   const calls = [];
+  const urls = [];
   instance.sessions.sendComment = async (_accountId, input) => {
     calls.push(input.content);
+    urls.push(input.channelUrl);
     return { sentAt: new Date().toISOString(), transport: "test" };
   };
   const call = (path, method, body) => fetch(`${base}${path}`, {
@@ -146,7 +149,7 @@ async function prepareScheduledServer() {
     await instance.close();
     await rm(dir, { recursive: true, force: true });
   };
-  return { instance, calls, call, cleanup };
+  return { instance, calls, urls, call, cleanup };
 }
 
 const allDay = { start: "00:00", end: "23:59", days: [0, 1, 2, 3, 4, 5, 6] };
@@ -228,6 +231,120 @@ test("dừng tay một lượt theo lịch thì không tự chạy lại trong c
     await call("/api/schedule", "PUT", { enabled: false });
     await call("/api/schedule", "PUT", { enabled: true });
     assert.equal(instance.bulkSend.running, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+const SLOT_GOSH_LINKS = ["https://gosh6.app/15942759", "https://gosh.com/vi/16248988"];
+const waitFor = async (condition) => {
+  while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5));
+};
+
+test("khung giờ lưu link phòng riêng, bỏ trùng và kiểm tra đúng nền tảng", () => {
+  const created = normalizeScheduleSlot({
+    start: "19:30",
+    end: "21:30",
+    days: [1],
+    channelLinks: { gosh: [` ${SLOT_GOSH_LINKS[0]} `, SLOT_GOSH_LINKS[0]], loco: "" },
+  });
+  assert.deepEqual(created.channelLinks, { gosh: [SLOT_GOSH_LINKS[0]], loco: [], gaquaytv: [] });
+  assert.deepEqual(slotChannelLinks(created), created.channelLinks);
+
+  // A slot without links of its own, and one saved before links existed, fall back to the Live links.
+  assert.equal(slotChannelLinks(slot({ start: "19:30", end: "21:30" })), null);
+  assert.equal(slotChannelLinks(undefined), null);
+  assert.deepEqual(
+    normalizeSchedule({ slots: [{ id: "old", start: "19:30", end: "21:30", days: [1] }] }).slots[0].channelLinks,
+    { gosh: [], loco: [], gaquaytv: [] },
+  );
+
+  // Editing other fields keeps the links; sending channelLinks replaces them.
+  const edited = normalizeScheduleSlot({ end: "22:00" }, created);
+  assert.deepEqual(edited.channelLinks, created.channelLinks);
+  assert.deepEqual(normalizeScheduleSlot({ channelLinks: {} }, created).channelLinks, { gosh: [], loco: [], gaquaytv: [] });
+
+  assert.throws(
+    () => normalizeScheduleSlot({ start: "19:30", end: "21:30", days: [1], channelLinks: { gosh: ["https://loco.com/stream/fb32a361-b6aa-46f4-b618-029743a0978a"] } }),
+    /không khớp nền tảng/,
+  );
+  assert.throws(
+    () => normalizeScheduleSlot({ start: "19:30", end: "21:30", days: [1], channelLinks: SLOT_GOSH_LINKS[0] }),
+    /theo từng website/,
+  );
+});
+
+test("link cũ không còn hợp lệ không làm mất cả khung giờ khi nạp lịch", () => {
+  const schedule = normalizeSchedule({
+    slots: [{ id: "keep", start: "19:30", end: "21:30", days: [1], channelLinks: { gosh: ["https://example.com/1"] } }],
+  });
+  assert.deepEqual(schedule.slots.map((item) => item.id), ["keep"]);
+  assert.equal(slotChannelLinks(schedule.slots[0]), null);
+});
+
+test("API lịch từ chối link sai nền tảng của khung giờ", async () => {
+  const { call, cleanup } = await prepareScheduledServer();
+  try {
+    const response = await call("/api/schedule/slots", "POST", {
+      ...allDay,
+      enabled: false,
+      channelLinks: { loco: ["https://gosh.com/vi/16427037"] },
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /không khớp nền tảng/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("lượt chạy theo lịch gửi tới link riêng của khung thay vì link ở màn Live", async () => {
+  const { instance, urls, call, cleanup } = await prepareScheduledServer();
+  try {
+    const created = await (await call("/api/schedule/slots", "POST", {
+      ...allDay,
+      channelLinks: { gosh: SLOT_GOSH_LINKS },
+    })).json();
+    assert.deepEqual(created.schedule.slots[0].channelLinks.gosh, SLOT_GOSH_LINKS);
+
+    const state = await (await call("/api/schedule", "PUT", { enabled: true })).json();
+    assert.equal(state.scheduleStatus.runningSlotId, created.schedule.slots[0].id);
+    assert.deepEqual(state.bulkSend.linkTotals, { gosh: 2, loco: 0, gaquaytv: 0 });
+    await waitFor(() => urls.length >= 2);
+    assert.deepEqual(new Set(urls), new Set(SLOT_GOSH_LINKS));
+    assert.equal(urls.includes("https://gosh.com/vi/16427037"), false);
+    // The Live screen's links are untouched.
+    assert.deepEqual(instance.store.snapshot().settings.channelLinks.gosh, ["https://gosh.com/vi/16427037"]);
+
+    // Clearing the slot's links while it runs switches the run back to the Live links.
+    const slotId = created.schedule.slots[0].id;
+    await call(`/api/schedule/slots/${slotId}`, "PATCH", { channelLinks: {} });
+    assert.equal(instance.bulkSend.channelLinks, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("khung giờ không có link riêng thì gửi tới link ở màn Live", async () => {
+  const { urls, call, cleanup } = await prepareScheduledServer();
+  try {
+    await call("/api/schedule/slots", "POST", allDay);
+    await call("/api/schedule", "PUT", { enabled: true });
+    await waitFor(() => urls.length >= 1);
+    assert.deepEqual(urls, ["https://gosh.com/vi/16427037"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("khung chỉ có link riêng vẫn chạy khi màn Live chưa nhập link nào", async () => {
+  const { instance, urls, call, cleanup } = await prepareScheduledServer();
+  try {
+    await instance.store.updateSettings({ channelLinks: {}, delaySeconds: 0, displayNames: [], renameEveryComments: 1 });
+    await call("/api/schedule/slots", "POST", { ...allDay, channelLinks: { gosh: [SLOT_GOSH_LINKS[0]] } });
+    const state = await (await call("/api/schedule", "PUT", { enabled: true })).json();
+    assert.equal(state.scheduleStatus.error, "");
+    await waitFor(() => urls.length >= 1);
+    assert.deepEqual(urls, [SLOT_GOSH_LINKS[0]]);
   } finally {
     await cleanup();
   }

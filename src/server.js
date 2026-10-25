@@ -10,6 +10,7 @@ import {
   activeScheduleOccurrence,
   MIN_SCHEDULE_DELAY_SECONDS,
   nextScheduleOccurrence,
+  slotChannelLinks,
 } from "./schedule.js";
 
 import { readFileSync } from "node:fs";
@@ -62,6 +63,8 @@ const bulkSend = {
   mode: "all",
   endsAt: null,
   scheduleSlotId: null,
+  // Room links of the running schedule slot; null sends to the Live screen's links.
+  channelLinks: null,
 };
 const SCHEDULE_TICK_MS = 5_000;
 const SCHEDULE_RETRY_MS = 60_000;
@@ -182,6 +185,17 @@ function channelLinksForPlatform(state, platform) {
 
 function channelUrlForPlatform(state, platform) {
   return channelLinksForPlatform(state, platform)[0] || "";
+}
+
+function withChannelLinks(state, channelLinks) {
+  return channelLinks
+    ? { ...state, settings: { ...state.settings, channelLinks } }
+    : state;
+}
+
+// State as the current run sees it: a scheduled run may send to its own links.
+function runSnapshot() {
+  return withChannelLinks(store.snapshot(), bulkSend.running ? bulkSend.channelLinks : null);
 }
 
 function availableDestinations(state) {
@@ -312,7 +326,7 @@ function destinationLabel(destination) {
 }
 
 async function sendNextComment({ advanceOnTotalFailure = false, platforms = null } = {}) {
-  const state = store.snapshot();
+  const state = runSnapshot();
   const destinations = assertDestinations(state, { requireMessages: true, platforms });
   const selected = destinations.map((destination) => {
     const key = destinationCursorKey(destination);
@@ -414,7 +428,7 @@ async function sendNextComment({ advanceOnTotalFailure = false, platforms = null
 // Starts connecting the accounts that will send next while the delay runs.
 function prepareNextAccounts(platforms) {
   if (!platforms.length) return;
-  for (const destination of destinationsWithMessages(store.snapshot(), platforms)) {
+  for (const destination of destinationsWithMessages(runSnapshot(), platforms)) {
     const cursor = accountCursors.get(destinationCursorKey(destination)) || 0;
     const account = destination.accounts[cursor % destination.accounts.length];
     void sessions.prepare(account.id, { channelUrl: destination.channelUrl }, account.platform, account.proxy);
@@ -440,7 +454,7 @@ function bulkShouldContinue() {
 // queues, so every platform that can currently send takes part.
 function bulkRoundPlatforms() {
   if (isScheduledRun()) {
-    const state = store.snapshot();
+    const state = runSnapshot();
     return PLATFORM_IDS.filter((platform) => destinationsWithMessages(state, [platform]).length);
   }
   return PLATFORM_IDS.filter((platform) => (
@@ -469,6 +483,7 @@ function startBulkRun(fields) {
     mode: "all",
     endsAt: null,
     scheduleSlotId: null,
+    channelLinks: null,
     ...fields,
   });
   return runBulkSend();
@@ -801,8 +816,9 @@ function runScheduleTick(now = new Date()) {
     if (!occurrence) {
       requestBulkStop();
     } else {
-      // Picks up edits to the running slot's end time.
+      // Picks up edits to the running slot's end time and room links.
       bulkSend.endsAt = occurrence.endAt.toISOString();
+      bulkSend.channelLinks = slotChannelLinks(slot);
     }
     return;
   }
@@ -822,13 +838,15 @@ function runScheduleTick(now = new Date()) {
   if (now.getTime() < scheduler.retryAt) return;
 
   try {
-    const fields = scheduleRunFields(state);
+    const channelLinks = slotChannelLinks(slots.find((slot) => slot.id === active.slotId));
+    const fields = scheduleRunFields(withChannelLinks(state, channelLinks));
     scheduler.error = "";
     void startBulkRun({
       ...fields,
       mode: "schedule",
       endsAt: active.endAt.toISOString(),
       scheduleSlotId: active.slotId,
+      channelLinks,
     }).then(() => {
       if (!bulkSend.error) return;
       scheduler.error = bulkSend.error;
