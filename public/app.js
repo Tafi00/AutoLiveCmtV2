@@ -1,90 +1,212 @@
 import createIconElement from "/vendor/lucide/createElement.mjs";
 import ActivityIcon from "/vendor/lucide/icons/activity.mjs";
 import CalendarClockIcon from "/vendor/lucide/icons/calendar-clock.mjs";
-import RadioIcon from "/vendor/lucide/icons/radio.mjs";
+import ChevronDownIcon from "/vendor/lucide/icons/chevron-down.mjs";
+import ChevronLeftIcon from "/vendor/lucide/icons/chevron-left.mjs";
+import ChevronRightIcon from "/vendor/lucide/icons/chevron-right.mjs";
+import CopyIcon from "/vendor/lucide/icons/copy.mjs";
+import KeyRoundIcon from "/vendor/lucide/icons/key-round.mjs";
+import LogOutIcon from "/vendor/lucide/icons/log-out.mjs";
+import PlayIcon from "/vendor/lucide/icons/play.mjs";
+import PlusIcon from "/vendor/lucide/icons/plus.mjs";
+import RadioTowerIcon from "/vendor/lucide/icons/radio-tower.mjs";
 import RefreshCwIcon from "/vendor/lucide/icons/refresh-cw.mjs";
-import SettingsIcon from "/vendor/lucide/icons/settings.mjs";
+import SearchIcon from "/vendor/lucide/icons/search.mjs";
+import Settings2Icon from "/vendor/lucide/icons/settings-2.mjs";
+import ShuffleIcon from "/vendor/lucide/icons/shuffle.mjs";
+import SquareIcon from "/vendor/lucide/icons/square.mjs";
+import Trash2Icon from "/vendor/lucide/icons/trash-2.mjs";
+import UserPlusIcon from "/vendor/lucide/icons/user-plus.mjs";
 import UsersIcon from "/vendor/lucide/icons/users.mjs";
+import XIcon from "/vendor/lucide/icons/x.mjs";
 
-const $ = (selector) => document.querySelector(selector);
+/* ---------- DOM helpers ---------- */
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 const icons = {
   activity: ActivityIcon,
   "calendar-clock": CalendarClockIcon,
-  radio: RadioIcon,
+  "chevron-down": ChevronDownIcon,
+  "chevron-left": ChevronLeftIcon,
+  "chevron-right": ChevronRightIcon,
+  copy: CopyIcon,
+  "key-round": KeyRoundIcon,
+  "log-out": LogOutIcon,
+  play: PlayIcon,
+  plus: PlusIcon,
+  "radio-tower": RadioTowerIcon,
   "refresh-cw": RefreshCwIcon,
-  settings: SettingsIcon,
+  search: SearchIcon,
+  "settings-2": Settings2Icon,
+  shuffle: ShuffleIcon,
+  square: SquareIcon,
+  "trash-2": Trash2Icon,
+  "user-plus": UserPlusIcon,
   users: UsersIcon,
+  x: XIcon,
 };
 
-for (const slot of document.querySelectorAll("[data-icon]")) {
-  const icon = icons[slot.dataset.icon];
-  if (icon) slot.append(createIconElement(icon, { "stroke-width": 1.8 }));
+function icon(name) {
+  const node = icons[name];
+  return node ? createIconElement(node, { "stroke-width": 1.75, "aria-hidden": "true" }) : document.createTextNode("");
 }
 
-const elements = {
-  notice: $("#notice"),
-  navStatusDot: $("#nav-status-dot"),
-  navReadyCount: $("#nav-ready-count"),
-  navRunningCount: $("#nav-running-count"),
-  navAccountCount: $("#nav-account-count"),
-  navHealthCount: $("#nav-health-count"),
-  refreshStatus: $("#refresh-status"),
+function mountIcons(root = document) {
+  for (const slot of $$("[data-icon]", root)) {
+    if (!slot.firstChild) slot.append(icon(slot.dataset.icon));
+  }
+}
+
+// Small element factory: h("button", { class: "btn", onclick }, "Label").
+function h(tag, props = {}, ...children) {
+  const element = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value == null || value === false) continue;
+    if (key === "class") element.className = value;
+    else if (key === "dataset") Object.assign(element.dataset, value);
+    else if (key.startsWith("on") && typeof value === "function") element.addEventListener(key.slice(2), value);
+    else if (key.includes("-") || !(key in element)) element.setAttribute(key, value === true ? "" : String(value));
+    else element[key] = value;
+  }
+  element.append(...children.flat().filter((child) => child != null && child !== false));
+  return element;
+}
+
+mountIcons();
+
+/* ---------- Constants ---------- */
+
+const PLATFORM_IDS = ["gosh", "loco", "gaquaytv"];
+const PLATFORM_INFO = {
+  gosh: { name: "Gosh", placeholder: "https://gosh.com/vi/16427037" },
+  loco: { name: "Loco", placeholder: "https://loco.com/stream/…" },
+  gaquaytv: { name: "GaQuayTV", placeholder: "https://gaquaytv.com/live/…" },
+};
+const MAX_ROOMS = 20;
+const ACCOUNTS_PER_PAGE = 100;
+const VIEWS = ["live", "schedule", "follow", "accounts", "system"];
+const DAY_OPTIONS = [
+  [1, "T2", "Thứ hai"],
+  [2, "T3", "Thứ ba"],
+  [3, "T4", "Thứ tư"],
+  [4, "T5", "Thứ năm"],
+  [5, "T6", "Thứ sáu"],
+  [6, "T7", "Thứ bảy"],
+  [0, "CN", "Chủ nhật"],
+];
+
+const numberFormat = new Intl.NumberFormat("vi-VN");
+const fmt = (value) => numberFormat.format(value || 0);
+
+const isLocalMachine = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+if (window.desktopUpdater) document.documentElement.classList.add("is-desktop");
+if (/Mac/i.test(navigator.platform || navigator.userAgent)) document.documentElement.classList.add("is-mac");
+
+function readPref(key, fallback) {
+  try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+function writePref(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+/* ---------- Elements ---------- */
+
+const el = {
   appVersion: $("#app-version"),
-  settingsAppVersion: $("#settings-app-version"),
-  checkUpdate: $("#check-update"),
-  updateStatus: $("#update-status"),
+  navLive: $("#nav-live"),
+  navSchedule: $("#nav-schedule"),
+  navAccounts: $("#nav-accounts"),
+  navSystemAlert: $("#nav-system-alert"),
+  readinessCount: $("#readiness-count"),
+  readinessBar: $("#readiness-bar"),
+  authUser: $("#auth-user"),
+  refreshStatus: $("#refresh-status"),
+  logoutBtn: $("#logout-btn"),
+  logoutBtnSecondary: $("#logout-btn-secondary"),
+
+  runBanner: $("#run-banner"),
+  runBannerTitle: $("#run-banner-title"),
+  runBannerDetail: $("#run-banner-detail"),
+  runBannerBar: $("#run-banner-bar"),
+  runBannerCount: $("#run-banner-count"),
+  runBannerStop: $("#run-banner-stop"),
+  launchCard: $(".launch-card"),
+
   liveSummary: $("#live-summary"),
-  channelUrlGosh: $("#channel-url-gosh"),
-  channelUrlLoco: $("#channel-url-loco"),
-  channelUrlGaquaytv: $("#channel-url-gaquaytv"),
-  roomSaveState: $("#room-save-state"),
-  goshMessageForm: $("#gosh-message-form"),
-  goshMessageContent: $("#gosh-message-content"),
-  goshMessageCount: $("#gosh-message-count"),
-  goshMessageList: $("#gosh-message-list"),
-  clearGoshMessages: $("#clear-gosh-messages"),
-  goshEmptyState: $("#gosh-empty-state"),
-  locoMessageForm: $("#loco-message-form"),
-  locoMessageContent: $("#loco-message-content"),
-  locoMessageCount: $("#loco-message-count"),
-  locoMessageList: $("#loco-message-list"),
-  clearLocoMessages: $("#clear-loco-messages"),
-  locoEmptyState: $("#loco-empty-state"),
-  gaquaytvMessageForm: $("#gaquaytv-message-form"),
-  gaquaytvMessageContent: $("#gaquaytv-message-content"),
-  gaquaytvMessageCount: $("#gaquaytv-message-count"),
-  gaquaytvMessageList: $("#gaquaytv-message-list"),
-  clearGaquaytvMessages: $("#clear-gaquaytv-messages"),
-  gaquaytvEmptyState: $("#gaquaytv-empty-state"),
-  nextGoshMessage: $("#next-gosh-message"),
-  nextLocoMessage: $("#next-loco-message"),
-  nextGaquaytvMessage: $("#next-gaquaytv-message"),
-  liveAccountList: $("#live-account-list"),
+  saveState: $("#save-state"),
+  platformPanels: $("#platform-panels"),
   cooldown: $("#cooldown"),
-  sendScope: $("#send-scope"),
-  sendNext: $("#send-next"),
-  sendAll: $("#send-all"),
-  stopBulk: $("#stop-bulk"),
+  checkRooms: $("#check-rooms"),
+  checkMessages: $("#check-messages"),
+  checkAccounts: $("#check-accounts"),
+  delaySeconds: $("#delay-seconds"),
+  goshAllocCurrent: $("#gosh-alloc-current"),
+  renameSummary: $("#rename-summary"),
+  nextUpList: $("#next-up-list"),
   bulkProgress: $("#bulk-progress"),
   bulkStatus: $("#bulk-status"),
   bulkCount: $("#bulk-count"),
   bulkProgressBar: $("#bulk-progress-bar"),
   bulkError: $("#bulk-error"),
+  sendNext: $("#send-next"),
+  sendAll: $("#send-all"),
+  stopBulk: $("#stop-bulk"),
+  launchNote: $("#launch-note"),
+
+  scheduleSummary: $("#schedule-summary"),
+  scheduleEnabled: $("#schedule-enabled"),
+  scheduleEnabledText: $("#schedule-enabled-text"),
+  addScheduleSlot: $("#add-schedule-slot"),
+  weekGrid: $("#week-grid"),
+  scheduleSlotList: $("#schedule-slot-list"),
+  scheduleEmpty: $("#schedule-empty"),
+
+  followSummary: $("#follow-summary"),
+  followStatus: $("#follow-status"),
+  followForm: $("#follow-form"),
+  followTarget: $("#follow-target"),
+  followCheck: $("#follow-check"),
+  followCount: $("#follow-count"),
+  followSubmit: $("#follow-submit"),
+  unfollowSubmit: $("#unfollow-submit"),
+  channelPreview: $("#channel-preview"),
+  channelAvatar: $("#channel-avatar"),
+  channelName: $("#channel-name"),
+  channelUid: $("#channel-uid"),
+  channelFollowers: $("#channel-followers"),
+  channelFollowing: $("#channel-following"),
+  followBefore: $("#follow-before"),
+  followAfter: $("#follow-after"),
+  followDelta: $("#follow-delta"),
+  followRate: $("#follow-rate"),
+  followHistory: $("#follow-history"),
+  followHistoryEmpty: $("#follow-history-empty"),
+  clearFollowHistory: $("#clear-follow-history"),
+
   accountSummary: $("#account-summary"),
-  addAccount: $("#add-account"),
   loadTokens: $("#load-tokens"),
-  accountPlatform: $("#account-platform"),
+  addAccountMenu: $("#add-account-menu"),
+  addAccount: $("#add-account"),
+  accountSearch: $("#account-search"),
+  accountFilterPlatform: $("#account-filter-platform"),
+  filterResult: $("#filter-result"),
+  bulkMenu: $("#bulk-menu"),
   accountList: $("#account-list"),
-  accountInspector: $("#account-inspector"),
+  accountEmpty: $("#account-empty"),
+  accountPageInfo: $("#account-page-info"),
+  accountPrevPage: $("#account-prev-page"),
+  accountNextPage: $("#account-next-page"),
+
+  drawer: $("#drawer"),
+  drawerTitle: $("#drawer-title"),
+  drawerSub: $("#drawer-sub"),
+  drawerBody: $("#drawer-body"),
+
   settingsSaveState: $("#settings-save-state"),
-  delaySeconds: $("#delay-seconds"),
   displayNames: $("#display-names"),
   renameEveryComments: $("#rename-every-comments"),
-  profileCount: $("#profile-count"),
-  addGoshMessage: $("#add-gosh-message"),
-  addLocoMessage: $("#add-loco-message"),
-  addGaquaytvMessage: $("#add-gaquaytv-message"),
   checkHealth: $("#check-health"),
   healthSummary: $("#health-summary"),
   healthList: $("#health-list"),
@@ -92,51 +214,40 @@ const elements = {
   observedList: $("#observed-list"),
   observedEmpty: $("#observed-empty"),
   observedCount: $("#observed-count"),
-  navScheduleDot: $("#nav-schedule-dot"),
-  scheduleSummary: $("#schedule-summary"),
-  scheduleEnabled: $("#schedule-enabled"),
-  scheduleEnabledText: $("#schedule-enabled-text"),
-  scheduleSlotList: $("#schedule-slot-list"),
-  scheduleEmpty: $("#schedule-empty"),
-  addScheduleSlot: $("#add-schedule-slot"),
+  webPasswordForm: $("#web-password-form"),
+  webNewUsername: $("#web-new-username"),
+  webCurrentPassword: $("#web-current-password"),
+  webNewPassword: $("#web-new-password"),
+  webPasswordSubmit: $("#web-password-submit"),
+  webPasswordStatus: $("#web-password-status"),
+  profileCount: $("#profile-count"),
+  settingsAppVersion: $("#settings-app-version"),
+  checkUpdate: $("#check-update"),
+  updateStatus: $("#update-status"),
+
+  confirmDialog: $("#confirm-dialog"),
+  confirmTitle: $("#confirm-title"),
+  confirmMessage: $("#confirm-message"),
+  confirmOk: $("#confirm-ok"),
+  toasts: $("#toasts"),
+
+  loginOverlay: $("#login-overlay"),
+  loginForm: $("#login-form"),
+  loginUsername: $("#login-username"),
+  loginPassword: $("#login-password"),
+  loginTogglePass: $("#login-toggle-pass"),
+  loginError: $("#login-error"),
+  loginSubmit: $("#login-submit"),
 };
 
-let observedEndpoints = [];
-
-function setUpdateStatus(message, type = "") {
-  if (!elements.updateStatus) return;
-  elements.updateStatus.textContent = message;
-  elements.updateStatus.className = `save-state${type ? ` ${type}` : ""}`;
-}
-
-async function checkForUpdate() {
-  if (!window.desktopUpdater) {
-    setUpdateStatus("Chỉ khả dụng trong bản desktop", "warning");
-    return;
-  }
-  setBusy(elements.checkUpdate, true, "Đang kiểm tra…");
-  try {
-    const result = await window.desktopUpdater.check();
-    if (result.status === "available") {
-      setUpdateStatus(`Có bản ${result.version}; đang tải`, "saving");
-    } else if (result.status === "up-to-date") setUpdateStatus("Đang dùng bản mới nhất", "success");
-    else setUpdateStatus(result.message || "Không thể kiểm tra", "warning");
-  } catch (error) { setUpdateStatus(error.message, "error"); }
-  finally { setBusy(elements.checkUpdate, false); }
-}
-
-elements.checkUpdate?.addEventListener("click", checkForUpdate);
-window.desktopUpdater?.onStatus((event) => {
-  if (event.status === "downloading") setUpdateStatus(`Đang tải ${event.percent}%`, "saving");
-  else if (event.status === "downloaded") {
-    setUpdateStatus("Đã tải xong; đóng ứng dụng để cài đặt bản mới", "success");
-  } else if (event.status === "available") setUpdateStatus(`Có bản ${event.version}; đang tải`, "saving");
-  else if (event.status === "error") setUpdateStatus(event.message, "error");
-});
+/* ---------- App state ---------- */
 
 let state = null;
 let currentView = "live";
+let activePlatform = PLATFORM_IDS.includes(readPref("alc-platform", "")) ? readPref("alc-platform", "") : "gosh";
 let selectedAccountId = null;
+let statusFilter = "all";
+let accountPage = 0;
 let cooldownTimer = null;
 let bulkPollTimer = null;
 let activeBulkRun = null;
@@ -146,6 +257,74 @@ let settingsSavePromise = null;
 let settingsDirty = false;
 let statusRefreshRunning = false;
 let healthChecks = [];
+let observedEndpoints = [];
+let webAuthenticated = true;
+let followRunning = false;
+const queueKeys = {};
+
+/* ---------- Feedback: toasts, confirm, busy buttons ---------- */
+
+function notify(message, type = "error") {
+  const dotClass = { success: "ok", warning: "warn", error: "err", info: "" }[type] ?? "err";
+  const close = h("button", { class: "icon-btn", type: "button", "aria-label": "Đóng thông báo" }, icon("x"));
+  const toast = h("div", { class: "toast", role: type === "error" ? "alert" : "status" },
+    h("span", { class: `dot ${dotClass}` }),
+    h("p", {}, message),
+    close,
+  );
+  const dismiss = () => {
+    toast.classList.add("is-leaving");
+    window.setTimeout(() => toast.remove(), 180);
+  };
+  close.addEventListener("click", dismiss);
+  el.toasts.append(toast);
+  while (el.toasts.children.length > 4) el.toasts.firstElementChild.remove();
+  window.setTimeout(dismiss, type === "error" ? 8000 : 5000);
+}
+
+function confirmAction({ title, message, confirmLabel = "Đồng ý", danger = false }) {
+  const dialog = el.confirmDialog;
+  if (typeof dialog?.showModal !== "function") return Promise.resolve(window.confirm(message || title));
+  el.confirmTitle.textContent = title;
+  el.confirmMessage.textContent = message || "";
+  el.confirmMessage.hidden = !message;
+  el.confirmOk.textContent = confirmLabel;
+  el.confirmOk.className = `btn ${danger ? "btn-danger" : "btn-primary"}`;
+  dialog.returnValue = "";
+  dialog.showModal();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true });
+  });
+}
+
+function setBusy(button, busy, label) {
+  if (!button) return;
+  if (busy) {
+    button.busyContent = [...button.childNodes];
+    button.replaceChildren(label);
+    button.disabled = true;
+  } else {
+    if (button.busyContent) button.replaceChildren(...button.busyContent);
+    button.busyContent = null;
+    button.disabled = false;
+  }
+}
+
+async function copyText(text, message = "Đã copy.") {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = h("textarea", { style: "position:fixed;opacity:0" });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  notify(message, "success");
+}
+
+/* ---------- API ---------- */
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -153,27 +332,15 @@ async function api(path, options = {}) {
     ...options,
   });
   const body = await response.json().catch(() => ({}));
+  if (response.status === 401 && body.code === "WEB_AUTH_REQUIRED") showLogin();
   if (!response.ok) throw new Error(body.error || `Yêu cầu thất bại (${response.status}).`);
   return body;
 }
 
-function showNotice(message, type = "error") {
-  elements.notice.textContent = message;
-  elements.notice.className = `notice${type === "success" ? " success" : type === "warning" ? " warning" : ""}`;
-  elements.notice.hidden = false;
-  window.clearTimeout(showNotice.timer);
-  showNotice.timer = window.setTimeout(() => { elements.notice.hidden = true; }, 6000);
-}
+/* ---------- Derived data ---------- */
 
-function setBusy(button, busy, label) {
-  if (busy) {
-    button.dataset.label = button.textContent;
-    button.textContent = label;
-    button.disabled = true;
-  } else {
-    button.textContent = button.dataset.label || button.textContent;
-    button.disabled = false;
-  }
+function platformName(platform) {
+  return state?.platforms?.find((item) => item.id === platform)?.name || PLATFORM_INFO[platform]?.name || platform;
 }
 
 function channelLinksFor(platform) {
@@ -183,26 +350,7 @@ function channelLinksFor(platform) {
     const legacy = state.settings.channelUrls[platform];
     return legacy ? [legacy] : [];
   }
-  return state?.settings?.platform === platform && state.settings.channelUrl
-    ? [state.settings.channelUrl]
-    : [];
-}
-
-function channelUrlFor(platform) {
-  return channelLinksFor(platform)[0] || "";
-}
-
-function enabledAccounts() {
-  return state?.accounts?.filter((account) => account.enabled && Boolean(channelUrlFor(account.platform))) || [];
-}
-
-function activePlatformCount() {
-  return new Set(enabledAccounts().map((account) => account.platform)).size;
-}
-
-function activeLinkCount() {
-  return [...new Set(enabledAccounts().map((account) => account.platform))]
-    .reduce((total, platform) => total + channelLinksFor(platform).length, 0);
+  return state?.settings?.platform === platform && state.settings.channelUrl ? [state.settings.channelUrl] : [];
 }
 
 function platformMessages(platform) {
@@ -210,190 +358,37 @@ function platformMessages(platform) {
   return state?.settings?.platform === platform ? state.messages || [] : [];
 }
 
-function totalMessageCount() {
-  return platformMessages("gosh").length + platformMessages("loco").length + platformMessages("gaquaytv").length;
-}
-
-function sendableMessageCount() {
-  const platforms = new Set(enabledAccounts().map((account) => account.platform));
-  return [...platforms].reduce((total, platform) => total + platformMessages(platform).length, 0);
-}
-
-function platformName(platform) {
-  return state?.platforms?.find((item) => item.id === platform)?.name
-    || { gosh: "Gosh", loco: "Loco", gaquaytv: "GaQuayTV" }[platform]
-    || platform;
-}
-
-function sendablePlatformCount() {
-  return new Set(enabledAccounts()
-    .filter((account) => platformMessages(account.platform).length)
-    .map((account) => account.platform)).size;
+function nextMessageFor(platform) {
+  return state?.nextMessages?.[platform] || (state?.settings?.platform === platform ? state.nextMessage : null);
 }
 
 function accountLabel(account) {
   return account.profileName || account.name;
 }
 
-function switchView(view) {
-  if (!["live", "accounts", "schedule", "health", "settings"].includes(view)) return;
-  currentView = view;
-  for (const button of document.querySelectorAll("[data-view]")) {
-    button.classList.toggle("active", button.dataset.view === view);
-  }
-  for (const panel of document.querySelectorAll("[data-view-panel]")) {
-    const active = panel.dataset.viewPanel === view;
-    panel.hidden = !active;
-    panel.classList.toggle("active", active);
-  }
-  if (view === "accounts") renderAccounts();
-  if (view === "schedule") renderSchedule();
-  if (view === "health") renderHealth();
+const isReady = (account) => Boolean(account.session?.readyToComment);
+const isRunning = () => Boolean(state?.bulkSend?.running);
+
+// Accounts that will actually send: switched on and their platform has rooms.
+function participatingAccounts() {
+  return state?.accounts?.filter((account) => account.enabled && channelLinksFor(account.platform).length) || [];
 }
 
-function accountPresentation(account) {
-  if (!account.enabled) return { label: "Tạm tắt", className: "" };
-  if (account.session?.loginState === "manual_login") return { label: "Đang đăng nhập an toàn", className: "warning" };
-  if (account.session?.readyToComment) return { label: "Sẵn sàng (token)", className: "ready" };
-  if (account.session?.loginState === "signed_out") return { label: "Chưa đăng nhập", className: "warning" };
-  if (account.session?.error) return { label: "Lỗi token", className: "error" };
-  return { label: "Chưa có token", className: "" };
+function activePlatforms() {
+  return [...new Set(participatingAccounts().map((account) => account.platform))];
 }
 
-function aggregateStatus() {
-  const accounts = enabledAccounts();
-  const ready = accounts.filter((account) => account.session?.readyToComment).length;
-  const missing = accounts.filter((account) => !account.session?.hasToken).length;
-  return { accounts, ready, missing };
+function sendableMessageCount() {
+  return activePlatforms().reduce((total, platform) => total + platformMessages(platform).length, 0);
 }
 
-function statusDot(className = "") {
-  const dot = document.createElement("span");
-  dot.className = `status-dot${className ? ` ${className}` : ""}`;
-  return dot;
-}
-
-function renderAggregateStatus() {
-  const { accounts, ready, missing } = aggregateStatus();
-  const dotClass = accounts.length && ready === accounts.length ? "ready" : ready ? "warning" : "";
-  elements.navStatusDot.className = `status-dot${dotClass ? ` ${dotClass}` : ""}`;
-  elements.navReadyCount.textContent = `${ready}/${accounts.length} sẵn sàng`;
-  elements.navRunningCount.textContent = `${missing} chưa có token`;
-  elements.navAccountCount.textContent = state.accounts.length;
-  const down = healthChecks.filter((item) => item.status === "down").length;
-  elements.navHealthCount.textContent = down ? String(down) : "";
-}
-
-function renderLiveAccounts() {
-  elements.liveAccountList.replaceChildren();
-  for (const account of enabledAccounts()) {
-    const presentation = accountPresentation(account);
-    const item = document.createElement("li");
-    item.className = "live-account-row";
-    const copy = document.createElement("div");
-    const name = document.createElement("strong");
-    name.textContent = accountLabel(account);
-    const detail = document.createElement("small");
-    detail.textContent = `${platformName(account.platform)} · ${presentation.label}`;
-    copy.append(name, detail);
-    item.append(statusDot(presentation.className), copy);
-    elements.liveAccountList.append(item);
-  }
-}
-
-function renderMessages() {
-  const queues = {
-    gosh: {
-      messages: platformMessages("gosh"),
-      next: state.nextMessages?.gosh || (state.settings?.platform === "gosh" ? state.nextMessage : null),
-      count: elements.goshMessageCount,
-      list: elements.goshMessageList,
-      empty: elements.goshEmptyState,
-      clear: elements.clearGoshMessages,
-    },
-    loco: {
-      messages: platformMessages("loco"),
-      next: state.nextMessages?.loco || (state.settings?.platform === "loco" ? state.nextMessage : null),
-      count: elements.locoMessageCount,
-      list: elements.locoMessageList,
-      empty: elements.locoEmptyState,
-      clear: elements.clearLocoMessages,
-    },
-    gaquaytv: {
-      messages: platformMessages("gaquaytv"),
-      next: state.nextMessages?.gaquaytv || (state.settings?.platform === "gaquaytv" ? state.nextMessage : null),
-      count: elements.gaquaytvMessageCount,
-      list: elements.gaquaytvMessageList,
-      empty: elements.gaquaytvEmptyState,
-      clear: elements.clearGaquaytvMessages,
-    },
-  };
-
-  for (const [platform, queue] of Object.entries(queues)) {
-    queue.list.replaceChildren();
-    queue.count.textContent = queue.messages.length;
-    queue.clear.disabled = !queue.messages.length || Boolean(state.bulkSend?.running);
-    queue.empty.hidden = queue.messages.length > 0;
-
-    for (const message of queue.messages) {
-      const item = document.createElement("li");
-      item.className = `message-item${message.id === queue.next?.id ? " is-next" : ""}`;
-      const content = document.createElement("p");
-      content.textContent = message.content;
-      const remove = document.createElement("button");
-      remove.className = "delete-message";
-      remove.type = "button";
-      remove.textContent = "Xóa";
-      remove.disabled = Boolean(state.bulkSend?.running);
-      remove.addEventListener("click", async () => {
-        if (!window.confirm(`Xóa mẫu bình luận ${platformName(platform)} “${message.content}”?`)) return;
-        try {
-          state = await api(`/api/messages/${encodeURIComponent(message.id)}?platform=${platform}`, { method: "DELETE" });
-          render();
-        } catch (error) {
-          showNotice(error.message);
-        }
-      });
-      item.append(content, remove);
-      queue.list.append(item);
-    }
-  }
-
-  elements.nextGoshMessage.textContent = queues.gosh.next?.content || "Chưa có mẫu Gosh.";
-  elements.nextLocoMessage.textContent = queues.loco.next?.content || "Chưa có mẫu Loco.";
-  elements.nextGaquaytvMessage.textContent = queues.gaquaytv.next?.content || "Chưa có mẫu GaQuayTV.";
-}
-
-function renderCooldown() {
-  window.clearInterval(cooldownTimer);
-  if (!state?.lastSentAt) {
-    elements.cooldown.textContent = "Sẵn sàng";
-    return;
-  }
-  const update = () => {
-    const elapsed = Math.floor((Date.now() - Date.parse(state.lastSentAt)) / 1000);
-    const remaining = Math.max(0, state.settings.delaySeconds - elapsed);
-    elements.cooldown.textContent = remaining ? `Chờ ${remaining}s` : "Sẵn sàng";
-    if (!remaining) window.clearInterval(cooldownTimer);
-  };
-  update();
-  cooldownTimer = window.setInterval(update, 1000);
-}
-
-function bulkPhaseLabel(bulk) {
-  const labels = {
-    starting: "Đang chuẩn bị…",
-    waiting: "Đang chờ giữa hai mẫu…",
-    sending: bulk.currentAccount ? `Đang gửi · ${bulk.currentAccount}` : "Đang gửi…",
-    renaming: "Đang đổi tên tự động…",
-    stopping: "Đang dừng…",
-    stopped: "Đã dừng",
-    completed: "Đã gửi xong",
-    completed_with_errors: "Đã xong, có lỗi",
-    failed: bulk.error || "Gửi thất bại",
-  };
-  const label = labels[bulk.phase] || "Sẵn sàng";
-  return bulk.mode === "schedule" && bulk.phase !== "idle" ? `Theo lịch · ${label}` : label;
+function tokenPresentation(account) {
+  const session = account.session || {};
+  if (session.loginState === "manual_login") return { label: "Đang đăng nhập", tone: "warn" };
+  if (session.readyToComment) return { label: "Có token", tone: "ok" };
+  if (session.loginState === "signed_out") return { label: "Cần đăng nhập lại", tone: "warn" };
+  if (session.error) return { label: "Lỗi token", tone: "err", title: session.error };
+  return { label: "Chưa có token", tone: "" };
 }
 
 function formatDuration(milliseconds) {
@@ -403,6 +398,103 @@ function formatDuration(milliseconds) {
   const seconds = totalSeconds % 60;
   const pad = (value) => String(value).padStart(2, "0");
   return hours ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+function formatClock(date) {
+  return date.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/* ---------- Navigation ---------- */
+
+function switchView(view, { focusId = null } = {}) {
+  if (!VIEWS.includes(view)) return;
+  currentView = view;
+  for (const button of $$("[data-view]")) {
+    const active = button.dataset.view === view;
+    button.classList.toggle("is-active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  for (const panel of $$("[data-view-panel]")) panel.hidden = panel.dataset.viewPanel !== view;
+  if (window.location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
+  $(".views").scrollTop = 0;
+  if (state) {
+    if (view === "accounts") renderAccounts();
+    if (view === "schedule") renderSchedule();
+    if (view === "system") renderHealth();
+  }
+  if (focusId) window.requestAnimationFrame(() => document.getElementById(focusId)?.focus());
+}
+
+for (const button of $$("[data-view]")) {
+  button.addEventListener("click", () => switchView(button.dataset.view));
+}
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-go-view]");
+  if (!trigger) return;
+  if (trigger.dataset.goFilter) {
+    statusFilter = trigger.dataset.goFilter;
+    accountPage = 0;
+  }
+  switchView(trigger.dataset.goView, { focusId: trigger.dataset.goFocus });
+});
+
+/* ---------- Menus ---------- */
+
+function closeMenus(except = null) {
+  for (const menu of $$(".menu")) {
+    if (menu === except) continue;
+    $(".menu-pop", menu).hidden = true;
+    $("[aria-expanded]", menu)?.setAttribute("aria-expanded", "false");
+  }
+}
+
+for (const menu of $$(".menu")) {
+  const trigger = $("[aria-expanded]", menu);
+  const pop = $(".menu-pop", menu);
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = pop.hidden;
+    closeMenus(menu);
+    pop.hidden = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+    if (open) $("button", pop)?.focus();
+  });
+  pop.addEventListener("click", () => closeMenus());
+}
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".menu")) closeMenus();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || el.confirmDialog.open) return;
+  closeMenus();
+  if (!el.drawer.hidden) closeDrawer();
+});
+
+/* ---------- Chrome: sidebar + run banner ---------- */
+
+function renderChrome() {
+  const total = state.accounts.length;
+  const ready = state.accounts.filter(isReady).length;
+  el.readinessCount.textContent = `${fmt(ready)}/${fmt(total)}`;
+  el.readinessBar.style.width = total ? `${Math.round((ready / total) * 100)}%` : "0%";
+  el.navAccounts.textContent = fmt(total);
+  el.navSystemAlert.hidden = !healthChecks.some((item) => item.status === "down");
+}
+
+function bulkPhaseLabel(bulk) {
+  const labels = {
+    starting: "Đang chuẩn bị",
+    waiting: "Đang nghỉ giữa hai lượt",
+    sending: bulk.currentAccount ? `Đang gửi · ${bulk.currentAccount}` : "Đang gửi",
+    renaming: "Đang đổi tên tự động",
+    stopping: "Đang dừng",
+    stopped: "Đã dừng",
+    completed: "Đã gửi xong",
+    completed_with_errors: "Đã xong, có lỗi",
+    failed: bulk.error || "Gửi thất bại",
+  };
+  return labels[bulk.phase] || "Sẵn sàng";
 }
 
 // A scheduled run has no fixed message total, so it reports sends so far and
@@ -428,703 +520,474 @@ function bulkProgressView(bulk) {
   };
 }
 
-function renderBulkSend() {
-  const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
-  const accountCount = enabledAccounts().length;
-  // A scheduled run may send to its slot's own links rather than the Live ones.
-  const runLinks = bulk.running && bulk.mode === "schedule" ? bulk.linkTotals : null;
-  const websiteCount = runLinks ? Object.values(runLinks).filter(Boolean).length : activePlatformCount();
-  const linkCount = runLinks ? Object.values(runLinks).reduce((sum, count) => sum + count, 0) : activeLinkCount();
-  const sendingWebsiteCount = sendablePlatformCount();
-  const messageCount = sendableMessageCount();
-  const failures = bulk.failures || [];
+function renderRunBanner() {
+  const bulk = state.bulkSend || {};
   const running = Boolean(bulk.running);
+  el.runBanner.hidden = !running;
+  el.navLive.hidden = !running;
+  if (!running) return;
   const progress = bulkProgressView(bulk);
+  el.runBannerTitle.textContent = bulk.mode === "schedule" ? "Đang chạy theo lịch" : "Đang chạy chiến dịch";
+  el.runBannerDetail.textContent = bulkPhaseLabel(bulk);
+  el.runBannerCount.textContent = progress.count;
+  el.runBannerBar.style.width = `${progress.percent}%`;
+}
 
-  elements.bulkProgress.hidden = bulk.phase === "idle";
-  elements.bulkStatus.textContent = bulkPhaseLabel(bulk);
-  elements.bulkCount.textContent = progress.count;
-  elements.bulkProgressBar.style.width = `${progress.percent}%`;
-  elements.bulkProgress.classList.toggle("failed", bulk.phase === "failed");
-  elements.bulkProgress.classList.toggle("has-errors", Boolean(bulk.failed) && bulk.phase !== "failed");
-  elements.bulkError.hidden = !failures.length;
-  if (failures.length) {
-    const failure = failures.at(-1);
-    const platform = platformName(failure.platform);
-    const room = Number.isInteger(failure.linkIndex) ? ` #${failure.linkIndex + 1}` : "";
-    elements.bulkError.textContent = `${platform}${room} · ${failure.accountName}: ${failure.error}`;
-  } else {
-    elements.bulkError.textContent = "";
+/* ---------- Campaign: platform panels ---------- */
+
+const panels = {};
+
+function buildPlatformPanels() {
+  const template = $("#platform-panel-template");
+  for (const platform of PLATFORM_IDS) {
+    const root = template.content.firstElementChild.cloneNode(true);
+    const name = PLATFORM_INFO[platform].name;
+    root.dataset.platformPanel = platform;
+    root.id = `panel-${platform}`;
+    root.setAttribute("aria-label", name);
+    const part = (role) => $(`[data-role="${role}"]`, root);
+    const refs = {
+      root,
+      rooms: part("rooms"),
+      roomCount: part("room-count"),
+      shuffle: part("shuffle"),
+      clear: part("clear"),
+      composer: part("composer"),
+      composerInput: part("composer-input"),
+      composerSubmit: part("composer-submit"),
+      queue: part("queue"),
+      queueEmpty: part("queue-empty"),
+    };
+    part("rooms-hint").textContent = `Dán link phòng ${name}, mỗi dòng một link. Tối đa ${MAX_ROOMS} phòng.`;
+    refs.rooms.placeholder = PLATFORM_INFO[platform].placeholder;
+    refs.rooms.id = `rooms-${platform}`;
+    refs.rooms.setAttribute("aria-label", `Link phòng ${name}`);
+    refs.composerInput.setAttribute("aria-label", `Thêm mẫu bình luận ${name}`);
+    mountIcons(root);
+    panels[platform] = refs;
+    el.platformPanels.append(root);
+
+    for (const type of ["input", "change", "blur"]) refs.rooms.addEventListener(type, queueSettingsSave);
+    refs.composer.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void addMessages(platform);
+    });
+    refs.composerInput.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        refs.composer.requestSubmit();
+      }
+    });
+    refs.shuffle.addEventListener("click", () => shuffleMessages(platform));
+    refs.clear.addEventListener("click", () => clearMessages(platform));
   }
+  for (const tab of $$("[data-platform-tab]")) {
+    tab.setAttribute("aria-controls", `panel-${tab.dataset.platformTab}`);
+    tab.addEventListener("click", () => selectPlatform(tab.dataset.platformTab));
+  }
+  selectPlatform(activePlatform);
+}
 
-  elements.sendScope.textContent = `${linkCount} link · ${websiteCount} website · ${accountCount} tài khoản`;
-  elements.sendNext.textContent = (sendingWebsiteCount > 1 || linkCount > 1) ? "Gửi song song" : "Gửi một";
-  elements.sendNext.disabled = running || !messageCount || !accountCount;
-  elements.sendAll.disabled = running || !messageCount || !accountCount;
-  elements.stopBulk.hidden = !running;
-  elements.stopBulk.disabled = bulk.phase === "stopping";
+function selectPlatform(platform) {
+  activePlatform = platform;
+  writePref("alc-platform", platform);
+  for (const tab of $$("[data-platform-tab]")) {
+    tab.setAttribute("aria-selected", String(tab.dataset.platformTab === platform));
+  }
+  for (const id of PLATFORM_IDS) panels[id].root.hidden = id !== platform;
+}
 
-  for (const control of [
-    elements.channelUrlGosh,
-    elements.channelUrlLoco,
-    elements.channelUrlGaquaytv,
-    elements.goshMessageContent,
-    elements.locoMessageContent,
-    elements.gaquaytvMessageContent,
-    elements.addGoshMessage,
-    elements.addLocoMessage,
-    elements.addGaquaytvMessage,
-    elements.addAccount,
-    elements.loadTokens,
-    elements.delaySeconds,
-    elements.displayNames,
-    elements.renameEveryComments,
-    elements.clearGoshMessages,
-    elements.clearLocoMessages,
-    elements.clearGaquaytvMessages,
-  ]) {
-    control.disabled = running;
+async function addMessages(platform) {
+  const refs = panels[platform];
+  const content = refs.composerInput.value.trim();
+  if (!content) {
+    refs.composerInput.focus();
+    return;
+  }
+  setBusy(refs.composerSubmit, true, "Đang thêm…");
+  try {
+    const before = platformMessages(platform).length;
+    state = await api("/api/messages", { method: "POST", body: JSON.stringify({ content, platform }) });
+    refs.composerInput.value = "";
+    render();
+    const added = platformMessages(platform).length - before;
+    if (added > 1) notify(`Đã thêm ${added} mẫu vào kho ${platformName(platform)}.`, "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(refs.composerSubmit, false);
+    refs.composerInput.focus();
   }
 }
 
+async function deleteMessage(platform, message) {
+  try {
+    state = await api(`/api/messages/${encodeURIComponent(message.id)}?platform=${platform}`, { method: "DELETE" });
+    render();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function shuffleMessages(platform) {
+  const button = panels[platform].shuffle;
+  setBusy(button, true, "Đang trộn…");
+  try {
+    state = await api("/api/messages/shuffle", { method: "POST", body: JSON.stringify({ platform }) });
+    render();
+    notify(`Đã trộn thứ tự kho ${platformName(platform)}.`, "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(button, false);
+    renderLive();
+  }
+}
+
+async function clearMessages(platform) {
+  const count = platformMessages(platform).length;
+  if (!count) return;
+  const confirmed = await confirmAction({
+    title: `Xóa toàn bộ kho ${platformName(platform)}?`,
+    message: `${fmt(count)} mẫu bình luận sẽ bị xóa và không thể khôi phục.`,
+    confirmLabel: "Xóa kho",
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    state = await api(`/api/messages?platform=${platform}`, { method: "DELETE" });
+    render();
+    notify(`Đã xóa ${fmt(count)} mẫu ${platformName(platform)}.`, "success");
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function renderQueue(platform) {
+  const refs = panels[platform];
+  const messages = platformMessages(platform);
+  const next = nextMessageFor(platform);
+  const running = isRunning();
+  const key = JSON.stringify([messages.map((message) => message.id), next?.id, running]);
+  refs.queueEmpty.hidden = messages.length > 0;
+  refs.shuffle.disabled = running || messages.length < 2;
+  refs.clear.disabled = running || !messages.length;
+  if (queueKeys[platform] === key) return;
+  queueKeys[platform] = key;
+  refs.queue.replaceChildren(...messages.map((message, index) => {
+    const isNext = message.id === next?.id;
+    return h("li", { class: isNext ? "is-next" : "" },
+      h("span", { class: "queue-index" }, String(index + 1).padStart(2, "0")),
+      h("span", { class: "queue-text" }, message.content),
+      isNext ? h("span", { class: "tag tag-ok tag-quiet" }, "Tiếp theo") : h("span"),
+      h("button", {
+        class: "icon-btn queue-delete",
+        type: "button",
+        title: "Xóa mẫu",
+        "aria-label": `Xóa mẫu “${message.content}”`,
+        disabled: running,
+        onclick: () => deleteMessage(platform, message),
+      }, icon("trash-2")),
+    );
+  }));
+}
+
+/* ---------- Campaign: launch panel ---------- */
+
+function setCheck(item, status, detail) {
+  item.classList.toggle("is-ok", status === "ok");
+  item.classList.toggle("is-warn", status === "warn");
+  $(".check-detail", item).textContent = detail;
+}
+
+function renderChecklist() {
+  const roomsByPlatform = PLATFORM_IDS.map((platform) => [platform, channelLinksFor(platform).length]).filter(([, count]) => count);
+  const roomTotal = roomsByPlatform.reduce((sum, [, count]) => sum + count, 0);
+  setCheck(
+    el.checkRooms,
+    roomTotal ? "ok" : "",
+    roomTotal
+      ? roomsByPlatform.map(([platform, count]) => `${platformName(platform)} ${count}`).join(" · ")
+      : "Chưa nhập link phòng nào",
+  );
+
+  const emptyQueues = roomsByPlatform.filter(([platform]) => !platformMessages(platform).length).map(([platform]) => platformName(platform));
+  const messageTotal = roomsByPlatform.reduce((sum, [platform]) => sum + platformMessages(platform).length, 0);
+  const storedMessages = PLATFORM_IDS.reduce((sum, platform) => sum + platformMessages(platform).length, 0);
+  if (!roomTotal) setCheck(el.checkMessages, storedMessages ? "ok" : "", storedMessages ? `${fmt(storedMessages)} mẫu trong kho` : "Kho bình luận đang trống");
+  else if (!messageTotal) setCheck(el.checkMessages, "", "Kho của các nền tảng có phòng đang trống");
+  else if (emptyQueues.length) setCheck(el.checkMessages, "warn", `${fmt(messageTotal)} mẫu · kho ${emptyQueues.join(", ")} trống`);
+  else setCheck(el.checkMessages, "ok", `${fmt(messageTotal)} mẫu sẵn sàng gửi`);
+
+  const participating = participatingAccounts();
+  const ready = participating.filter(isReady).length;
+  const missingPlatforms = roomsByPlatform
+    .filter(([platform]) => !participating.some((account) => account.platform === platform))
+    .map(([platform]) => platformName(platform));
+  if (!roomTotal) {
+    const enabled = state.accounts.filter((account) => account.enabled).length;
+    setCheck(el.checkAccounts, "", `${fmt(enabled)} tài khoản đang bật`);
+  } else if (!participating.length) {
+    setCheck(el.checkAccounts, "", "Chưa bật tài khoản nào cho nền tảng có phòng");
+  } else if (!ready) {
+    setCheck(el.checkAccounts, "warn", `${fmt(participating.length)} tham gia · chưa tài khoản nào có token`);
+  } else if (missingPlatforms.length) {
+    setCheck(el.checkAccounts, "warn", `${fmt(ready)}/${fmt(participating.length)} có token · ${missingPlatforms.join(", ")} chưa có tài khoản`);
+  } else {
+    setCheck(el.checkAccounts, ready === participating.length ? "ok" : "warn", `${fmt(ready)}/${fmt(participating.length)} tài khoản có token`);
+  }
+}
+
+function renderLaunchControls() {
+  const running = isRunning();
+  const delay = Number(el.delaySeconds.value);
+  for (const chip of $$("[data-delay-preset]")) {
+    chip.classList.toggle("is-active", Number(chip.dataset.delayPreset) === delay && el.delaySeconds.value !== "");
+    chip.disabled = running;
+  }
+
+  const gosh = state.accounts.filter((account) => account.platform === "gosh");
+  const goshEnabled = gosh.filter((account) => account.enabled);
+  const goshEnabledReady = goshEnabled.filter(isReady).length;
+  el.goshAllocCurrent.textContent = gosh.length
+    ? `${fmt(goshEnabled.length)} đang bật · ${fmt(goshEnabledReady)} có token`
+    : "Chưa có tài khoản Gosh";
+  const activeAlloc = !goshEnabled.length
+    ? "0"
+    : goshEnabled.length === gosh.length ? "all" : String(goshEnabled.length);
+  for (const chip of $$("[data-gosh-alloc]")) {
+    chip.classList.toggle("is-active", chip.dataset.goshAlloc === activeAlloc);
+    chip.disabled = running || !gosh.length;
+  }
+
+  const names = state.settings.displayNames?.length || 0;
+  el.renameSummary.textContent = names
+    ? `${names} tên · mỗi ${state.settings.renameEveryComments} lượt`
+    : "Đang tắt";
+
+  el.nextUpList.replaceChildren(...PLATFORM_IDS.map((platform) => {
+    const hasRooms = channelLinksFor(platform).length > 0;
+    const next = nextMessageFor(platform);
+    const text = !hasRooms ? "Không có phòng" : next?.content || "Kho trống";
+    return h("li", { class: hasRooms && next ? "" : "is-empty" },
+      h("span", { class: `pf-dot ${platform}` }),
+      h("span", { class: "pf-label" }, platformName(platform)),
+      h("span", { class: "next-text", title: next?.content || "" }, text),
+    );
+  }));
+}
+
+function renderCooldown() {
+  window.clearInterval(cooldownTimer);
+  if (isRunning()) {
+    el.cooldown.className = "tag tag-live";
+    el.cooldown.textContent = state.bulkSend.mode === "schedule" ? "Đang chạy theo lịch" : "Đang chạy";
+    return;
+  }
+  const update = () => {
+    const elapsed = state?.lastSentAt ? Math.floor((Date.now() - Date.parse(state.lastSentAt)) / 1000) : Infinity;
+    const remaining = Math.max(0, (state?.settings?.delaySeconds || 0) - elapsed);
+    el.cooldown.className = remaining ? "tag tag-warn" : "tag";
+    el.cooldown.textContent = remaining ? `Chờ ${remaining}s` : "Sẵn sàng";
+    if (!remaining) window.clearInterval(cooldownTimer);
+  };
+  update();
+  cooldownTimer = window.setInterval(update, 1000);
+}
+
+function renderBulkSend() {
+  const bulk = state.bulkSend || { running: false, total: 0, sent: 0, failed: 0, phase: "idle" };
+  const running = Boolean(bulk.running);
+  const participating = participatingAccounts().length;
+  const messageCount = sendableMessageCount();
+  const linkCount = activePlatforms().reduce((sum, platform) => sum + channelLinksFor(platform).length, 0);
+  const canSend = !running && messageCount > 0 && participating > 0;
+  const progress = bulkProgressView(bulk);
+  const failures = bulk.failures || [];
+
+  el.bulkProgress.hidden = bulk.phase === "idle" || !bulk.phase;
+  // While running, the card's tag already says the run comes from the schedule.
+  el.bulkStatus.textContent = bulk.mode === "schedule" && !running && bulk.phase !== "idle"
+    ? `Theo lịch · ${bulkPhaseLabel(bulk)}`
+    : bulkPhaseLabel(bulk);
+  el.bulkCount.textContent = progress.count;
+  el.bulkProgressBar.style.width = `${progress.percent}%`;
+  el.bulkProgress.classList.toggle("is-failed", bulk.phase === "failed");
+  el.bulkProgress.classList.toggle("has-errors", Boolean(bulk.failed) && bulk.phase !== "failed");
+  el.bulkError.hidden = !failures.length;
+  if (failures.length) {
+    const failure = failures.at(-1);
+    const room = Number.isInteger(failure.linkIndex) ? ` phòng ${failure.linkIndex + 1}` : "";
+    el.bulkError.textContent = `${platformName(failure.platform)}${room} · ${failure.accountName}: ${failure.error}`;
+  }
+
+  el.launchCard.classList.toggle("is-running", running);
+  el.sendNext.hidden = running;
+  el.sendAll.hidden = running;
+  el.stopBulk.hidden = !running;
+  el.stopBulk.disabled = bulk.phase === "stopping";
+  el.runBannerStop.disabled = bulk.phase === "stopping";
+  el.sendNext.disabled = !canSend;
+  el.sendAll.disabled = !canSend;
+  el.sendNext.title = "Gửi mẫu kế tiếp của mỗi nền tảng tới tất cả phòng, một lần";
+
+  if (running) {
+    el.launchNote.textContent = "Kho bình luận, link phòng và tài khoản bị khóa cho tới khi dừng.";
+  } else if (canSend) {
+    const delay = Number(state.settings.delaySeconds) || 0;
+    el.launchNote.textContent = `“Chạy toàn bộ kho” gửi lần lượt ${fmt(messageCount)} mẫu tới ${fmt(linkCount)} phòng, nghỉ ${delay}s giữa các lượt.`;
+  } else {
+    el.launchNote.textContent = "Cần ít nhất một phòng live, một mẫu bình luận và một tài khoản tham gia trên cùng nền tảng.";
+  }
+
+  for (const platform of PLATFORM_IDS) {
+    const refs = panels[platform];
+    refs.rooms.disabled = running;
+    refs.composerInput.disabled = running;
+    refs.composerSubmit.disabled = running;
+  }
+  el.delaySeconds.disabled = running;
+  el.displayNames.disabled = running;
+  el.renameEveryComments.disabled = running;
+  el.addAccount.disabled = running;
+  el.loadTokens.disabled = running;
+}
+
 function renderLive() {
-  const accountCount = enabledAccounts().length;
-  const websiteCount = activePlatformCount();
-  const linkCount = activeLinkCount();
-  const messageCount = totalMessageCount();
-  elements.liveSummary.textContent = `${messageCount} mẫu · ${linkCount} link · ${websiteCount} website · ${accountCount} tài khoản`;
-  renderMessages();
-  renderLiveAccounts();
+  const roomTotal = PLATFORM_IDS.reduce((sum, platform) => sum + channelLinksFor(platform).length, 0);
+  const platformsWithRooms = PLATFORM_IDS.filter((platform) => channelLinksFor(platform).length).length;
+  const messageTotal = PLATFORM_IDS.reduce((sum, platform) => sum + platformMessages(platform).length, 0);
+  el.liveSummary.textContent = [
+    roomTotal ? `${fmt(roomTotal)} phòng trên ${platformsWithRooms} nền tảng` : "Chưa có phòng live",
+    `${fmt(messageTotal)} mẫu bình luận`,
+    `${fmt(participatingAccounts().length)} tài khoản tham gia`,
+  ].join(" · ");
+
+  for (const platform of PLATFORM_IDS) {
+    const rooms = channelLinksFor(platform).length;
+    const messages = platformMessages(platform).length;
+    $(`[data-tab-meta="${platform}"]`).textContent = `${rooms} phòng · ${messages} mẫu`;
+    panels[platform].roomCount.textContent = `${rooms}/${MAX_ROOMS}`;
+    renderQueue(platform);
+  }
+  renderChecklist();
+  renderLaunchControls();
   renderCooldown();
   renderBulkSend();
 }
 
-function createAccountRow(account) {
-  const presentation = accountPresentation(account);
-  const row = document.createElement("li");
-  row.className = `account-row${account.id === selectedAccountId ? " selected" : ""}${account.enabled ? "" : " disabled-account"}`;
-  row.tabIndex = 0;
-  row.setAttribute("role", "button");
-  row.setAttribute("aria-label", `Chọn ${accountLabel(account)}`);
+/* ---------- Campaign: actions ---------- */
 
-  const nameCell = document.createElement("span");
-  nameCell.className = "account-name-cell";
-  const name = document.createElement("strong");
-  name.textContent = accountLabel(account);
-  nameCell.append(statusDot(presentation.className), name);
-  if (account.proxy) {
-    const proxyBadge = document.createElement("span");
-    proxyBadge.className = "platform-badge proxy";
-    proxyBadge.textContent = "Proxy";
-    proxyBadge.title = account.proxy;
-    proxyBadge.style.marginLeft = "6px";
-    proxyBadge.style.fontSize = "8px";
-    proxyBadge.style.padding = "1px 4px";
-    nameCell.append(proxyBadge);
-  }
-  const status = document.createElement("span");
-  status.className = "account-status-text";
-  status.textContent = presentation.label;
+for (const chip of $$("[data-delay-preset]")) {
+  chip.addEventListener("click", () => {
+    el.delaySeconds.value = chip.dataset.delayPreset;
+    queueSettingsSave();
+    renderLaunchControls();
+  });
+}
+for (const type of ["input", "change"]) {
+  el.delaySeconds.addEventListener(type, () => {
+    queueSettingsSave();
+    renderLaunchControls();
+  });
+}
 
-  const platform = document.createElement("span");
-  platform.className = `platform-badge ${account.platform}`;
-  platform.textContent = platformName(account.platform);
-
-  const toggleLabel = document.createElement("label");
-  toggleLabel.className = "account-toggle";
-  const toggle = document.createElement("input");
-  toggle.type = "checkbox";
-  toggle.checked = account.enabled;
-  toggle.disabled = Boolean(state.bulkSend?.running);
-  const toggleText = document.createElement("span");
-  toggleText.textContent = account.enabled ? "Bật" : "Tắt";
-  toggle.addEventListener("click", (event) => event.stopPropagation());
-  toggle.addEventListener("change", async () => {
+for (const chip of $$("[data-gosh-alloc]")) {
+  chip.addEventListener("click", async () => {
+    if (!state?.accounts) return;
+    const choice = chip.dataset.goshAlloc;
+    const goshReady = state.accounts.filter((account) => account.platform === "gosh" && isReady(account));
+    if (!["0", "all"].includes(choice) && !goshReady.length) {
+      notify("Chưa có tài khoản Gosh nào có token để chọn.", "warning");
+      return;
+    }
+    setBusy(chip, true, "…");
     try {
-      state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ enabled: toggle.checked }),
-      });
+      if (choice === "0" || choice === "all") {
+        state = await api("/api/accounts/bulk-toggle", {
+          method: "POST",
+          body: JSON.stringify({ platform: "gosh", enabled: choice === "all" }),
+        });
+        notify(choice === "all" ? "Đã bật mọi tài khoản Gosh." : "Đã tắt mọi tài khoản Gosh.", "success");
+      } else {
+        const count = Math.min(Number(choice) || 50, goshReady.length);
+        const chosen = new Set(goshReady.slice(0, count).map((account) => account.id));
+        const toDisable = state.accounts
+          .filter((account) => account.platform === "gosh" && account.enabled && !chosen.has(account.id))
+          .map((account) => account.id);
+        if (toDisable.length) {
+          await api("/api/accounts/bulk-toggle", { method: "POST", body: JSON.stringify({ enabled: false, accountIds: toDisable }) });
+        }
+        state = await api("/api/accounts/bulk-toggle", { method: "POST", body: JSON.stringify({ enabled: true, accountIds: [...chosen] }) });
+        notify(`Đã chọn ${fmt(count)} tài khoản Gosh có token tham gia.`, "success");
+      }
       render();
     } catch (error) {
-      showNotice(error.message);
-      renderAccounts();
-    }
-  });
-  toggleLabel.addEventListener("click", (event) => event.stopPropagation());
-  toggleLabel.append(toggle, toggleText);
-
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "row-action";
-  open.textContent = account.session?.loginState === "signed_out" ? "Đăng nhập an toàn" : "Mở Chrome";
-  open.disabled = Boolean(state.bulkSend?.running);
-  open.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void openAccount(account, open);
-  });
-
-  const select = () => {
-    selectedAccountId = account.id;
-    renderAccounts();
-  };
-  row.addEventListener("click", select);
-  row.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      select();
-    }
-  });
-  row.append(nameCell, platform, status, toggleLabel, open);
-  return row;
-}
-
-function inspectorSection(title) {
-  const section = document.createElement("section");
-  section.className = "inspector-section";
-  const heading = document.createElement("h3");
-  heading.textContent = title;
-  section.append(heading);
-  return section;
-}
-
-function renderInspector(account) {
-  elements.accountInspector.replaceChildren();
-  if (!account) {
-    const empty = document.createElement("div");
-    empty.className = "inspector-empty";
-    empty.textContent = "Chọn một tài khoản";
-    elements.accountInspector.append(empty);
-    return;
-  }
-
-  const presentation = accountPresentation(account);
-  const head = document.createElement("div");
-  head.className = "inspector-head";
-  const copy = document.createElement("div");
-  const heading = document.createElement("h2");
-  heading.textContent = accountLabel(account);
-  const sub = document.createElement("p");
-  sub.textContent = `${platformName(account.platform)} · ${presentation.label}`;
-  copy.append(heading, sub);
-  head.append(statusDot(presentation.className), copy);
-
-  const sessionSection = inspectorSection("Phiên đăng nhập");
-  const sessionActions = document.createElement("div");
-  sessionActions.className = "inspector-actions";
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "primary";
-  open.textContent = account.session?.loginState === "signed_out" ? "Đăng nhập an toàn" : "Mở Chrome";
-  const profile = document.createElement("button");
-  profile.type = "button";
-  profile.className = "secondary";
-  profile.textContent = "Mở hồ sơ";
-  open.disabled = profile.disabled = Boolean(state.bulkSend?.running);
-  open.addEventListener("click", () => openAccount(account, open));
-  profile.addEventListener("click", () => openAccount(account, profile, true));
-  sessionActions.append(open, profile);
-  sessionSection.append(sessionActions);
-
-  let displaySection = null;
-  if (account.platform === "gosh" || account.platform === "gaquaytv") {
-    displaySection = inspectorSection(`Tên hiển thị trên ${platformName(account.platform)}`);
-    const displayForm = document.createElement("form");
-    displayForm.className = "inspector-form";
-    const displayWrap = document.createElement("div");
-    displayWrap.className = "inline-form";
-    const displayInput = document.createElement("input");
-    displayInput.type = "text";
-    displayInput.maxLength = 20;
-    displayInput.placeholder = "Tên mới";
-    displayInput.setAttribute("aria-label", "Tên hiển thị mới");
-    const update = document.createElement("button");
-    update.type = "submit";
-    update.className = "secondary";
-    update.textContent = "Cập nhật";
-    displayInput.disabled = update.disabled = Boolean(state.bulkSend?.running);
-    displayWrap.append(displayInput, update);
-    displayForm.append(displayWrap);
-    displayForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      setBusy(update, true, "Đang đổi…");
-      try {
-        const response = await api(`/api/accounts/${encodeURIComponent(account.id)}/display-name`, {
-          method: "POST",
-          body: JSON.stringify({ displayName: displayInput.value }),
-        });
-        displayInput.value = "";
-        // The display-name endpoint returns only the operation result. Refresh
-        // the dashboard so the account list and inspector immediately show the
-        // persisted profile name instead of waiting for a manual refresh.
-        await refreshState();
-        showNotice(`Đã đổi tên thành “${response.result.displayName}”.`, "success");
-      } catch (error) {
-        showNotice(error.message);
-      } finally {
-        setBusy(update, false);
-      }
-    });
-    displaySection.append(displayForm);
-  }
-
-  let gaquaytvLoginForm = null;
-  if (account.platform === "gaquaytv") {
-    gaquaytvLoginForm = inspectorSection("Đăng nhập tài khoản GaQuayTV");
-    const form = document.createElement("form");
-    form.className = "inspector-form";
-    const userInput = document.createElement("input");
-    userInput.type = "text";
-    userInput.placeholder = "Email hoặc tên người dùng";
-    userInput.setAttribute("aria-label", "Tài khoản GaQuayTV");
-    userInput.style.marginBottom = "8px";
-    const pwInput = document.createElement("input");
-    pwInput.type = "password";
-    pwInput.placeholder = "Mật khẩu";
-    pwInput.setAttribute("aria-label", "Mật khẩu GaQuayTV");
-    pwInput.style.marginBottom = "8px";
-    const loginBtn = document.createElement("button");
-    loginBtn.type = "submit";
-    loginBtn.className = "primary";
-    loginBtn.textContent = "Đăng nhập ngay";
-
-    userInput.disabled = pwInput.disabled = loginBtn.disabled = Boolean(state.bulkSend?.running);
-    form.append(userInput, pwInput, loginBtn);
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const u = userInput.value.trim();
-      const p = pwInput.value;
-      if (!u || !p) {
-        showNotice("Vui lòng nhập tài khoản và mật khẩu.");
-        return;
-      }
-      setBusy(loginBtn, true, "Đang đăng nhập…");
-      try {
-        state = await api(`/api/accounts/${encodeURIComponent(account.id)}/login`, {
-          method: "POST",
-          body: JSON.stringify({ usernameOrEmail: u, password: p }),
-        });
-        showNotice("Đăng nhập GaQuayTV thành công!", "success");
-        render();
-      } catch (err) {
-        showNotice(err.message);
-      } finally {
-        setBusy(loginBtn, false);
-      }
-    });
-    gaquaytvLoginForm.append(form);
-  }
-
-  const proxySection = inspectorSection("Cấu hình Proxy cho tài khoản");
-  const proxyForm = document.createElement("form");
-  proxyForm.className = "inspector-form";
-  const proxyWrap = document.createElement("div");
-  proxyWrap.className = "inline-form";
-  const proxyInput = document.createElement("input");
-  proxyInput.type = "text";
-  proxyInput.placeholder = "http://user:pass@host:port hoặc host:port:user:pass";
-  proxyInput.value = account.proxy || "";
-  proxyInput.setAttribute("aria-label", "Proxy tài khoản");
-  const saveProxyBtn = document.createElement("button");
-  saveProxyBtn.type = "submit";
-  saveProxyBtn.className = "secondary";
-  saveProxyBtn.textContent = "Lưu proxy";
-  proxyInput.disabled = saveProxyBtn.disabled = Boolean(state.bulkSend?.running);
-  proxyWrap.append(proxyInput, saveProxyBtn);
-
-  const proxyHint = document.createElement("small");
-  proxyHint.style.display = "block";
-  proxyHint.style.marginTop = "6px";
-  proxyHint.style.color = "var(--muted)";
-  proxyHint.textContent = account.proxy
-    ? `Đang dùng: ${account.proxy}`
-    : "Để trống nếu gửi trực tiếp qua mạng máy tính.";
-
-  proxyForm.append(proxyWrap, proxyHint);
-  proxyForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    setBusy(saveProxyBtn, true, "Đang lưu…");
-    try {
-      state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ proxy: proxyInput.value.trim() }),
-      });
-      showNotice(
-        proxyInput.value.trim() ? "Đã lưu proxy cho tài khoản." : "Đã xóa proxy (dùng mạng trực tiếp).",
-        "success"
-      );
-      render();
-    } catch (err) {
-      showNotice(err.message);
+      notify(error.message);
     } finally {
-      setBusy(saveProxyBtn, false);
+      setBusy(chip, false);
+      renderLaunchControls();
     }
   });
-  proxySection.append(proxyForm);
-
-  const danger = document.createElement("div");
-  danger.className = "danger-zone";
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "remove-account";
-  remove.textContent = "Xóa tài khoản và session";
-  remove.disabled = Boolean(state.bulkSend?.running) || state.accounts.length === 1;
-  remove.addEventListener("click", () => deleteAccount(account));
-  danger.append(remove);
-
-  elements.accountInspector.append(head, sessionSection);
-  if (gaquaytvLoginForm) elements.accountInspector.append(gaquaytvLoginForm);
-  if (displaySection) elements.accountInspector.append(displaySection);
-  elements.accountInspector.append(proxySection);
-  elements.accountInspector.append(danger);
 }
 
-function renderAccounts() {
-  if (!state) return;
-  if (!state.accounts.some((account) => account.id === selectedAccountId)) {
-    selectedAccountId = state.accounts[0]?.id || null;
-  }
-  elements.accountSummary.textContent = `${state.accounts.filter((account) => account.enabled).length}/${state.accounts.length} đang sử dụng`;
-  elements.accountList.replaceChildren(...state.accounts.map(createAccountRow));
-  renderInspector(state.accounts.find((account) => account.id === selectedAccountId));
-}
-
-function syncSettingControl(control, value) {
-  if (document.activeElement !== control) control.value = value;
-}
-
-function renderSettings() {
-  // Background status refreshes must not overwrite URL/settings fields while
-  // the user's latest edit is still waiting to be saved.
-  if (settingsDirty || settingsSaveRunning) return;
-  syncSettingControl(elements.channelUrlGosh, channelLinksFor("gosh").join("\n"));
-  syncSettingControl(elements.channelUrlLoco, channelLinksFor("loco").join("\n"));
-  syncSettingControl(elements.channelUrlGaquaytv, channelLinksFor("gaquaytv").join("\n"));
-  syncSettingControl(elements.delaySeconds, state.settings.delaySeconds);
-  syncSettingControl(elements.displayNames, state.settings.displayNames.join("\n"));
-  syncSettingControl(elements.renameEveryComments, state.settings.renameEveryComments);
-  elements.profileCount.textContent = `${state.accounts.length} hồ sơ Chrome`;
-}
-
-function healthLabel(item) {
-  if (item.status === "up" && [401, 403].includes(item.httpStatus)) {
-    return { text: "Có phản hồi · cần session", className: "warning" };
-  }
-  if (item.status === "up") return { text: "Hoạt động", className: "ready" };
-  if (item.status === "degraded") return { text: "Chậm / giới hạn", className: "warning" };
-  if (item.status === "down") return { text: "Không phản hồi", className: "error" };
-  return { text: "Chưa kiểm tra", className: "" };
-}
-
-function renderHealth() {
-  elements.healthList.replaceChildren();
-  elements.healthEmpty.hidden = healthChecks.length > 0;
-  const checked = healthChecks.filter((item) => item.checkedAt);
-  const down = checked.filter((item) => item.status === "down").length;
-  elements.healthSummary.textContent = !checked.length
-    ? "Chưa kiểm tra"
-    : down ? `${down}/${checked.length} endpoint có lỗi` : `${checked.length} endpoint hoạt động`;
-  for (const item of healthChecks) {
-    const presentation = healthLabel(item);
-    const row = document.createElement("li");
-    row.className = "health-row";
-    const service = document.createElement("span");
-    service.className = "health-service";
-    service.append(statusDot(presentation.className), document.createTextNode(`${platformName(item.platform)} · ${item.name}`));
-    const endpoint = document.createElement("code");
-    try { endpoint.textContent = new URL(item.url).pathname + new URL(item.url).search; } catch { endpoint.textContent = item.url; }
-    endpoint.title = item.url;
-    const http = document.createElement("span");
-    http.textContent = item.httpStatus ?? "—";
-    const latency = document.createElement("span");
-    latency.textContent = item.latencyMs == null ? "—" : `${item.latencyMs} ms`;
-    const status = document.createElement("span");
-    status.className = `health-status ${presentation.className}`;
-    status.textContent = item.error || presentation.text;
-    row.append(service, endpoint, http, latency, status);
-    elements.healthList.append(row);
-  }
-
-  if (elements.observedList) {
-    elements.observedList.replaceChildren();
-    elements.observedEmpty.hidden = observedEndpoints.length > 0;
-    elements.observedCount.textContent = `${observedEndpoints.length} endpoint`;
-
-    for (const item of observedEndpoints) {
-      const row = document.createElement("li");
-      row.className = "health-row";
-      const service = document.createElement("span");
-      service.className = "health-service";
-      service.append(statusDot("ready"), document.createTextNode(item.name || item.category));
-
-      const endpoint = document.createElement("code");
-      endpoint.textContent = `${item.host}${item.path}`;
-      endpoint.title = item.fullUrl;
-
-      const method = document.createElement("span");
-      method.textContent = item.method || "GET";
-
-      const http = document.createElement("span");
-      http.textContent = item.status || 200;
-
-      const time = document.createElement("span");
-      time.className = "health-status ready";
-      try {
-        const d = new Date(item.lastSeen);
-        time.textContent = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
-      } catch {
-        time.textContent = "vừa xong";
-      }
-
-      row.append(service, endpoint, method, http, time);
-      elements.observedList.append(row);
-    }
-  }
-}
-
-const DAY_OPTIONS = [
-  [1, "T2", "Thứ hai"],
-  [2, "T3", "Thứ ba"],
-  [3, "T4", "Thứ tư"],
-  [4, "T5", "Thứ năm"],
-  [5, "T6", "Thứ sáu"],
-  [6, "T7", "Thứ bảy"],
-  [0, "CN", "Chủ nhật"],
-];
-let scheduleSlotsKey = "";
-
-function scheduleState() {
-  return state?.schedule || { enabled: false, slots: [] };
-}
-
-function formatNextStart(iso) {
-  const date = new Date(iso);
-  const dayStart = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate());
-  const diffDays = Math.round((dayStart(date) - dayStart(new Date())) / 86_400_000);
-  const pad = (value) => String(value).padStart(2, "0");
-  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  if (diffDays === 0) return `hôm nay ${time}`;
-  if (diffDays === 1) return `ngày mai ${time}`;
-  const dayName = DAY_OPTIONS.find(([day]) => day === date.getDay())?.[1] || "";
-  return `${dayName} ${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${time}`;
-}
-
-function renderScheduleStatus() {
-  if (!state) return;
-  const schedule = scheduleState();
-  const status = state.scheduleStatus || {};
-  const running = Boolean(status.runningSlotId);
-  let summary;
-  if (!schedule.enabled) summary = "Đã tắt";
-  else if (running) summary = `Đang chạy theo lịch · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
-  else if (status.error) summary = `Lịch gặp lỗi: ${status.error}`;
-  else if (!schedule.slots.some((slot) => slot.enabled)) summary = "Đã bật nhưng chưa có khung giờ nào đang bật";
-  else if (status.nextStartAt) summary = `Lần chạy kế tiếp: ${formatNextStart(status.nextStartAt)}`;
-  else summary = "Đã bật, chưa có lần chạy nào sắp tới";
-
-  elements.scheduleSummary.textContent = summary;
-  elements.scheduleEnabled.checked = schedule.enabled;
-  elements.scheduleEnabledText.textContent = schedule.enabled ? "Bật" : "Tắt";
-  elements.navScheduleDot.hidden = !schedule.enabled;
-  elements.navScheduleDot.className = `status-dot${running ? " ready" : status.error ? " error" : ""}`;
-
-  const runningNote = elements.scheduleSlotList.querySelector(".schedule-slot.is-running .schedule-slot-note");
-  if (runningNote && running) runningNote.textContent = `Đang chạy · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
-}
-
-// Slots whose room-link section the user has expanded; kept across rebuilds.
-const openScheduleLinkSlots = new Set();
-
-async function patchScheduleSlot(id, body, { rebuildOnError = true } = {}) {
+el.sendNext.addEventListener("click", async () => {
+  setBusy(el.sendNext, true, "Đang gửi…");
   try {
-    state = await api(`/api/schedule/slots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
-  } catch (error) {
-    showNotice(error.message);
-    // Link edits stay on screen so a typo does not cost the user a pasted list.
-    if (!rebuildOnError) return;
-  }
-  scheduleSlotsKey = "";
-  render();
-}
-
-function schedulePlatformIds() {
-  return state?.platforms?.length ? state.platforms.map((platform) => platform.id) : ["gosh", "loco", "gaquaytv"];
-}
-
-function scheduleLinksSummary(slot) {
-  const own = schedulePlatformIds()
-    .filter((platform) => slot.channelLinks?.[platform]?.length)
-    .map((platform) => `${platformName(platform)} ${slot.channelLinks[platform].length}`);
-  return own.length ? `Link phòng riêng: ${own.join(" · ")}` : "Link phòng: dùng link ở màn Live";
-}
-
-function createScheduleLinks(slot) {
-  const details = document.createElement("details");
-  details.className = "schedule-links";
-  details.open = openScheduleLinkSlots.has(slot.id);
-  details.addEventListener("toggle", () => {
-    if (details.open) openScheduleLinkSlots.add(slot.id);
-    else openScheduleLinkSlots.delete(slot.id);
-  });
-  const summary = document.createElement("summary");
-  summary.textContent = scheduleLinksSummary(slot);
-  const fields = document.createElement("div");
-  fields.className = "schedule-link-fields";
-
-  const inputs = new Map();
-  for (const platform of schedulePlatformIds()) {
-    const field = document.createElement("div");
-    field.className = "schedule-link-field";
-    const id = `slot-${slot.id}-${platform}`;
-    const label = document.createElement("label");
-    label.htmlFor = id;
-    label.className = `room-platform ${platform}`;
-    label.textContent = `${platformName(platform)} · mỗi dòng 1 link`;
-    const textarea = document.createElement("textarea");
-    textarea.id = id;
-    textarea.rows = 2;
-    textarea.autocomplete = "off";
-    textarea.placeholder = `URL các phòng live ${platformName(platform)}…`;
-    textarea.value = (slot.channelLinks?.[platform] || []).join("\n");
-    textarea.addEventListener("change", () => {
-      const channelLinks = Object.fromEntries(
-        [...inputs].map(([item, input]) => [item, input.value.split(/\r?\n/)]),
-      );
-      void patchScheduleSlot(slot.id, { channelLinks }, { rebuildOnError: false });
-    });
-    inputs.set(platform, textarea);
-    field.append(label, textarea);
-    fields.append(field);
-  }
-
-  const hint = document.createElement("p");
-  hint.className = "schedule-links-hint";
-  hint.textContent = "Để trống tất cả thì khung này gửi tới link nhập ở màn Live. Nếu nhập ở đây, khung chỉ gửi tới các link này.";
-  details.append(summary, fields, hint);
-  return details;
-}
-
-function createScheduleSlotRow(slot, status) {
-  const running = status.runningSlotId === slot.id;
-  const skipped = (status.skippedSlotIds || []).includes(slot.id);
-  const row = document.createElement("li");
-  row.className = `schedule-slot${slot.enabled ? "" : " is-off"}${running ? " is-running" : ""}`;
-
-  const toggleLabel = document.createElement("label");
-  toggleLabel.className = "switch";
-  const toggle = document.createElement("input");
-  toggle.type = "checkbox";
-  toggle.setAttribute("role", "switch");
-  toggle.checked = slot.enabled;
-  toggle.setAttribute("aria-label", `Bật khung giờ ${slot.start} đến ${slot.end}`);
-  toggle.addEventListener("change", () => patchScheduleSlot(slot.id, { enabled: toggle.checked }));
-  const toggleText = document.createElement("span");
-  toggleText.textContent = slot.enabled ? "Bật" : "Tắt";
-  toggleLabel.append(toggle, toggleText);
-
-  const times = document.createElement("div");
-  times.className = "schedule-times";
-  const timeInput = (field, label) => {
-    const input = document.createElement("input");
-    input.type = "time";
-    input.value = slot[field];
-    input.required = true;
-    input.setAttribute("aria-label", label);
-    input.addEventListener("change", () => {
-      if (!input.value) {
-        input.value = slot[field];
-        return;
-      }
-      void patchScheduleSlot(slot.id, { [field]: input.value });
-    });
-    return input;
-  };
-  const arrow = document.createElement("span");
-  arrow.textContent = "→";
-  arrow.setAttribute("aria-hidden", "true");
-  times.append(timeInput("start", "Giờ bắt đầu"), arrow, timeInput("end", "Giờ kết thúc"));
-
-  const days = document.createElement("div");
-  days.className = "schedule-days";
-  for (const [day, shortName, fullName] of DAY_OPTIONS) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "day-chip";
-    chip.textContent = shortName;
-    chip.title = fullName;
-    chip.setAttribute("aria-label", fullName);
-    chip.setAttribute("aria-pressed", String(slot.days.includes(day)));
-    chip.addEventListener("click", () => {
-      const nextDays = slot.days.includes(day) ? slot.days.filter((item) => item !== day) : [...slot.days, day];
-      if (!nextDays.length) {
-        showNotice("Hãy chọn ít nhất một ngày cho khung giờ.", "warning");
-        return;
-      }
-      void patchScheduleSlot(slot.id, { days: nextDays });
-    });
-    days.append(chip);
-  }
-
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "remove-slot";
-  remove.textContent = "Xóa";
-  remove.addEventListener("click", async () => {
-    const warning = running ? " Lượt đang chạy theo khung này sẽ dừng lại." : "";
-    if (!window.confirm(`Xóa khung giờ ${slot.start} → ${slot.end}?${warning}`)) return;
-    try {
-      state = await api(`/api/schedule/slots/${encodeURIComponent(slot.id)}`, { method: "DELETE" });
-    } catch (error) {
-      showNotice(error.message);
-    }
-    scheduleSlotsKey = "";
+    await flushSettingsBeforeSend();
+    state = await api("/api/comments/send-next", { method: "POST" });
     render();
+    const result = state.result;
+    const linkCount = result?.totalLinks || result?.successCount || 0;
+    if (result?.failureCount) notify(`Đã gửi ${result.successCount}/${linkCount} phòng; ${result.failureCount} phòng lỗi.`, "warning");
+    else notify(`Đã gửi tới ${linkCount} phòng.`, "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.sendNext, false);
+    renderBulkSend();
+  }
+});
+
+el.sendAll.addEventListener("click", async () => {
+  setBusy(el.sendAll, true, "Đang bắt đầu…");
+  try {
+    await flushSettingsBeforeSend();
+    state = await api("/api/comments/send-all", { method: "POST" });
+    activeBulkRun = state.bulkSend.startedAt;
+    render();
+    notify(`Đã bắt đầu chạy ${fmt(state.bulkSend.total)} lượt gửi.`, "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.sendAll, false);
+    renderBulkSend();
+  }
+});
+
+async function stopBulkRun(button) {
+  const confirmed = await confirmAction({
+    title: "Dừng lượt đang chạy?",
+    message: state?.bulkSend?.mode === "schedule"
+      ? "Khung giờ hiện tại sẽ không tự chạy lại cho tới lần sau."
+      : "Các mẫu chưa gửi sẽ được giữ nguyên trong kho.",
+    confirmLabel: "Dừng",
+    danger: true,
   });
-
-  row.append(toggleLabel, times, days, remove, createScheduleLinks(slot));
-
-  const overnight = slot.end <= slot.start;
-  const note = running
-    ? "Đang chạy"
-    : skipped
-      ? "Đã dừng thủ công; sẽ chạy lại ở lần sau"
-      : overnight ? "Kết thúc vào ngày hôm sau" : "";
-  if (note) {
-    const noteElement = document.createElement("p");
-    noteElement.className = "schedule-slot-note";
-    noteElement.textContent = note;
-    row.append(noteElement);
+  if (!confirmed) return;
+  setBusy(button, true, "Đang dừng…");
+  try {
+    state = await api("/api/comments/send-all/stop", { method: "POST" });
+    render();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(button, false);
+    renderBulkSend();
   }
-  return row;
 }
-
-function renderSchedule() {
-  if (!state) return;
-  const { slots } = scheduleState();
-  const status = state.scheduleStatus || {};
-  elements.scheduleEmpty.hidden = slots.length > 0;
-  const key = JSON.stringify([slots, status.runningSlotId, status.skippedSlotIds]);
-  const editingField = elements.scheduleSlotList.contains(document.activeElement)
-    && document.activeElement.matches("input[type=time], textarea");
-  // Rebuilding while a time or link field has focus would drop the user's edit.
-  if (key !== scheduleSlotsKey && !editingField) {
-    scheduleSlotsKey = key;
-    elements.scheduleSlotList.replaceChildren(...slots.map((slot) => createScheduleSlotRow(slot, status)));
-  }
-  renderScheduleStatus();
-}
-
-// Keeps the countdowns moving between state refreshes.
-function tickScheduleClock() {
-  if (!state) return;
-  const bulk = state.bulkSend;
-  if (bulk?.running && bulk.mode === "schedule") {
-    const progress = bulkProgressView(bulk);
-    elements.bulkCount.textContent = progress.count;
-    elements.bulkProgressBar.style.width = `${progress.percent}%`;
-  }
-  renderScheduleStatus();
-}
+el.stopBulk.addEventListener("click", () => stopBulkRun(el.stopBulk));
+el.runBannerStop.addEventListener("click", () => stopBulkRun(el.runBannerStop));
 
 function stopBulkPolling() {
   window.clearTimeout(bulkPollTimer);
@@ -1137,79 +1000,57 @@ function pollBulkSend() {
   bulkPollTimer = window.setTimeout(async () => {
     try {
       await refreshState();
-      if (!state.bulkSend.running && state.bulkSend.startedAt === activeBulkRun) {
-        if (state.bulkSend.phase === "completed") showNotice(`Đã gửi ${state.bulkSend.sent} lượt bình luận.`, "success");
-        else if (state.bulkSend.phase === "completed_with_errors") showNotice(`Đã gửi ${state.bulkSend.sent}/${state.bulkSend.total} lượt, ${state.bulkSend.failed} lỗi.`, "warning");
-        else if (state.bulkSend.phase === "stopped") showNotice(`Đã dừng sau ${state.bulkSend.sent} lượt gửi.`, "warning");
-        else if (state.bulkSend.error) showNotice(state.bulkSend.error);
+      const bulk = state.bulkSend;
+      if (!bulk.running && bulk.startedAt === activeBulkRun) {
+        if (bulk.phase === "completed") notify(`Đã gửi xong ${fmt(bulk.sent)} lượt bình luận.`, "success");
+        else if (bulk.phase === "completed_with_errors") notify(`Đã gửi ${fmt(bulk.sent)}/${fmt(bulk.total)} lượt, ${bulk.failed} lỗi.`, "warning");
+        else if (bulk.phase === "stopped") notify(`Đã dừng sau ${fmt(bulk.sent)} lượt gửi.`, "warning");
+        else if (bulk.error) notify(bulk.error);
         activeBulkRun = null;
       }
     } catch (error) {
-      showNotice(error.message);
+      notify(error.message);
     }
     pollBulkSend();
   }, 1000);
 }
 
-let appVersionCached = "";
-
-async function updateVersionDisplay() {
-  if (!appVersionCached && window.desktopUpdater?.getVersion) {
-    try {
-      appVersionCached = await window.desktopUpdater.getVersion();
-    } catch {}
-  }
-  if (!appVersionCached && state?.version) {
-    appVersionCached = state.version;
-  }
-  if (appVersionCached) {
-    const formatted = appVersionCached.startsWith("v") ? appVersionCached : `v${appVersionCached}`;
-    if (elements.appVersion) elements.appVersion.textContent = formatted;
-    if (elements.settingsAppVersion) elements.settingsAppVersion.textContent = `Phiên bản ${formatted}`;
-  }
-}
-
-function render() {
-  if (!state) return;
-  void updateVersionDisplay();
-  renderAggregateStatus();
-  renderLive();
-  renderSettings();
-  renderSchedule();
-  if (currentView === "accounts") renderAccounts();
-  if (currentView === "health") renderHealth();
-  pollBulkSend();
-}
-
-async function refreshState() {
-  state = await api("/api/state");
-  render();
-}
+/* ---------- Settings persistence ---------- */
 
 function setSaveState(status, message) {
-  for (const element of [elements.roomSaveState, elements.settingsSaveState]) {
+  for (const element of [el.saveState, el.settingsSaveState]) {
     element.textContent = message;
     element.className = `save-state${status ? ` ${status}` : ""}`;
   }
 }
 
+function syncControl(control, value) {
+  if (document.activeElement !== control) control.value = value;
+}
+
+function renderSettings() {
+  // Background refreshes must not overwrite fields whose edit is still waiting to be saved.
+  if (settingsDirty || settingsSaveRunning) return;
+  for (const platform of PLATFORM_IDS) syncControl(panels[platform].rooms, channelLinksFor(platform).join("\n"));
+  syncControl(el.delaySeconds, state.settings.delaySeconds);
+  syncControl(el.displayNames, state.settings.displayNames.join("\n"));
+  syncControl(el.renameEveryComments, state.settings.renameEveryComments);
+  el.profileCount.textContent = `${fmt(state.accounts.length)} tài khoản đã lưu trên máy chủ.`;
+}
+
 function settingsPayload() {
   return {
-    channelLinks: {
-      gosh: elements.channelUrlGosh.value.split(/\r?\n/),
-      loco: elements.channelUrlLoco.value.split(/\r?\n/),
-      gaquaytv: elements.channelUrlGaquaytv.value.split(/\r?\n/),
-    },
-    delaySeconds: Number(elements.delaySeconds.value),
-    displayNames: elements.displayNames.value,
-    renameEveryComments: Number(elements.renameEveryComments.value),
+    channelLinks: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, panels[platform].rooms.value.split(/\r?\n/)])),
+    delaySeconds: Number(el.delaySeconds.value),
+    displayNames: el.displayNames.value,
+    renameEveryComments: Number(el.renameEveryComments.value),
   };
 }
 
 async function saveSettings() {
   window.clearTimeout(settingsTimer);
   if (settingsSaveRunning) return settingsSavePromise;
-  if (state.bulkSend?.running) return false;
+  if (isRunning()) return false;
   settingsSaveRunning = true;
   settingsDirty = false;
   setSaveState("saving", "Đang lưu…");
@@ -1220,8 +1061,8 @@ async function saveSettings() {
     render();
     return true;
   } catch (error) {
-    setSaveState("error", "Chưa lưu");
-    showNotice(error.message);
+    setSaveState("error", "Chưa lưu được");
+    notify(error.message);
     return false;
   } finally {
     settingsSaveRunning = false;
@@ -1235,7 +1076,7 @@ async function flushSettingsBeforeSend() {
   if (settingsSaveRunning) await settingsSavePromise;
   while (settingsDirty) {
     const saved = await saveSettings();
-    if (!saved) throw new Error("Không thể lưu link phòng live. Vui lòng kiểm tra lại URL.");
+    if (!saved) throw new Error("Không thể lưu link phòng live. Hãy kiểm tra lại URL.");
     if (settingsSaveRunning) await settingsSavePromise;
   }
 }
@@ -1247,28 +1088,653 @@ function queueSettingsSave() {
   settingsTimer = window.setTimeout(saveSettings, 700);
 }
 
-async function openAccount(account, button, profile = false) {
-  setBusy(button, true, "Đang mở…");
-  try {
-    const suffix = profile
-      ? "profile"
-      : account.session?.loginState === "signed_out" ? "login" : "open";
-    await api(`/api/accounts/${encodeURIComponent(account.id)}/browser/${suffix}`, {
-      method: "POST",
-      body: profile ? "{}" : JSON.stringify({ targetUrl: channelUrlFor(account.platform) || undefined }),
-    });
-    await refreshState();
-    showNotice(
-      suffix === "login"
-        ? "Hãy đăng nhập trong Chrome; sau khi đăng nhập thành công, trình duyệt sẽ tự động tắt và nhận diện tài khoản."
-        : `Đã mở “${accountLabel(account)}”.`,
-      "success",
+for (const control of [el.displayNames, el.renameEveryComments]) {
+  control.addEventListener("input", queueSettingsSave);
+  control.addEventListener("change", queueSettingsSave);
+}
+
+/* ---------- Schedule ---------- */
+
+let scheduleSlotsKey = "";
+// Slots whose room-link section the user has expanded; kept across rebuilds.
+const openScheduleLinkSlots = new Set();
+
+function scheduleState() {
+  return state?.schedule || { enabled: false, slots: [] };
+}
+
+function formatNextStart(iso) {
+  const date = new Date(iso);
+  const dayStart = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const diffDays = Math.round((dayStart(date) - dayStart(new Date())) / 86_400_000);
+  const pad = (value) => String(value).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  if (diffDays === 0) return `hôm nay lúc ${time}`;
+  if (diffDays === 1) return `ngày mai lúc ${time}`;
+  const dayName = DAY_OPTIONS.find(([day]) => day === date.getDay())?.[2] || "";
+  return `${dayName} ${pad(date.getDate())}/${pad(date.getMonth() + 1)} lúc ${time}`;
+}
+
+const toMinutes = (value) => {
+  const [hours, minutes] = String(value).split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+function renderWeek() {
+  const { enabled, slots } = scheduleState();
+  const runningId = state.scheduleStatus?.runningSlotId;
+  const blocksByDay = new Map(DAY_OPTIONS.map(([day]) => [day, []]));
+  for (const slot of slots) {
+    const start = toMinutes(slot.start);
+    const end = toMinutes(slot.end);
+    const off = !enabled || !slot.enabled;
+    const className = `week-block${off ? " is-off" : ""}${slot.id === runningId ? " is-running" : ""}`;
+    const title = `${slot.start} – ${slot.end}${off ? " (đang tắt)" : ""}`;
+    for (const day of slot.days) {
+      if (end > start) {
+        blocksByDay.get(day)?.push({ from: start, to: end, className, title });
+      } else {
+        blocksByDay.get(day)?.push({ from: start, to: 1440, className, title });
+        blocksByDay.get((day + 1) % 7)?.push({ from: 0, to: end, className, title });
+      }
+    }
+  }
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const rows = DAY_OPTIONS.map(([day, short, full]) => {
+    const today = day === now.getDay();
+    const track = h("div", { class: "week-track" },
+      blocksByDay.get(day).map((block) => h("span", {
+        class: block.className,
+        title: block.title,
+        style: `left:${(block.from / 1440) * 100}%;width:${((block.to - block.from) / 1440) * 100}%`,
+      })),
+      today ? h("span", { class: "week-now", style: `left:${(nowMinutes / 1440) * 100}%`, title: "Bây giờ" }) : null,
     );
+    return h("div", { class: `week-row${today ? " is-today" : ""}` },
+      h("span", { class: "week-day", title: full }, short),
+      track,
+    );
+  });
+  const scale = h("div", { class: "week-scale", "aria-hidden": "true" },
+    h("span"),
+    h("div", {}, ["00", "06", "12", "18", "24"].map((label) => h("span", {}, label))),
+  );
+  el.weekGrid.replaceChildren(...rows, scale);
+}
+
+function renderScheduleStatus() {
+  if (!state) return;
+  const schedule = scheduleState();
+  const status = state.scheduleStatus || {};
+  const running = Boolean(status.runningSlotId);
+  let summary;
+  if (!schedule.enabled) summary = "Lịch đang tắt. Bật công tắc để chiến dịch tự chạy theo khung giờ.";
+  else if (running) summary = `Đang chạy theo lịch · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
+  else if (status.error) summary = `Chưa chạy được: ${status.error}`;
+  else if (!schedule.slots.some((slot) => slot.enabled)) summary = "Lịch đang bật nhưng chưa có khung giờ nào được bật.";
+  else if (status.nextStartAt) summary = `Lần chạy kế tiếp: ${formatNextStart(status.nextStartAt)}`;
+  else summary = "Lịch đang bật, chưa có lần chạy nào sắp tới.";
+  el.scheduleSummary.textContent = summary;
+  el.scheduleSummary.classList.toggle("form-error", Boolean(schedule.enabled && status.error && !running));
+
+  el.scheduleEnabled.checked = schedule.enabled;
+  el.scheduleEnabledText.textContent = schedule.enabled ? "Lịch đang bật" : "Lịch đang tắt";
+  el.navSchedule.textContent = !schedule.enabled
+    ? ""
+    : running ? "Đang chạy" : status.nextStartAt ? new Date(status.nextStartAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "Bật";
+
+  const runningTag = $(".slot.is-running [data-role='slot-status']", el.scheduleSlotList);
+  if (runningTag && running) runningTag.textContent = `Đang chạy · còn ${formatDuration(Date.parse(status.endsAt) - Date.now())}`;
+}
+
+async function patchScheduleSlot(id, body, { rebuildOnError = true } = {}) {
+  try {
+    state = await api(`/api/schedule/slots/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
   } catch (error) {
-    showNotice(error.message);
+    notify(error.message);
+    // Link edits stay on screen so a typo does not cost the user a pasted list.
+    if (!rebuildOnError) return;
+  }
+  scheduleSlotsKey = "";
+  render();
+}
+
+function scheduleLinksSummary(slot) {
+  const own = PLATFORM_IDS
+    .filter((platform) => slot.channelLinks?.[platform]?.length)
+    .map((platform) => `${platformName(platform)} ${slot.channelLinks[platform].length}`);
+  return own.length ? `Phòng riêng: ${own.join(" · ")}` : "Phòng: dùng link ở màn Chiến dịch";
+}
+
+function createScheduleLinks(slot) {
+  const details = h("details", { class: "disclosure", open: openScheduleLinkSlots.has(slot.id) });
+  details.addEventListener("toggle", () => {
+    if (details.open) openScheduleLinkSlots.add(slot.id);
+    else openScheduleLinkSlots.delete(slot.id);
+  });
+  const inputs = new Map();
+  const fields = PLATFORM_IDS.map((platform) => {
+    const id = `slot-${slot.id}-${platform}`;
+    const textarea = h("textarea", {
+      id,
+      class: "mono",
+      rows: 3,
+      autocomplete: "off",
+      placeholder: PLATFORM_INFO[platform].placeholder,
+    });
+    textarea.spellcheck = false;
+    textarea.value = (slot.channelLinks?.[platform] || []).join("\n");
+    textarea.addEventListener("change", () => {
+      const channelLinks = Object.fromEntries([...inputs].map(([item, input]) => [item, input.value.split(/\r?\n/)]));
+      void patchScheduleSlot(slot.id, { channelLinks }, { rebuildOnError: false });
+    });
+    inputs.set(platform, textarea);
+    return h("div", { class: "slot-link-field" },
+      h("label", { htmlFor: id }, h("span", { class: `pf-dot ${platform}` }), platformName(platform)),
+      textarea,
+    );
+  });
+  details.append(
+    h("summary", {}, scheduleLinksSummary(slot)),
+    h("div", { class: "slot-link-fields" }, fields),
+    h("p", { class: "slot-link-hint" }, "Để trống cả ba thì khung này gửi tới các phòng ở màn Chiến dịch. Nhập ở đây thì khung chỉ gửi tới các link này."),
+  );
+  return details;
+}
+
+function createScheduleSlotRow(slot, status) {
+  const running = status.runningSlotId === slot.id;
+  const skipped = (status.skippedSlotIds || []).includes(slot.id);
+  const overnight = slot.end <= slot.start;
+
+  const toggle = h("input", { type: "checkbox", role: "switch", checked: slot.enabled, "aria-label": `Bật khung ${slot.start} – ${slot.end}` });
+  toggle.addEventListener("change", () => patchScheduleSlot(slot.id, { enabled: toggle.checked }));
+
+  const timeInput = (field, label) => {
+    const input = h("input", { type: "time", required: true, "aria-label": label });
+    input.value = slot[field];
+    input.addEventListener("change", () => {
+      if (!input.value) {
+        input.value = slot[field];
+        return;
+      }
+      void patchScheduleSlot(slot.id, { [field]: input.value });
+    });
+    return input;
+  };
+
+  const days = DAY_OPTIONS.map(([day, short, full]) => h("button", {
+    class: "day-chip",
+    type: "button",
+    title: full,
+    "aria-label": full,
+    "aria-pressed": String(slot.days.includes(day)),
+    onclick: () => {
+      const nextDays = slot.days.includes(day) ? slot.days.filter((item) => item !== day) : [...slot.days, day];
+      if (!nextDays.length) {
+        notify("Khung giờ cần ít nhất một ngày.", "warning");
+        return;
+      }
+      void patchScheduleSlot(slot.id, { days: nextDays });
+    },
+  }, short));
+
+  const statusTag = running
+    ? h("span", { class: "tag tag-live", dataset: { role: "slot-status" } }, "Đang chạy")
+    : skipped
+      ? h("span", { class: "tag tag-warn", title: "Sẽ chạy lại ở lần sau" }, "Đã dừng tay")
+      : status.nextSlotId === slot.id && scheduleState().enabled
+        ? h("span", { class: "tag" }, "Chạy kế tiếp")
+        : null;
+
+  const remove = h("button", {
+    class: "icon-btn",
+    type: "button",
+    title: "Xóa khung giờ",
+    "aria-label": `Xóa khung ${slot.start} – ${slot.end}`,
+    onclick: async () => {
+      const confirmed = await confirmAction({
+        title: `Xóa khung ${slot.start} – ${slot.end}?`,
+        message: running ? "Lượt đang chạy theo khung này sẽ dừng lại." : "",
+        confirmLabel: "Xóa",
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        state = await api(`/api/schedule/slots/${encodeURIComponent(slot.id)}`, { method: "DELETE" });
+      } catch (error) {
+        notify(error.message);
+      }
+      scheduleSlotsKey = "";
+      render();
+    },
+  }, icon("trash-2"));
+
+  return h("li", { class: `slot${slot.enabled ? "" : " is-off"}${running ? " is-running" : ""}` },
+    h("label", { class: "switch-field" }, toggle, h("span", { class: "switch", "aria-hidden": "true" })),
+    h("div", { class: "slot-times" }, timeInput("start", "Giờ bắt đầu"), h("span", { "aria-hidden": "true" }, "–"), timeInput("end", "Giờ kết thúc")),
+    h("div", { class: "slot-days", role: "group", "aria-label": "Ngày trong tuần" }, days),
+    h("div", { class: "slot-side" }, statusTag, remove),
+    h("div", { class: "slot-foot" },
+      overnight ? h("span", { class: "field-meta" }, "Kết thúc vào ngày hôm sau") : null,
+      createScheduleLinks(slot),
+    ),
+  );
+}
+
+function renderSchedule() {
+  if (!state) return;
+  const { slots } = scheduleState();
+  const status = state.scheduleStatus || {};
+  el.scheduleEmpty.hidden = slots.length > 0;
+  $(".week-card").hidden = !slots.length;
+  const key = JSON.stringify([slots, status.runningSlotId, status.skippedSlotIds, status.nextSlotId, scheduleState().enabled]);
+  const editing = el.scheduleSlotList.contains(document.activeElement)
+    && document.activeElement.matches("input[type=time], textarea");
+  // Rebuilding while a time or link field has focus would drop the user's edit.
+  if (key !== scheduleSlotsKey && !editing) {
+    scheduleSlotsKey = key;
+    el.scheduleSlotList.replaceChildren(...slots.map((slot) => createScheduleSlotRow(slot, status)));
+  }
+  if (slots.length) renderWeek();
+  renderScheduleStatus();
+}
+
+el.scheduleEnabled.addEventListener("change", async () => {
+  const enabled = el.scheduleEnabled.checked;
+  el.scheduleEnabled.disabled = true;
+  try {
+    state = await api("/api/schedule", { method: "PUT", body: JSON.stringify({ enabled }) });
+    render();
+    const error = state.scheduleStatus?.error;
+    if (enabled && error) notify(`Đã bật lịch nhưng chưa gửi được: ${error}`, "warning");
+    else notify(enabled ? "Đã bật lịch chạy." : "Đã tắt lịch chạy.", "success");
+  } catch (error) {
+    notify(error.message);
+    render();
+  } finally {
+    el.scheduleEnabled.disabled = false;
+  }
+});
+
+el.addScheduleSlot.addEventListener("click", async () => {
+  setBusy(el.addScheduleSlot, true, "Đang thêm…");
+  try {
+    // New slots start switched off so they cannot begin sending before they are set up.
+    state = await api("/api/schedule/slots", {
+      method: "POST",
+      body: JSON.stringify({ start: "19:30", end: "21:30", days: DAY_OPTIONS.map(([day]) => day), enabled: false }),
+    });
+    scheduleSlotsKey = "";
+    render();
+    notify("Đã thêm khung giờ mới (đang tắt). Chỉnh giờ rồi bật công tắc của khung.", "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.addScheduleSlot, false);
+  }
+});
+
+// Keeps the countdowns moving between state refreshes.
+function tickClock() {
+  if (!state) return;
+  const bulk = state.bulkSend;
+  if (bulk?.running && bulk.mode === "schedule") {
+    const progress = bulkProgressView(bulk);
+    el.bulkCount.textContent = progress.count;
+    el.bulkProgressBar.style.width = `${progress.percent}%`;
+    el.runBannerCount.textContent = progress.count;
+    el.runBannerBar.style.width = `${progress.percent}%`;
+  }
+  renderScheduleStatus();
+}
+
+/* ---------- Follow ---------- */
+
+const followHistory = [];
+
+function followValues() {
+  const form = el.followForm;
+  return {
+    target: el.followTarget.value.trim(),
+    count: Number(el.followCount.value),
+    scope: form.elements["follow-scope"].value || "all",
+    concurrency: Number(form.elements["follow-concurrency"].value) || 15,
+  };
+}
+
+function renderFollow() {
+  const goshReady = state.accounts.filter((account) => account.platform === "gosh" && isReady(account)).length;
+  el.followSummary.textContent = `${fmt(goshReady)} tài khoản Gosh có token sẵn sàng. Không cần mở trình duyệt.`;
+  for (const chip of $$("[data-follow-preset]")) {
+    chip.classList.toggle("is-active", chip.dataset.followPreset === el.followCount.value);
+  }
+}
+
+function setFollowRunning(running, unfollow = false) {
+  followRunning = running;
+  for (const control of el.followForm.querySelectorAll("input, textarea, button")) control.disabled = running;
+  el.followStatus.className = running ? "tag tag-live" : "tag";
+  el.followStatus.textContent = running ? (unfollow ? "Đang gỡ follow…" : "Đang chạy…") : el.followStatus.textContent;
+}
+
+function showChannel(channel) {
+  el.channelPreview.hidden = false;
+  const name = channel.nickname || channel.targetUid;
+  el.channelAvatar.textContent = String(name || "G").trim().charAt(0).toUpperCase() || "G";
+  el.channelName.textContent = name;
+  el.channelUid.textContent = `UID ${channel.targetUid}${channel.showId && channel.showId !== channel.targetUid ? ` · ID ${channel.showId}` : ""}`;
+  if (channel.followerCount != null) el.channelFollowers.textContent = fmt(channel.followerCount);
+  if (channel.followingCount != null) el.channelFollowing.textContent = fmt(channel.followingCount);
+}
+
+function renderFollowHistory() {
+  el.followHistoryEmpty.hidden = followHistory.length > 0;
+  el.followHistory.parentElement.hidden = !followHistory.length;
+  el.clearFollowHistory.hidden = !followHistory.length;
+  el.followHistory.replaceChildren(...followHistory.map((item) => h("li", {},
+    h("span", { class: "cell-muted tabular" }, item.time),
+    h("span", { class: "account-name" },
+      h("strong", {}, item.nickname),
+      h("span", { class: "mono" }, `${item.unfollow ? "Gỡ follow · " : ""}UID ${item.targetUid}`),
+    ),
+    h("span", { class: `col-delta tabular ${item.delta >= 0 ? "delta-up" : "delta-down"}` }, item.deltaText),
+    h("span", { class: "tabular" }, `${fmt(item.successCount)}/${fmt(item.accountCount)}`),
+  )));
+}
+
+el.clearFollowHistory.addEventListener("click", () => {
+  followHistory.length = 0;
+  renderFollowHistory();
+});
+
+el.followCheck.addEventListener("click", async () => {
+  const target = el.followTarget.value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+  if (!target) {
+    notify("Nhập link hoặc UID kênh Gosh trước khi kiểm tra.", "warning");
+    el.followTarget.focus();
+    return;
+  }
+  setBusy(el.followCheck, true, "Đang tra cứu…");
+  try {
+    const { channel } = await api(`/api/gosh/channel?target=${encodeURIComponent(target)}`);
+    if (channel) {
+      showChannel(channel);
+      el.followBefore.textContent = fmt(channel.followerCount ?? 0);
+    }
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.followCheck, false);
+  }
+});
+
+el.followCount.addEventListener("input", renderFollowChips);
+function renderFollowChips() {
+  for (const chip of $$("[data-follow-preset]")) {
+    chip.classList.toggle("is-active", chip.dataset.followPreset === el.followCount.value);
+  }
+}
+for (const chip of $$("[data-follow-preset]")) {
+  chip.addEventListener("click", () => {
+    el.followCount.value = chip.dataset.followPreset;
+    renderFollowChips();
+  });
+}
+
+async function executeFollow(unfollow = false) {
+  if (followRunning) return;
+  const { target, count, scope, concurrency } = followValues();
+  if (!target) {
+    notify("Nhập link hoặc UID kênh Gosh cần follow.", "warning");
+    el.followTarget.focus();
+    return;
+  }
+  if (unfollow) {
+    const confirmed = await confirmAction({
+      title: "Gỡ follow kênh này?",
+      message: `Các tài khoản Gosh ${Number.isInteger(count) && count > 0 ? `(tối đa ${fmt(count)})` : "đang chọn"} sẽ bỏ follow kênh mục tiêu.`,
+      confirmLabel: "Gỡ follow",
+      danger: true,
+    });
+    if (!confirmed) return;
+  }
+  const button = unfollow ? el.unfollowSubmit : el.followSubmit;
+  setBusy(button, true, unfollow ? "Đang gỡ…" : "Đang chạy…");
+  setFollowRunning(true, unfollow);
+  let statusText = "Sẵn sàng";
+  try {
+    await flushSettingsBeforeSend();
+    const { followReport: report } = await api("/api/gosh/follow", {
+      method: "POST",
+      body: JSON.stringify({
+        target,
+        ...(Number.isInteger(count) && count > 0 ? { count } : {}),
+        scope,
+        concurrency,
+        unfollow,
+      }),
+    });
+    const first = report?.targets?.[0];
+    if (first) {
+      const hasCounts = first.beforeFollowers != null && first.afterFollowers != null;
+      const diff = hasCounts ? first.afterFollowers - first.beforeFollowers : report.totalSuccess * (unfollow ? -1 : 1);
+      el.followBefore.textContent = first.beforeFollowers != null ? fmt(first.beforeFollowers) : "—";
+      el.followAfter.textContent = first.afterFollowers != null ? fmt(first.afterFollowers) : "—";
+      el.followDelta.textContent = diff >= 0 ? `+${fmt(diff)}` : `−${fmt(Math.abs(diff))}`;
+      el.followDelta.className = diff > 0 ? "is-up" : diff < 0 ? "is-down" : "";
+      el.followRate.textContent = `${fmt(report.totalSuccess)}/${fmt(report.accountCount)}`;
+      showChannel({ ...first, followerCount: first.afterFollowers ?? first.beforeFollowers });
+    }
+    const now = formatClock(new Date());
+    for (const item of report?.targets || []) {
+      const hasCounts = item.beforeFollowers != null && item.afterFollowers != null;
+      const delta = hasCounts ? item.afterFollowers - item.beforeFollowers : item.successCount * (unfollow ? -1 : 1);
+      followHistory.unshift({
+        time: now.slice(0, 5),
+        targetUid: item.targetUid,
+        nickname: item.nickname || item.targetUid,
+        unfollow,
+        delta,
+        deltaText: hasCounts
+          ? `${fmt(item.beforeFollowers)} → ${fmt(item.afterFollowers)}`
+          : `${unfollow ? "−" : "+"}${fmt(item.successCount)}`,
+        successCount: item.successCount,
+        accountCount: report.accountCount,
+      });
+    }
+    renderFollowHistory();
+    statusText = first?.afterFollowers != null ? `${fmt(first.afterFollowers)} follower` : `${fmt(report?.totalSuccess)}/${fmt(report?.accountCount)} thành công`;
+    const summary = first
+      ? `${unfollow ? "Đã gỡ follow" : "Đã follow"} ${first.nickname}: ${fmt(report.totalSuccess)}/${fmt(report.accountCount)} tài khoản thành công.`
+      : `Hoàn tất: ${fmt(report?.totalSuccess)}/${fmt(report?.accountCount)} tài khoản thành công.`;
+    notify(summary, report?.totalFailure ? "warning" : "success");
+  } catch (error) {
+    statusText = "Lỗi";
+    notify(error.message);
   } finally {
     setBusy(button, false);
+    setFollowRunning(false);
+    el.followStatus.textContent = statusText;
+    el.followStatus.className = statusText === "Lỗi" ? "tag tag-err" : "tag";
   }
+}
+
+el.followForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void executeFollow(false);
+});
+el.unfollowSubmit.addEventListener("click", () => void executeFollow(true));
+
+/* ---------- Accounts ---------- */
+
+function accountsMatchingSearch() {
+  const query = el.accountSearch.value.trim().toLowerCase();
+  const platform = el.accountFilterPlatform.value;
+  return state.accounts.filter((account) => {
+    if (platform !== "all" && account.platform !== platform) return false;
+    if (!query) return true;
+    const haystack = `${account.name || ""} ${account.profileName || ""} ${account.loginInfo?.username || ""} ${account.loginInfo?.uid || ""} ${account.id || ""}`.toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+const STATUS_FILTERS = {
+  all: () => true,
+  ready: (account) => isReady(account),
+  notready: (account) => !isReady(account),
+  enabled: (account) => account.enabled,
+  disabled: (account) => !account.enabled,
+};
+
+function filteredAccounts() {
+  if (!state?.accounts) return [];
+  return accountsMatchingSearch().filter(STATUS_FILTERS[statusFilter] || STATUS_FILTERS.all);
+}
+
+async function setAccountEnabled(account, enabled) {
+  try {
+    state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    render();
+  } catch (error) {
+    notify(error.message);
+    render();
+  }
+}
+
+function createAccountRow(account) {
+  const token = tokenPresentation(account);
+  const label = accountLabel(account);
+  const sub = account.loginInfo?.username || (account.name !== label ? account.name : `ID ${account.id.slice(0, 8)}`);
+  const toggle = h("input", {
+    type: "checkbox",
+    role: "switch",
+    checked: account.enabled,
+    disabled: isRunning(),
+    "aria-label": `${label} tham gia chiến dịch`,
+  });
+  toggle.addEventListener("change", () => setAccountEnabled(account, toggle.checked));
+  const toggleLabel = h("label", { class: "switch-field", onclick: (event) => event.stopPropagation() },
+    toggle, h("span", { class: "switch", "aria-hidden": "true" }));
+
+  const row = h("li", {
+    class: `${account.id === selectedAccountId && !el.drawer.hidden ? "is-selected" : ""}${account.enabled ? "" : " is-disabled"}`,
+    tabIndex: 0,
+    "aria-label": `Mở chi tiết ${label}`,
+  },
+    h("span", { class: "account-name" }, h("strong", {}, label), h("span", {}, sub)),
+    h("span", { class: "col-platform pf-tag" }, h("span", { class: `pf-dot ${account.platform}` }), platformName(account.platform)),
+    h("span", { class: "col-token cell-status", title: token.title || "" }, h("span", { class: `dot ${token.tone}` }), h("span", {}, token.label)),
+    toggleLabel,
+    h("span", { class: "row-chevron", "aria-hidden": "true" }, icon("chevron-right")),
+  );
+  row.addEventListener("click", () => openDrawer(account.id));
+  row.addEventListener("keydown", (event) => {
+    if (event.target !== row) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openDrawer(account.id);
+    }
+  });
+  return row;
+}
+
+function renderAccounts() {
+  if (!state) return;
+  const searchMatches = accountsMatchingSearch();
+  for (const tab of $$("[data-status-filter]")) {
+    const filter = tab.dataset.statusFilter;
+    tab.setAttribute("aria-selected", String(filter === statusFilter));
+    $("[data-filter-count]", tab).textContent = fmt(searchMatches.filter(STATUS_FILTERS[filter]).length);
+  }
+
+  const matching = filteredAccounts();
+  const totalPages = Math.max(1, Math.ceil(matching.length / ACCOUNTS_PER_PAGE));
+  accountPage = Math.min(Math.max(accountPage, 0), totalPages - 1);
+  const start = accountPage * ACCOUNTS_PER_PAGE;
+  const pageSlice = matching.slice(start, start + ACCOUNTS_PER_PAGE);
+
+  const total = state.accounts.length;
+  const ready = state.accounts.filter(isReady).length;
+  const enabled = state.accounts.filter((account) => account.enabled).length;
+  el.accountSummary.textContent = `${fmt(total)} tài khoản · ${fmt(ready)} có token · ${fmt(enabled)} đang tham gia`;
+  el.filterResult.textContent = matching.length === total ? "" : `${fmt(matching.length)} kết quả`;
+
+  el.accountList.replaceChildren(...pageSlice.map(createAccountRow));
+  el.accountEmpty.hidden = matching.length > 0;
+  el.accountPageInfo.textContent = matching.length
+    ? `${fmt(start + 1)}–${fmt(start + pageSlice.length)} trên ${fmt(matching.length)}`
+    : "";
+  el.accountPrevPage.disabled = accountPage <= 0;
+  el.accountNextPage.disabled = accountPage >= totalPages - 1;
+  $(".pager").hidden = !matching.length;
+  renderDrawer();
+}
+
+for (const tab of $$("[data-status-filter]")) {
+  tab.addEventListener("click", () => {
+    statusFilter = tab.dataset.statusFilter;
+    accountPage = 0;
+    renderAccounts();
+  });
+}
+for (const control of [el.accountSearch, el.accountFilterPlatform]) {
+  control.addEventListener("input", () => {
+    accountPage = 0;
+    renderAccounts();
+  });
+}
+el.accountPrevPage.addEventListener("click", () => {
+  accountPage -= 1;
+  renderAccounts();
+  $(".views").scrollTop = 0;
+});
+el.accountNextPage.addEventListener("click", () => {
+  accountPage += 1;
+  renderAccounts();
+  $(".views").scrollTop = 0;
+});
+
+for (const item of $$("[data-bulk]", el.bulkMenu)) {
+  item.addEventListener("click", async () => {
+    const matching = filteredAccounts();
+    if (item.dataset.bulk === "copy") {
+      const withCreds = matching.filter((account) => account.loginInfo?.username && account.loginInfo?.password);
+      if (!withCreds.length) {
+        notify("Danh sách đang lọc không có tài khoản nào lưu username và password.", "warning");
+        return;
+      }
+      const lines = withCreds.map((account) => `${account.loginInfo.username} | ${account.loginInfo.password}`).join("\n");
+      void copyText(lines, `Đã copy ${fmt(withCreds.length)} tài khoản (username | password).`);
+      return;
+    }
+    if (!matching.length) return;
+    const enabled = item.dataset.bulk === "enable";
+    const confirmed = await confirmAction({
+      title: `${enabled ? "Bật" : "Tắt"} tham gia cho ${fmt(matching.length)} tài khoản?`,
+      message: "Áp dụng cho toàn bộ danh sách đang lọc, kể cả các trang khác.",
+      confirmLabel: enabled ? "Bật tham gia" : "Tắt tham gia",
+    });
+    if (!confirmed) return;
+    const trigger = $("[aria-expanded]", el.bulkMenu);
+    setBusy(trigger, true, "Đang cập nhật…");
+    try {
+      state = await api("/api/accounts/bulk-toggle", {
+        method: "POST",
+        body: JSON.stringify({ enabled, accountIds: matching.map((account) => account.id) }),
+      });
+      render();
+      notify(`Đã ${enabled ? "bật" : "tắt"} tham gia cho ${fmt(matching.length)} tài khoản.`, "success");
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setBusy(trigger, false);
+    }
+  });
 }
 
 function nextAccountName() {
@@ -1278,156 +1744,343 @@ function nextAccountName() {
   return `Tài khoản ${index}`;
 }
 
-async function loadTokens() {
-  setBusy(elements.loadTokens, true, "Đang nạp token…");
-  try {
-    const result = await api("/api/accounts/tokens/load", { method: "POST", body: "{}" });
-    const { tokenLoad, ...nextState } = result;
-    state = nextState;
-    render();
-    const failed = tokenLoad.failed.length;
-    showNotice(
-      `Đã nạp ${tokenLoad.loaded} token mới, ${tokenLoad.skipped} tài khoản đã có sẵn${failed ? `, ${failed} tài khoản cần đăng nhập lại` : ""}.`,
-      failed ? "warning" : "success",
-    );
-  } catch (error) {
-    showNotice(error.message);
-  } finally {
-    setBusy(elements.loadTokens, false);
-  }
-}
-
-async function addAccount() {
-  setBusy(elements.addAccount, true, "Đang thêm…");
+async function addAccount(platform) {
+  setBusy(el.addAccount, true, "Đang thêm…");
   const previousIds = new Set(state.accounts.map((account) => account.id));
   try {
     state = await api("/api/accounts", {
       method: "POST",
-      body: JSON.stringify({ name: nextAccountName(), platform: elements.accountPlatform.value }),
+      body: JSON.stringify({ name: nextAccountName(), platform }),
     });
     const account = state.accounts.find((item) => !previousIds.has(item.id));
-    selectedAccountId = account?.id || state.accounts.at(-1)?.id;
     render();
-    if (account) {
+    if (account) openDrawer(account.id);
+    if (account && isLocalMachine) {
       await api(`/api/accounts/${encodeURIComponent(account.id)}/browser/login`, {
         method: "POST",
-        body: JSON.stringify({ targetUrl: channelUrlFor(account.platform) || undefined }),
+        body: JSON.stringify({ targetUrl: channelLinksFor(platform)[0] || undefined }),
       });
       await refreshState();
-      showNotice(`Đã tạo phiên mới. Hãy đăng nhập trong Chrome; tên sẽ tự đồng bộ.`, "success");
+      notify("Đã mở Chrome cho tài khoản mới. Đăng nhập xong, tên và token sẽ tự đồng bộ.", "success");
+    } else if (account) {
+      notify(`Đã thêm tài khoản ${platformName(platform)}. Đăng nhập trong bảng chi tiết để lấy token.`, "success");
     }
   } catch (error) {
-    showNotice(error.message);
+    notify(error.message);
   } finally {
-    setBusy(elements.addAccount, false);
+    setBusy(el.addAccount, false);
+  }
+}
+
+for (const item of $$("[data-add-platform]")) {
+  item.addEventListener("click", () => addAccount(item.dataset.addPlatform));
+}
+
+async function loadTokens() {
+  setBusy(el.loadTokens, true, "Đang nạp token…");
+  try {
+    const { tokenLoad, ...nextState } = await api("/api/accounts/tokens/load", { method: "POST", body: "{}" });
+    state = nextState;
+    render();
+    const failed = tokenLoad.failed.length;
+    notify(
+      `Đã nạp ${fmt(tokenLoad.loaded)} token mới, ${fmt(tokenLoad.skipped)} tài khoản đã có sẵn${failed ? `, ${fmt(failed)} tài khoản cần đăng nhập lại` : ""}.`,
+      failed ? "warning" : "success",
+    );
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.loadTokens, false);
+  }
+}
+el.loadTokens.addEventListener("click", loadTokens);
+el.loadTokens.hidden = !isLocalMachine;
+
+/* ---------- Account drawer ---------- */
+
+let drawerReturnFocus = null;
+
+function openDrawer(accountId) {
+  selectedAccountId = accountId;
+  if (el.drawer.hidden) drawerReturnFocus = document.activeElement;
+  el.drawer.hidden = false;
+  renderDrawer({ force: true });
+  if (currentView === "accounts") renderAccounts();
+  window.requestAnimationFrame(() => $(".drawer-panel [data-drawer-close].icon-btn")?.focus());
+}
+
+function closeDrawer() {
+  el.drawer.hidden = true;
+  if (currentView === "accounts") renderAccounts();
+  drawerReturnFocus?.focus?.();
+}
+
+for (const closer of $$("[data-drawer-close]")) closer.addEventListener("click", closeDrawer);
+
+function drawerSection(title, description, ...children) {
+  return h("section", { class: "drawer-section" },
+    h("h3", {}, title),
+    description ? h("p", {}, description) : null,
+    ...children,
+  );
+}
+
+function credentialLine(label, value, copyMessage) {
+  return h("div", { class: "cred" },
+    h("div", {}, h("small", {}, label), h("code", {}, value)),
+    h("button", {
+      class: "icon-btn",
+      type: "button",
+      title: `Copy ${label.toLowerCase()}`,
+      "aria-label": `Copy ${label.toLowerCase()}`,
+      onclick: () => copyText(value, copyMessage),
+    }, icon("copy")),
+  );
+}
+
+async function openAccountBrowser(account, button, profile = false) {
+  setBusy(button, true, "Đang mở…");
+  try {
+    const suffix = profile ? "profile" : account.session?.loginState === "signed_out" ? "login" : "open";
+    await api(`/api/accounts/${encodeURIComponent(account.id)}/browser/${suffix}`, {
+      method: "POST",
+      body: profile ? "{}" : JSON.stringify({ targetUrl: channelLinksFor(account.platform)[0] || undefined }),
+    });
+    await refreshState();
+    notify(
+      suffix === "login"
+        ? "Hãy đăng nhập trong Chrome. Đăng nhập xong, cửa sổ tự đóng và token được lưu."
+        : `Đã mở Chrome cho “${accountLabel(account)}”.`,
+      "success",
+    );
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(button, false);
   }
 }
 
 async function deleteAccount(account) {
-  if (!window.confirm(`Xóa “${accountLabel(account)}” và toàn bộ session đăng nhập của tài khoản này?`)) return;
+  const confirmed = await confirmAction({
+    title: `Xóa “${accountLabel(account)}”?`,
+    message: "Tài khoản, token và hồ sơ đăng nhập của nó sẽ bị xóa khỏi máy chủ.",
+    confirmLabel: "Xóa tài khoản",
+    danger: true,
+  });
+  if (!confirmed) return;
   try {
     state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, { method: "DELETE" });
-    selectedAccountId = state.accounts[0]?.id || null;
+    closeDrawer();
     render();
-    showNotice(`Đã xóa “${accountLabel(account)}”.`, "success");
+    notify(`Đã xóa “${accountLabel(account)}”.`, "success");
   } catch (error) {
-    showNotice(error.message);
+    notify(error.message);
   }
 }
 
-for (const button of document.querySelectorAll("[data-view]")) {
-  button.addEventListener("click", () => switchView(button.dataset.view));
-}
-for (const button of document.querySelectorAll("[data-go-view]")) {
-  button.addEventListener("click", () => switchView(button.dataset.goView));
-}
+function renderDrawer({ force = false } = {}) {
+  if (el.drawer.hidden || !state) return;
+  const account = state.accounts.find((item) => item.id === selectedAccountId);
+  if (!account) {
+    closeDrawer();
+    return;
+  }
+  // Do not wipe what the user is typing in the drawer during background refreshes.
+  if (!force && el.drawer.contains(document.activeElement) && document.activeElement.matches("input, textarea")) return;
 
-const messageQueueControls = {
-  gosh: {
-    form: elements.goshMessageForm,
-    content: elements.goshMessageContent,
-    clear: elements.clearGoshMessages,
-  },
-  loco: {
-    form: elements.locoMessageForm,
-    content: elements.locoMessageContent,
-    clear: elements.clearLocoMessages,
-  },
-  gaquaytv: {
-    form: elements.gaquaytvMessageForm,
-    content: elements.gaquaytvMessageContent,
-    clear: elements.clearGaquaytvMessages,
-  },
-};
+  const running = isRunning();
+  const token = tokenPresentation(account);
+  const platform = platformName(account.platform);
+  const supportsApiLogin = account.platform === "gosh" || account.platform === "gaquaytv";
+  el.drawerTitle.textContent = accountLabel(account);
+  el.drawerSub.textContent = `${platform} · ${token.label}`;
 
-for (const [platform, controls] of Object.entries(messageQueueControls)) {
-  controls.form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const raw = controls.content.value.trim();
-    if (!raw) return;
-    try {
-      state = await api("/api/messages", {
-        method: "POST",
-        body: JSON.stringify({ content: raw, platform }),
-      });
-      controls.content.value = "";
-      render();
-    } catch (error) {
-      showNotice(error.message);
-    }
-  });
+  const sections = [];
 
-  controls.clear.addEventListener("click", async () => {
-    const count = state.messagesByPlatform?.[platform]?.length || 0;
-    if (!count || !window.confirm(`Xóa toàn bộ ${count} mẫu bình luận ${platformName(platform)}?`)) return;
+  const participate = h("input", { type: "checkbox", role: "switch", checked: account.enabled, disabled: running });
+  participate.addEventListener("change", () => setAccountEnabled(account, participate.checked));
+  const tokenUpdated = account.session?.tokenUpdatedAt
+    ? new Date(account.session.tokenUpdatedAt).toLocaleString("vi-VN")
+    : null;
+  sections.push(drawerSection("Tổng quan", null,
+    h("label", { class: "switch-field" }, participate, h("span", { class: "switch", "aria-hidden": "true" }), "Tham gia chiến dịch"),
+    h("dl", { class: "facts" },
+      h("dt", {}, "Token"),
+      h("dd", { class: "cell-status", title: token.title || "" }, h("span", { class: `dot ${token.tone}` }), h("span", {}, token.title ? `${token.label}: ${token.title}` : token.label)),
+      tokenUpdated ? [h("dt", {}, "Cập nhật token"), h("dd", {}, tokenUpdated)] : null,
+      h("dt", {}, "Tên nội bộ"),
+      h("dd", {}, account.name),
+      h("dt", {}, "ID"),
+      h("dd", { class: "mono" }, account.id),
+    ),
+  ));
 
-    const label = controls.clear.textContent;
-    controls.clear.disabled = true;
-    controls.clear.textContent = "Đang xóa…";
-    try {
-      state = await api(`/api/messages?platform=${platform}`, { method: "DELETE" });
-      render();
-      showNotice(`Đã xóa ${count} mẫu ${platformName(platform)}.`, "success");
-    } catch (error) {
-      showNotice(error.message);
-    } finally {
-      controls.clear.textContent = label;
-      render();
-    }
-  });
-
-  controls.content.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+  if (supportsApiLogin) {
+    const user = h("input", { type: "text", placeholder: "Email hoặc tên đăng nhập", autocomplete: "off", "aria-label": `Tài khoản ${platform}` });
+    const pass = h("input", { type: "password", placeholder: "Mật khẩu", autocomplete: "new-password", "aria-label": `Mật khẩu ${platform}` });
+    user.value = account.loginInfo?.username || "";
+    pass.value = account.loginInfo?.password || "";
+    const submit = h("button", { class: "btn btn-primary", type: "submit" }, "Đăng nhập và lấy token");
+    user.disabled = pass.disabled = submit.disabled = running;
+    const form = h("form", { class: "field" }, user, pass, submit);
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      controls.form.requestSubmit();
+      if (!user.value.trim() || !pass.value) {
+        notify("Nhập tài khoản và mật khẩu.", "warning");
+        return;
+      }
+      setBusy(submit, true, "Đang đăng nhập…");
+      try {
+        state = await api(`/api/accounts/${encodeURIComponent(account.id)}/login`, {
+          method: "POST",
+          body: JSON.stringify({ usernameOrEmail: user.value.trim(), password: pass.value }),
+        });
+        notify(`Đăng nhập ${platform} thành công, đã lưu token.`, "success");
+        render();
+        renderDrawer({ force: true });
+      } catch (error) {
+        notify(error.message);
+      } finally {
+        setBusy(submit, false);
+      }
+    });
+    sections.push(drawerSection("Đăng nhập", `Đăng nhập trực tiếp qua API ${platform}, không cần mở Chrome.`, form));
+  }
+
+  if (account.loginInfo?.username && account.loginInfo?.password) {
+    const pair = `${account.loginInfo.username} | ${account.loginInfo.password}`;
+    sections.push(drawerSection("Thông tin đăng nhập đã lưu", null,
+      credentialLine("Username", account.loginInfo.username, "Đã copy username."),
+      credentialLine("Password", account.loginInfo.password, "Đã copy mật khẩu."),
+      h("button", { class: "btn btn-secondary btn-sm", type: "button", onclick: () => copyText(pair, "Đã copy username | password.") },
+        icon("copy"), "Copy cả hai"),
+    ));
+  }
+
+  if (supportsApiLogin) {
+    const nameInput = h("input", { type: "text", maxLength: 20, placeholder: "Tên mới", "aria-label": "Tên hiển thị mới" });
+    const nameSubmit = h("button", { class: "btn btn-secondary", type: "submit" }, "Cập nhật");
+    nameInput.disabled = nameSubmit.disabled = running;
+    const form = h("form", { class: "drawer-row" }, nameInput, nameSubmit);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!nameInput.value.trim()) return;
+      setBusy(nameSubmit, true, "Đang đổi…");
+      try {
+        const response = await api(`/api/accounts/${encodeURIComponent(account.id)}/display-name`, {
+          method: "POST",
+          body: JSON.stringify({ displayName: nameInput.value }),
+        });
+        nameInput.value = "";
+        // The endpoint returns only the operation result; refresh so the list shows the new name.
+        await refreshState();
+        renderDrawer({ force: true });
+        notify(`Đã đổi tên thành “${response.result.displayName}”.`, "success");
+      } catch (error) {
+        notify(error.message);
+      } finally {
+        setBusy(nameSubmit, false);
+      }
+    });
+    sections.push(drawerSection("Tên hiển thị", `Tên đang hiện trên ${platform}: ${accountLabel(account)}. Tối đa 20 ký tự.`, form));
+  }
+
+  const proxyInput = h("input", { type: "text", class: "mono", placeholder: "http://user:pass@host:port", "aria-label": "Proxy", autocomplete: "off" });
+  proxyInput.value = account.proxy || "";
+  const proxySubmit = h("button", { class: "btn btn-secondary", type: "submit" }, "Lưu");
+  proxyInput.disabled = proxySubmit.disabled = running;
+  const proxyForm = h("form", { class: "drawer-row" }, proxyInput, proxySubmit);
+  proxyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setBusy(proxySubmit, true, "Đang lưu…");
+    try {
+      state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ proxy: proxyInput.value.trim() }),
+      });
+      render();
+      renderDrawer({ force: true });
+      notify(proxyInput.value.trim() ? "Đã lưu proxy." : "Đã bỏ proxy.", "success");
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setBusy(proxySubmit, false);
     }
   });
-}
+  sections.push(drawerSection("Proxy", "Chỉ hỗ trợ HTTP/HTTPS: http://user:pass@host:port hoặc host:port:user:pass. Để trống nếu không dùng.", proxyForm));
 
-for (const control of [elements.delaySeconds, elements.displayNames, elements.renameEveryComments]) {
-  control.addEventListener("input", queueSettingsSave);
-  control.addEventListener("change", queueSettingsSave);
-}
-for (const control of [elements.channelUrlGosh, elements.channelUrlLoco, elements.channelUrlGaquaytv]) {
-  control.addEventListener("input", queueSettingsSave);
-  control.addEventListener("change", queueSettingsSave);
-  control.addEventListener("blur", queueSettingsSave);
-}
-
-elements.addAccount.addEventListener("click", addAccount);
-elements.loadTokens.addEventListener("click", loadTokens);
-elements.refreshStatus.addEventListener("click", async () => {
-  elements.refreshStatus.disabled = true;
-  elements.refreshStatus.classList.add("is-spinning");
-  try { await refreshState(); } catch (error) { showNotice(error.message); }
-  finally {
-    elements.refreshStatus.disabled = false;
-    elements.refreshStatus.classList.remove("is-spinning");
+  if (isLocalMachine) {
+    const openButton = h("button", { class: "btn btn-secondary", type: "button" },
+      account.session?.loginState === "signed_out" ? "Đăng nhập trong Chrome" : "Mở Chrome");
+    const profileButton = h("button", { class: "btn btn-ghost", type: "button" }, "Mở hồ sơ");
+    openButton.disabled = profileButton.disabled = running;
+    openButton.addEventListener("click", () => openAccountBrowser(account, openButton));
+    profileButton.addEventListener("click", () => openAccountBrowser(account, profileButton, true));
+    sections.push(drawerSection("Trình duyệt trên máy chủ", "Mở hồ sơ Chrome riêng của tài khoản này.", h("div", { class: "drawer-row" }, openButton, profileButton)));
   }
-});
 
-elements.checkHealth.addEventListener("click", async () => {
-  setBusy(elements.checkHealth, true, "Đang kiểm tra…");
+  const remove = h("button", { class: "btn btn-danger-ghost btn-sm", type: "button" }, icon("trash-2"), "Xóa tài khoản");
+  remove.disabled = running || state.accounts.length === 1;
+  remove.addEventListener("click", () => deleteAccount(account));
+  sections.push(drawerSection("Xóa tài khoản", "Xóa tài khoản cùng token và hồ sơ đăng nhập. Không thể hoàn tác.", h("div", {}, remove)));
+
+  el.drawerBody.replaceChildren(...sections);
+}
+
+/* ---------- System ---------- */
+
+function healthLabel(item) {
+  if (item.status === "up" && [401, 403].includes(item.httpStatus)) return { text: "Có phản hồi, cần đăng nhập", tone: "warn" };
+  if (item.status === "up") return { text: "Hoạt động", tone: "ok" };
+  if (item.status === "degraded") return { text: "Chậm hoặc bị giới hạn", tone: "warn" };
+  if (item.status === "down") return { text: "Không phản hồi", tone: "err" };
+  return { text: "Chưa kiểm tra", tone: "" };
+}
+
+function renderHealth() {
+  const checked = healthChecks.filter((item) => item.checkedAt);
+  const down = checked.filter((item) => item.status === "down").length;
+  el.healthSummary.textContent = !checked.length
+    ? "Đo phản hồi của các endpoint Gosh, Loco và GaQuayTV mà công cụ đang dùng."
+    : down ? `${down}/${checked.length} endpoint đang lỗi.` : `Cả ${checked.length} endpoint đều phản hồi.`;
+  el.healthEmpty.hidden = checked.length > 0;
+  el.healthList.parentElement.hidden = !checked.length;
+  el.healthList.replaceChildren(...checked.map((item) => {
+    const label = healthLabel(item);
+    let path = item.url;
+    try {
+      const url = new URL(item.url);
+      path = url.pathname + url.search;
+    } catch {}
+    return h("li", {},
+      h("span", { class: "account-name" },
+        h("strong", { class: "cell-status" }, h("span", { class: `dot ${label.tone}` }), h("span", {}, `${platformName(item.platform)} · ${item.name}`)),
+        h("span", { title: item.error || "" }, item.error || label.text),
+      ),
+      h("code", { class: "col-endpoint cell-truncate", title: item.url }, path),
+      h("span", { class: "tabular" }, item.httpStatus ?? "—"),
+      h("span", { class: "tabular cell-muted" }, item.latencyMs == null ? "—" : `${item.latencyMs} ms`),
+    );
+  }));
+
+  el.observedCount.textContent = String(observedEndpoints.length);
+  el.observedEmpty.hidden = observedEndpoints.length > 0;
+  el.observedList.parentElement.hidden = !observedEndpoints.length;
+  el.observedList.replaceChildren(...observedEndpoints.map((item) => {
+    let time = "vừa xong";
+    const seen = new Date(item.lastSeen);
+    if (!Number.isNaN(seen.getTime())) time = formatClock(seen);
+    return h("li", {},
+      h("span", { class: "cell-truncate" }, item.name || item.category),
+      h("code", { class: "col-endpoint cell-truncate", title: item.fullUrl }, `${item.host}${item.path}`),
+      h("span", { class: "cell-muted" }, `${item.method || "GET"} ${item.status || 200}`),
+      h("span", { class: "tabular cell-muted" }, time),
+    );
+  }));
+}
+
+el.checkHealth.addEventListener("click", async () => {
+  setBusy(el.checkHealth, true, "Đang kiểm tra…");
   try {
     const [result, observed] = await Promise.all([
       api("/api/health/check", { method: "POST" }),
@@ -1436,120 +2089,224 @@ elements.checkHealth.addEventListener("click", async () => {
     healthChecks = result.checks || [];
     observedEndpoints = observed.endpoints || [];
     renderHealth();
-    renderAggregateStatus();
+    renderChrome();
     const down = healthChecks.filter((item) => item.status === "down").length;
-    showNotice(down ? `Có ${down} endpoint đang lỗi.` : "Tất cả endpoint đang hoạt động.", down ? "warning" : "success");
+    notify(down ? `Có ${down} endpoint đang lỗi.` : "Tất cả endpoint đều phản hồi.", down ? "warning" : "success");
   } catch (error) {
-    showNotice(error.message);
+    notify(error.message);
   } finally {
-    setBusy(elements.checkHealth, false);
+    setBusy(el.checkHealth, false);
   }
 });
 
-elements.sendNext.addEventListener("click", async () => {
-  setBusy(elements.sendNext, true, "Đang gửi…");
+el.webPasswordForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setBusy(el.webPasswordSubmit, true, "Đang lưu…");
+  el.webPasswordStatus.textContent = "";
   try {
-    await flushSettingsBeforeSend();
-    state = await api("/api/comments/send-next", { method: "POST" });
-    render();
-    const result = state.result;
-    const linkCount = result?.totalLinks || result?.successCount || 0;
-    if (result?.failureCount) {
-      showNotice(`Đã gửi ${result.successCount}/${linkCount} link; ${result.failureCount} link lỗi.`, "warning");
-    } else {
-      showNotice(`Đã gửi song song tới ${linkCount} link.`, "success");
-    }
-  } catch (error) {
-    showNotice(error.message);
-  } finally {
-    setBusy(elements.sendNext, false);
-    renderBulkSend();
-  }
-});
-
-elements.sendAll.addEventListener("click", async () => {
-  setBusy(elements.sendAll, true, "Đang bắt đầu…");
-  try {
-    await flushSettingsBeforeSend();
-    state = await api("/api/comments/send-all", { method: "POST" });
-    activeBulkRun = state.bulkSend.startedAt;
-    render();
-    showNotice(`Đã bắt đầu ${state.bulkSend.total} lượt gửi.`, "success");
-  } catch (error) {
-    showNotice(error.message);
-  } finally {
-    setBusy(elements.sendAll, false);
-    renderBulkSend();
-  }
-});
-
-elements.scheduleEnabled.addEventListener("change", async () => {
-  const enabled = elements.scheduleEnabled.checked;
-  elements.scheduleEnabled.disabled = true;
-  try {
-    state = await api("/api/schedule", { method: "PUT", body: JSON.stringify({ enabled }) });
-    render();
-    const error = state.scheduleStatus?.error;
-    if (enabled && error) showNotice(`Đã bật lịch nhưng chưa gửi được: ${error}`, "warning");
-    else showNotice(enabled ? "Đã bật lịch bình luận." : "Đã tắt lịch bình luận.", "success");
-  } catch (error) {
-    showNotice(error.message);
-    render();
-  } finally {
-    elements.scheduleEnabled.disabled = false;
-  }
-});
-
-elements.addScheduleSlot.addEventListener("click", async () => {
-  setBusy(elements.addScheduleSlot, true, "Đang thêm…");
-  try {
-    // New slots start switched off so they cannot begin sending before they are set up.
-    state = await api("/api/schedule/slots", {
+    const result = await api("/api/auth/password", {
       method: "POST",
-      body: JSON.stringify({ start: "19:30", end: "21:30", days: DAY_OPTIONS.map(([day]) => day), enabled: false }),
+      body: JSON.stringify({
+        newUsername: el.webNewUsername.value,
+        currentPassword: el.webCurrentPassword.value,
+        newPassword: el.webNewPassword.value,
+      }),
     });
-    scheduleSlotsKey = "";
-    render();
+    el.webCurrentPassword.value = "";
+    el.webNewPassword.value = "";
+    setAuthenticatedUi(result.username, true);
+    el.webPasswordStatus.textContent = "Đã cập nhật";
+    el.webPasswordStatus.className = "save-state success";
+    notify("Đã cập nhật tài khoản quản trị.", "success");
   } catch (error) {
-    showNotice(error.message);
+    el.webPasswordStatus.textContent = error.message;
+    el.webPasswordStatus.className = "save-state error";
   } finally {
-    setBusy(elements.addScheduleSlot, false);
+    setBusy(el.webPasswordSubmit, false);
   }
 });
 
-elements.stopBulk.addEventListener("click", async () => {
-  if (!window.confirm("Dừng lượt gửi đang chạy?")) return;
-  setBusy(elements.stopBulk, true, "Đang dừng…");
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  writePref("alc-theme", theme);
+}
+const savedTheme = readPref("alc-theme", "dark");
+for (const radio of $$("input[name='theme']")) {
+  radio.checked = radio.value === savedTheme;
+  radio.addEventListener("change", () => applyTheme(radio.value));
+}
+
+let appVersionCached = "";
+async function updateVersionDisplay() {
+  if (!appVersionCached && window.desktopUpdater?.getVersion) {
+    try { appVersionCached = await window.desktopUpdater.getVersion(); } catch {}
+  }
+  if (!appVersionCached && state?.version) appVersionCached = state.version;
+  if (!appVersionCached) return;
+  const formatted = appVersionCached.startsWith("v") ? appVersionCached : `v${appVersionCached}`;
+  el.appVersion.textContent = formatted;
+  el.settingsAppVersion.textContent = `Phiên bản ${formatted}`;
+}
+
+function setUpdateStatus(message, type = "") {
+  el.updateStatus.textContent = message;
+  el.updateStatus.className = `save-state${type ? ` ${type}` : ""}`;
+}
+
+if (window.desktopUpdater) {
+  el.checkUpdate.addEventListener("click", async () => {
+    setBusy(el.checkUpdate, true, "Đang kiểm tra…");
+    try {
+      const result = await window.desktopUpdater.check();
+      if (result.status === "available") setUpdateStatus(`Có bản ${result.version}, đang tải`, "saving");
+      else if (result.status === "up-to-date") setUpdateStatus("Đang dùng bản mới nhất", "success");
+      else setUpdateStatus(result.message || "Không thể kiểm tra", "error");
+    } catch (error) {
+      setUpdateStatus(error.message, "error");
+    } finally {
+      setBusy(el.checkUpdate, false);
+    }
+  });
+  window.desktopUpdater.onStatus((event) => {
+    if (event.status === "downloading") setUpdateStatus(`Đang tải ${event.percent}%`, "saving");
+    else if (event.status === "downloaded") setUpdateStatus("Đã tải xong. Đóng ứng dụng để cài bản mới.", "success");
+    else if (event.status === "available") setUpdateStatus(`Có bản ${event.version}, đang tải`, "saving");
+    else if (event.status === "error") setUpdateStatus(event.message, "error");
+  });
+} else {
+  el.checkUpdate.hidden = true;
+  setUpdateStatus("Cập nhật được thực hiện trên ứng dụng desktop.");
+}
+
+/* ---------- Render loop ---------- */
+
+function render() {
+  if (!state) return;
+  void updateVersionDisplay();
+  renderChrome();
+  renderRunBanner();
+  renderSettings();
+  renderLive();
+  renderSchedule();
+  renderFollow();
+  if (currentView === "accounts") renderAccounts();
+  else renderDrawer();
+  if (currentView === "system") renderHealth();
+  pollBulkSend();
+}
+
+async function refreshState() {
+  state = await api("/api/state");
+  render();
+}
+
+el.refreshStatus.addEventListener("click", async () => {
+  el.refreshStatus.disabled = true;
+  el.refreshStatus.classList.add("is-spinning");
   try {
-    state = await api("/api/comments/send-all/stop", { method: "POST" });
-    render();
+    await refreshState();
   } catch (error) {
-    showNotice(error.message);
+    notify(error.message);
   } finally {
-    setBusy(elements.stopBulk, false);
+    el.refreshStatus.disabled = false;
+    el.refreshStatus.classList.remove("is-spinning");
   }
 });
 
-void updateVersionDisplay();
-window.setInterval(tickScheduleClock, 1000);
+/* ---------- Auth ---------- */
 
-Promise.all([refreshState(), api("/api/health"), api("/api/endpoints/observed").catch(() => ({ endpoints: [] }))])
-  .then(([, health, observed]) => {
-    healthChecks = health.checks || [];
-    observedEndpoints = observed.endpoints || [];
-    render();
+function showLogin(usernameHint = "") {
+  webAuthenticated = false;
+  el.loginOverlay.hidden = false;
+  el.logoutBtn.hidden = true;
+  el.logoutBtnSecondary.hidden = true;
+  if (usernameHint && !el.loginUsername.value) el.loginUsername.value = usernameHint;
+  (el.loginUsername.value ? el.loginPassword : el.loginUsername).focus();
+}
+
+function setAuthenticatedUi(username = "admin", requireAuth = true) {
+  webAuthenticated = true;
+  el.loginOverlay.hidden = true;
+  el.authUser.textContent = requireAuth ? username : "Máy chủ cục bộ";
+  el.authUser.title = requireAuth ? `Đăng nhập với ${username}` : "";
+  el.logoutBtn.hidden = !requireAuth;
+  el.logoutBtnSecondary.hidden = !requireAuth;
+  if (!el.webNewUsername.value) el.webNewUsername.value = username;
+}
+
+el.loginTogglePass.addEventListener("click", () => {
+  const hidden = el.loginPassword.type === "password";
+  el.loginPassword.type = hidden ? "text" : "password";
+  el.loginTogglePass.textContent = hidden ? "Ẩn" : "Hiện";
+});
+
+el.loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  el.loginError.hidden = true;
+  setBusy(el.loginSubmit, true, "Đang đăng nhập…");
+  try {
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: el.loginUsername.value, password: el.loginPassword.value }),
+    });
+    el.loginPassword.value = "";
+    setAuthenticatedUi(result.username, true);
+    await bootDashboard();
+  } catch (error) {
+    el.loginError.textContent = error.message;
+    el.loginError.hidden = false;
+  } finally {
+    setBusy(el.loginSubmit, false);
+  }
+});
+
+async function logout() {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch {}
+  showLogin();
+}
+el.logoutBtn.addEventListener("click", logout);
+el.logoutBtnSecondary.addEventListener("click", logout);
+
+/* ---------- Boot ---------- */
+
+async function bootDashboard() {
+  const [, health, observed] = await Promise.all([
+    refreshState(),
+    api("/api/health").catch(() => ({ checks: [] })),
+    api("/api/endpoints/observed").catch(() => ({ endpoints: [] })),
+  ]);
+  healthChecks = health.checks || [];
+  observedEndpoints = observed.endpoints || [];
+  render();
+}
+
+buildPlatformPanels();
+renderFollowHistory();
+switchView(VIEWS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "live");
+void updateVersionDisplay();
+window.setInterval(tickClock, 1000);
+
+api("/api/auth/status")
+  .then((auth) => {
+    if (!auth.authenticated) {
+      showLogin(auth.username || "admin");
+      return;
+    }
+    setAuthenticatedUi(auth.username || "admin", auth.requireAuth);
+    return bootDashboard();
   })
-  .catch((error) => showNotice(error.message));
+  .catch((error) => notify(error.message));
 
 window.setInterval(async () => {
-  if (document.hidden || statusRefreshRunning || state?.bulkSend?.running) return;
-  if (currentView === "accounts" && ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  if (!webAuthenticated || document.hidden || statusRefreshRunning || isRunning()) return;
+  const focused = document.activeElement;
+  if ((currentView === "accounts" || !el.drawer.hidden) && ["INPUT", "TEXTAREA"].includes(focused?.tagName)) return;
   statusRefreshRunning = true;
   try {
     state = await api("/api/state");
     render();
   } catch {
-    // Keep the last known state; explicit refresh still reports errors.
+    // Keep the last known state; an explicit refresh still reports errors.
   } finally {
     statusRefreshRunning = false;
   }
