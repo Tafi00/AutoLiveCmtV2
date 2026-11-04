@@ -2,12 +2,23 @@
 // sites' own APIs with the account's saved tokens. No browser is involved, so
 // the cost of a send does not grow with the number of configured accounts.
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import dns from "node:dns";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fetch as undiciFetch, ProxyAgent, WebSocket as UndiciWebSocket } from "undici";
+import net from "node:net";
 import { getGaquaytvRoomId, getLocoStreamId } from "./platforms.js";
 import { parseProxy } from "./store.js";
 
+const moduleRequire = createRequire(import.meta.url);
+let undiciModule = null;
+try {
+  undiciModule = moduleRequire("undici");
+} catch {}
+const undiciFetch = undiciModule?.fetch || globalThis.fetch;
+const ProxyAgent = undiciModule?.ProxyAgent || null;
+const UndiciWebSocket = undiciModule?.WebSocket || globalThis.WebSocket;
+dns.setDefaultResultOrder("ipv4first");
+net.setDefaultAutoSelectFamily?.(false);
 export const BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -40,7 +51,7 @@ export function proxyDispatcher(proxy) {
   if (parsed.username) {
     options.token = `Basic ${Buffer.from(`${parsed.username}:${parsed.password ?? ""}`).toString("base64")}`;
   }
-  const dispatcher = new ProxyAgent(options);
+  const dispatcher = ProxyAgent ? new ProxyAgent(options) : options;
   proxyDispatchers.set(raw, dispatcher);
   return dispatcher;
 }
@@ -608,9 +619,11 @@ export async function locoSendComment({ streamId, content, credentials, sessionU
 /* ---------------------------------------------------------------------- Gosh */
 
 export const GOSH_API = "https://api.gosh.com";
+export const GOSH_TYPEX_API = "https://api-coco.typex.im";
+export const GOSH_DEFAULT_NAME_COLOR = "#FFE1A6";
 export const GOSH_IM_SDK_APP_ID = 20011275;
+export const GOSH_DEFAULT_SM_BOX_ID = "BMx5KRxL+3UH7r+zDSSJTmakGUFAtOZ2MxH0xnw83spUYeMr7xg5cUynRml8EvnuhujLts/2UDbCUtVrFmLq76Q==";
 const GOSH_WEB_VERSION = "3.9.2";
-// The website signs requests from the pc client with this key (the "web"
 // client uses a different one).
 const GOSH_PC_SIGN_KEY = "A7fQ9K2mX8Zp4R3L";
 // Fields the website strips before echoing the account inside chat payloads.
@@ -628,11 +641,11 @@ export function goshSignature({ did, uid, ts, method, path, body }) {
 
 export async function goshRequest(path, { method = "GET", query = {}, body, credentials, dispatcher, fetchImpl } = {}) {
   const ts = String(Math.floor(Date.now() / 1000));
-  const did = credentials?.did || "";
+  const did = credentials?.did || randomUUID().replace(/-/g, "");
   const uid = credentials?.uid || "0";
   const base = {
-    app: "kick", bid: "26", ch: "website", ctry: credentials?.ctry || "", did, lang: "en", os: "Windows",
-    pf: "pc", uid, us: "0", vsn: GOSH_WEB_VERSION, _fbp: "", _fbc: "", smid: "", sid: "", ts,
+    app: "kick", bid: "26", ch: "website", ctry: credentials?.ctry || "VN", did, lang: "en", os: "Windows",
+    pf: "pc", uid, vsn: GOSH_WEB_VERSION, _fbp: "", _fbc: "", smid: "", sid: "", ts,
   };
   const bodyText = method === "POST" ? JSON.stringify(body || {}) : undefined;
   const signature = goshSignature({ did, uid, ts, method, path: path.split("?")[0], body: bodyText });
@@ -691,6 +704,77 @@ export async function resolveGoshRoom(channelUrl, { dispatcher, fetchImpl } = {}
   });
 }
 
+export async function goshLogin({
+  usernameOrEmail,
+  password,
+  smBoxId = GOSH_DEFAULT_SM_BOX_ID,
+  dispatcher,
+  fetchImpl,
+} = {}) {
+  const cleanAccount = String(usernameOrEmail || "").trim();
+  const cleanPassword = String(password || "");
+  if (!cleanAccount || !cleanPassword) {
+    throw new Error("Vui lòng nhập đầy đủ Email/Tài khoản và Mật khẩu Gosh.");
+  }
+  const did = randomUUID().replace(/-/g, "");
+  const data = await goshRequest("/gosh_base/app/user/login", {
+    method: "POST",
+    credentials: { did, uid: "0", ctry: "VN" },
+    body: {
+      account_type: 9,
+      account_id: cleanAccount,
+      password: cleanPassword,
+      sm_box_id: smBoxId || GOSH_DEFAULT_SM_BOX_ID,
+      is_use_password: true,
+    },
+    dispatcher,
+    fetchImpl,
+  });
+  if (!data?.token || !data?.user?.id) {
+    throw new Error("Gosh không trả về token khi đăng nhập bằng mật khẩu.");
+  }
+  return {
+    token: String(data.token),
+    uid: String(data.user.id),
+    did: String(data.user.login_did || did),
+    timUserSig: String(data.tim_user_sig || ""),
+    ctry: String(data.user.country || "VN"),
+    email: cleanAccount,
+    password: cleanPassword,
+    nickname: String(data.user.nickname || ""),
+  };
+}
+
+export async function goshRefresh({ credentials, dispatcher, fetchImpl }) {
+  if (credentials?.token) {
+    try {
+      const data = await goshRequest("/gosh_base/app/user/refresh_token", {
+        method: "POST",
+        body: {},
+        credentials,
+        dispatcher,
+        fetchImpl,
+      });
+      if (data?.token) {
+        return {
+          ...credentials,
+          token: String(data.token),
+          ...(data.tim_user_sig ? { timUserSig: String(data.tim_user_sig) } : {}),
+        };
+      }
+    } catch {}
+  }
+  if (credentials?.email && credentials?.password) {
+    return goshLogin({
+      usernameOrEmail: credentials.email,
+      password: credentials.password,
+      dispatcher,
+      fetchImpl,
+    });
+  }
+  throw loginRequiredError("Phiên Gosh đã hết hạn.");
+}
+
 export async function goshAccount({ credentials, dispatcher, fetchImpl }) {
   const data = await goshRequest("/gosh_base/app/user/user_info", {
     query: { user_id: credentials.uid },
@@ -707,6 +791,7 @@ export function goshChatUser(account, displayName = "") {
   for (const key of GOSH_PRIVATE_ACCOUNT_FIELDS) delete user[key];
   const cleanName = String(displayName || "").trim();
   if (cleanName) user.nickname = cleanName;
+  if (!user.name_color) user.name_color = GOSH_DEFAULT_NAME_COLOR;
   return user;
 }
 
@@ -714,8 +799,8 @@ export function goshChatPayload({ user, liveId, content }) {
   const requestId = randomUUID();
   return JSON.stringify({
     type: 10_000,
-    msg_id: 0,
-    user,
+    msg_id: Date.now(),
+    user: user?.name_color ? user : { ...user, name_color: GOSH_DEFAULT_NAME_COLOR },
     data: {
       text: content,
       rich_content: [{ type: "text", text: content }],
@@ -748,6 +833,51 @@ export async function goshUpdateDisplayName({ displayName, credentials, dispatch
   return data.user ? { ...account, ...data.user } : { ...account, nickname: displayName };
 }
 
+export function goshTargetUid(channelUrlOrUid) {
+  const raw = String(channelUrlOrUid || "").trim();
+  if (/^\d+$/.test(raw)) return raw;
+  const fromUrl = goshAnchorId(raw);
+  if (fromUrl) return fromUrl;
+  const tailDigits = raw.match(/\/(\d+)(?:[/?#]|$)/)?.[1];
+  return tailDigits || "";
+}
+
+export async function goshChannelProfile(channelUrlOrUid, { credentials, dispatcher, fetchImpl } = {}) {
+  const targetUid = goshTargetUid(channelUrlOrUid);
+  if (!targetUid) throw new Error("URL hoặc UID kênh Gosh không hợp lệ.");
+  const data = await goshRequest("/gosh_base/app/user/profile_card", {
+    method: "GET",
+    query: { target_uid: targetUid },
+    credentials,
+    dispatcher,
+    fetchImpl,
+  });
+  return {
+    targetUid: String(data?.user?.id || targetUid),
+    nickname: String(data?.user?.nickname || data?.user?.show_id || targetUid),
+    showId: String(data?.user?.show_id || ""),
+    followerCount: Number(data?.relation_info?.follower_num ?? data?.user?.follower_num ?? 0),
+    followingCount: Number(data?.relation_info?.following_num ?? data?.user?.following_num ?? 0),
+  };
+}
+
+export async function goshFollowChannel(channelUrlOrUid, { unfollow = false, credentials, dispatcher, fetchImpl } = {}) {
+  const targetUid = goshTargetUid(channelUrlOrUid);
+  if (!targetUid) throw new Error("URL hoặc UID kênh Gosh không hợp lệ.");
+  const path = unfollow ? "/gosh_social/app/relationship/unfollow" : "/gosh_social/app/relationship/follow";
+  const data = await goshRequest(path, {
+    method: "POST",
+    body: { target_uid: Number(targetUid) },
+    credentials,
+    dispatcher,
+    fetchImpl,
+  });
+  return {
+    targetUid,
+    status: Number(data?.status ?? (unfollow ? 0 : 1)),
+    followed: !unfollow,
+  };
+}
 let chatSdkFactory = null;
 
 // The Tencent Chat SDK keeps one instance per SDKAppID inside its module
@@ -756,9 +886,29 @@ let chatSdkFactory = null;
 // through the account's proxy.
 export function loadTencentChat(WebSocketImpl = globalThis.WebSocket) {
   if (!chatSdkFactory) {
-    const require = createRequire(import.meta.url);
-    const source = readFileSync(require.resolve("@tencentcloud/chat"), "utf8");
-    chatSdkFactory = new Function("module", "exports", "define", "WebSocket", source);
+    try {
+      const source = readFileSync(moduleRequire.resolve("@tencentcloud/chat"), "utf8");
+      chatSdkFactory = new Function("module", "exports", "define", "WebSocket", source);
+    } catch {
+      return {
+        EVENT: { SDK_READY: "ready", KICKED_OUT: "kicked" },
+        TYPES: { CONV_GROUP: "GROUP" },
+        create() {
+          return {
+            setLogLevel() {},
+            on() {},
+            off() {},
+            isReady: () => false,
+            login: () => Promise.reject(new Error("Tencent Chat SDK unavailable")),
+            joinGroup: () => Promise.reject(new Error("Tencent Chat SDK unavailable")),
+            createCustomMessage: (opts) => opts,
+            sendMessage: () => Promise.reject(new Error("Tencent Chat SDK unavailable")),
+            logout: () => Promise.resolve(),
+            destroy: () => Promise.resolve(),
+          };
+        },
+      };
+    }
   }
   const module = { exports: {} };
   chatSdkFactory(module, module.exports, undefined, WebSocketImpl);
@@ -766,7 +916,7 @@ export function loadTencentChat(WebSocketImpl = globalThis.WebSocket) {
 }
 
 export function proxiedWebSocketClass(dispatcher) {
-  if (!dispatcher) return UndiciWebSocket;
+  if (!dispatcher || !undiciModule?.WebSocket) return UndiciWebSocket;
   return class ProxiedWebSocket extends UndiciWebSocket {
     constructor(url, protocols) {
       super(url, protocols === undefined ? { dispatcher } : { dispatcher, protocols });
@@ -787,30 +937,112 @@ function timError(error, fallback) {
   return wrapped;
 }
 
-// One logged-in Tencent IM client for one Gosh account.
+function typexCanonical(value) {
+  if (value == null) return "";
+  if (typeof value !== "object") return typeof value === "string" ? value : String(value);
+  if (Array.isArray(value)) return value.map(typexCanonical).join("");
+  return Object.keys(value).sort().map((key) => typexCanonical(value[key])).join("");
+}
+
+export function goshTypexSignature(body, secretKey) {
+  return createHmac("sha256", secretKey).update(typexCanonical(body)).digest("hex");
+}
+
+// One logged-in Gosh IM client (TypeX primary + Tencent IM secondary) for one Gosh account.
 export class GoshImSession {
-  constructor({ credentials, dispatcher, createChat }) {
+  constructor({ credentials, dispatcher, fetchImpl, createChat }) {
+    this.credentials = credentials;
+    this.dispatcher = dispatcher;
+    this.fetchImpl = fetchImpl;
+    this.createChat = createChat;
     this.userID = String(credentials.uid);
     this.userSig = credentials.timUserSig;
-    const TencentCloudChat = createChat
-      ? createChat()
-      : loadTencentChat(proxiedWebSocketClass(dispatcher));
+    this.TencentCloudChat = null;
+    this.chat = null;
+    if (createChat) {
+      this.#ensureTencentChat();
+    }
+    this.joinedGroups = new Set();
+    this.typexJoinedGroups = new Set();
+    this.typexSession = null;
+    this.dead = false;
+    this.loginPromise = null;
+  }
+
+  #ensureTencentChat() {
+    if (this.chat) return this.chat;
+    const TencentCloudChat = this.createChat
+      ? this.createChat()
+      : loadTencentChat(proxiedWebSocketClass(this.dispatcher));
     this.TencentCloudChat = TencentCloudChat;
     this.chat = TencentCloudChat.create({ SDKAppID: GOSH_IM_SDK_APP_ID, unlimitedAVChatRoom: true });
     this.chat.setLogLevel?.(4);
-    this.joinedGroups = new Set();
-    this.dead = false;
-    this.loginPromise = null;
-    // Another login of the same account (e.g. the user opened Chrome) kicks
-    // this client out; the next send starts a fresh one.
     this.chat.on?.(TencentCloudChat.EVENT.KICKED_OUT, () => {
       this.dead = true;
     });
+    return this.chat;
+  }
+  async #typexRequest(path, { method = "POST", body, needSign = true } = {}) {
+    const headers = {
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      platform: "web",
+      origin: "https://gosh.com",
+      referer: "https://gosh.com/",
+      "user-agent": BROWSER_USER_AGENT,
+    };
+    if (this.typexSession?.userCode) {
+      headers["X-Sid"] = this.typexSession.userCode;
+    }
+    if (needSign && method.toUpperCase() === "POST" && body && this.typexSession?.secretKey) {
+      headers.sign = goshTypexSignature(body, this.typexSession.secretKey);
+    }
+    const response = await request(`${GOSH_TYPEX_API}${path}`, {
+      method,
+      headers,
+      body,
+      dispatcher: this.dispatcher,
+      fetchImpl: this.fetchImpl,
+    });
+    if (!response.ok || response.data?.code !== 0) {
+      throw new Error(response.data?.msg || `TypeX HTTP ${response.status}`);
+    }
+    return response.data.data;
   }
 
-  login(timeoutMs = 15_000) {
-    if (this.loginPromise) return this.loginPromise;
-    this.loginPromise = new Promise((resolve, reject) => {
+  async #loginTypeX() {
+    if (this.typexSession?.userCode && this.typexSession?.secretKey) return this.typexSession;
+    const sigData = await goshRequest("/gosh_base/app/user/refresh_typex_usersig", {
+      method: "POST",
+      body: {},
+      credentials: this.credentials,
+      dispatcher: this.dispatcher,
+      fetchImpl: this.fetchImpl,
+    });
+    const userCode = String(sigData?.typex_user_sig || "").trim();
+    if (!userCode) throw new Error("Không lấy được typex_user_sig từ Gosh.");
+    const deviceId = await this.#typexRequest("/device_api/device_id", {
+      method: "POST",
+      body: { platform: "web", hash_str: "" },
+      needSign: false,
+    });
+    const loginData = await this.#typexRequest("/user/session/login", {
+      method: "POST",
+      body: { userCode, device_id: String(deviceId || "") },
+      needSign: false,
+    });
+    if (!loginData?.key) throw new Error("Không đăng nhập được phiên chat TypeX của Gosh.");
+    this.typexSession = {
+      userCode,
+      secretKey: String(loginData.key),
+      deviceId: String(deviceId || ""),
+      userId: String(loginData.id || ""),
+    };
+    return this.typexSession;
+  }
+
+  #loginTencent(timeoutMs = 15_000) {
+    this.#ensureTencentChat();
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Đăng nhập chat Gosh quá thời gian.")), timeoutMs);
       const onReady = () => {
         clearTimeout(timer);
@@ -826,42 +1058,125 @@ export class GoshImSession {
         reject(timError(error, "Không đăng nhập được chat Gosh."));
       });
     });
+  }
+
+  login(timeoutMs = 15_000) {
+    if (this.loginPromise) return this.loginPromise;
+    this.loginPromise = (async () => {
+      if (this.createChat) {
+        const [typexRes, timRes] = await Promise.allSettled([
+          this.#loginTypeX(),
+          this.#loginTencent(timeoutMs),
+        ]);
+        if (typexRes.status === "fulfilled" || timRes.status === "fulfilled") return;
+        throw timRes.reason || typexRes.reason || new Error("Không đăng nhập được chat Gosh.");
+      }
+      try {
+        await this.#loginTypeX();
+      } catch (typexErr) {
+        await this.#loginTencent(timeoutMs).catch(() => {
+          throw typexErr;
+        });
+      }
+    })();
     this.loginPromise.catch(() => {
       this.dead = true;
     });
     return this.loginPromise;
   }
 
-  async join(groupId) {
+  async join(groupId, liveId = "") {
     await this.login();
-    if (this.joinedGroups.has(groupId)) return;
-    try {
-      await this.chat.joinGroup({ groupID: groupId });
-    } catch (error) {
-      throw timError(error, "Không vào được phòng chat Gosh.");
+    if (liveId && !this.joinedGroups.has(groupId) && !this.typexJoinedGroups.has(groupId)) {
+      await goshRequest("/gosh_base/app/live/join", {
+        method: "POST",
+        body: { live_id: String(liveId), instance_id: randomUUID() },
+        credentials: this.credentials,
+        dispatcher: this.dispatcher,
+        fetchImpl: this.fetchImpl,
+      }).catch(() => {});
     }
-    this.joinedGroups.add(groupId);
+    const tasks = [];
+    if (this.typexSession && !this.typexJoinedGroups.has(groupId)) {
+      tasks.push(
+        this.#typexRequest("/liveshow/join", {
+          method: "POST",
+          body: { room_id: groupId },
+        }).then(() => {
+          this.typexJoinedGroups.add(groupId);
+        }),
+      );
+    }
+    if (this.chat && !this.joinedGroups.has(groupId)) {
+      tasks.push(
+        this.chat.joinGroup({ groupID: groupId }).then(() => {
+          this.joinedGroups.add(groupId);
+        }).catch((error) => {
+          throw timError(error, "Không vào được phòng chat Gosh.");
+        }),
+      );
+    }
+    if (!tasks.length) return;
+    const settled = await Promise.allSettled(tasks);
+    if (settled.every((item) => item.status === "rejected")) {
+      throw settled[0].reason;
+    }
   }
 
-  async send({ groupId, payloadData }) {
-    await this.join(groupId);
-    const message = this.chat.createCustomMessage({
-      to: groupId,
-      conversationType: this.TencentCloudChat.TYPES.CONV_GROUP,
-      payload: { data: payloadData, description: "", extension: "" },
-    });
-    try {
-      const result = await this.chat.sendMessage(message);
-      return { providerMessageId: String(result?.data?.message?.ID || "") };
-    } catch (error) {
-      // Rejoin next time: the group session may have been dropped server side.
-      this.joinedGroups.delete(groupId);
-      throw timError(error, "Gosh từ chối bình luận.");
+  async send({ groupId, payloadData, liveId = "" }) {
+    await this.join(groupId, liveId);
+    const tasks = [];
+    if (this.typexSession) {
+      tasks.push(
+        this.#typexRequest("/liveshow/send_message", {
+          method: "POST",
+          body: { room_id: groupId, content: payloadData },
+        }).then((data) => ({
+          provider: "typex",
+          providerMessageId: String(data?.message_id || ""),
+        })).catch((error) => {
+          this.typexJoinedGroups.delete(groupId);
+          throw error;
+        }),
+      );
     }
+    if (this.chat) {
+      tasks.push(
+        (async () => {
+          const message = this.chat.createCustomMessage({
+            to: groupId,
+            conversationType: this.TencentCloudChat.TYPES.CONV_GROUP,
+            payload: { data: payloadData, description: "", extension: "" },
+          });
+          try {
+            const result = await this.chat.sendMessage(message);
+            return {
+              provider: "tencent",
+              providerMessageId: String(result?.data?.message?.ID || ""),
+            };
+          } catch (error) {
+            // Rejoin next time: the group session may have been dropped server side.
+            this.joinedGroups.delete(groupId);
+            throw timError(error, "Gosh từ chối bình luận.");
+          }
+        })(),
+      );
+    }
+    const settled = await Promise.allSettled(tasks);
+    const fulfilled = settled.filter((item) => item.status === "fulfilled").map((item) => item.value);
+    if (!fulfilled.length) {
+      const rejected = settled.find((item) => item.status === "rejected");
+      throw rejected?.reason || new Error("Gosh từ chối bình luận.");
+    }
+    const primary = fulfilled.find((item) => item.provider === "typex" && item.providerMessageId)
+      || fulfilled.find((item) => item.providerMessageId)
+      || fulfilled[0];
+    return { providerMessageId: String(primary?.providerMessageId || "") };
   }
 
   async destroy() {
     this.dead = true;
+    this.typexSession = null;
     try {
       await this.chat.logout();
     } catch {}

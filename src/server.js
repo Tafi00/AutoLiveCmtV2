@@ -2,10 +2,12 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { AccountSessionManager } from "./session-manager.js";
+import { SESSION_COOKIE_NAME, WebAuthManager } from "./auth.js";
 import { JsonStore } from "./store.js";
 import { checkApiHealth, healthTargets } from "./api-health.js";
 import { PLATFORMS } from "./platforms.js";
 import { discoveredApiEndpoints } from "./browser-session.js";
+import { goshChannelProfile, goshTargetUid } from "./token-transport.js";
 import {
   activeScheduleOccurrence,
   MIN_SCHEDULE_DELAY_SECONDS,
@@ -14,7 +16,7 @@ import {
 } from "./schedule.js";
 
 import { readFileSync } from "node:fs";
-
+import { readFile, stat } from "node:fs/promises";
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const rootDirectory = dirname(currentDirectory);
 
@@ -30,12 +32,42 @@ export async function createServerApp({
     : join(rootDirectory, "data"),
   publicDirectory = join(rootDirectory, "public"),
   lucideDirectory = join(rootDirectory, "node_modules", "lucide", "dist", "esm"),
+  requireAuth = false,
 } = {}) {
   const store = new JsonStore(dataDirectory);
   await store.init();
 
+  const webAuth = new WebAuthManager(dataDirectory);
+  await webAuth.init();
+
   const sessions = new AccountSessionManager({ dataDirectory });
   await sessions.init();
+
+  const regStatePath = join(dataDirectory, "otp-reg-state.json");
+  let regCredentialsById = new Map();
+  let regStateMtimeMs = 0;
+  async function loadRegCredentialsIfChanged() {
+    try {
+      const info = await stat(regStatePath);
+      if (info.mtimeMs > regStateMtimeMs) {
+        const raw = await readFile(regStatePath, "utf8");
+        const parsed = JSON.parse(raw);
+        const nextMap = new Map();
+        for (const item of parsed?.registeredAccounts || []) {
+          if (item?.accountId && item?.email && item?.password) {
+            nextMap.set(item.accountId, {
+              username: String(item.email),
+              password: String(item.password),
+              uid: String(item.uid || ""),
+            });
+          }
+        }
+        regCredentialsById = nextMap;
+        regStateMtimeMs = info.mtimeMs;
+      }
+    } catch {}
+  }
+  await loadRegCredentialsIfChanged();
 
 const PLATFORM_IDS = Object.keys(PLATFORMS);
 const RENAME_PLATFORMS = new Set(["gosh", "gaquaytv"]);
@@ -131,6 +163,9 @@ function scheduleStatus(now = new Date()) {
 }
 
 async function dashboardState() {
+  await store.reloadIfChanged?.();
+  await sessions.vault?.reloadIfChanged?.();
+  await loadRegCredentialsIfChanged();
   let state = store.snapshot();
   const accountStatuses = await sessions.statuses(state.accounts);
   for (const account of accountStatuses) {
@@ -144,7 +179,11 @@ async function dashboardState() {
   const sessionsById = new Map(accountStatuses.map((account) => [account.id, account.session]));
   return {
     ...state,
-    accounts: state.accounts.map((account) => ({ ...account, session: sessionsById.get(account.id) })),
+    accounts: state.accounts.map((account) => ({
+      ...account,
+      session: sessionsById.get(account.id),
+      loginInfo: regCredentialsById.get(account.id) || null,
+    })),
     nextMessages: Object.fromEntries(PLATFORM_IDS.map((platform) => [platform, store.getNextMessage(platform)])),
     nextMessage: store.getNextMessage(state.settings.platform),
     cooldown: store.cooldown(),
@@ -548,15 +587,91 @@ async function runBulkSend() {
     bulkSend.wakeWaiter = null;
   }
 }
+function isExternalOrAuthRequired(request) {
+  if (requireAuth) return true;
+  const host = String(request.headers?.host || "").toLowerCase();
+  if (host && !host.startsWith("127.0.0.1") && !host.startsWith("localhost")) return true;
+  if (request.headers?.["x-forwarded-for"] || request.headers?.["x-forwarded-host"]) return true;
+  return false;
+}
+
+function setSessionCookie(response, token, request) {
+  const isSecure = request.secure || String(request.headers?.["x-forwarded-proto"] || "").includes("https");
+  const maxAge = 30 * 24 * 60 * 60;
+  response.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${isSecure ? "; Secure" : ""}`,
+  );
+}
+
+function clearSessionCookie(response) {
+  response.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
+}
+
+app.get("/api/auth/status", (request, response) => {
+  const session = webAuth.extractRequestSession(request);
+  const enforce = isExternalOrAuthRequired(request);
+  response.json({
+    authenticated: Boolean(session) || !enforce,
+    requireAuth: enforce,
+    username: session?.username || webAuth.username,
+  });
+});
+
+app.post("/api/auth/login", (request, response) => {
+  const clientIp = String(request.headers?.["x-forwarded-for"] || request.socket?.remoteAddress || "unknown").split(",")[0].trim();
+  const { username, token } = webAuth.verifyCredentials(request.body?.username, request.body?.password, clientIp);
+  setSessionCookie(response, token, request);
+  response.json({ ok: true, authenticated: true, username, token });
+});
+
+app.post("/api/auth/logout", (_request, response) => {
+  clearSessionCookie(response);
+  response.json({ ok: true, authenticated: false });
+});
+
+app.use("/api", (request, response, next) => {
+  if (request.path === "/auth/login" || request.path === "/auth/status" || request.path === "/auth/logout") {
+    return next();
+  }
+  if (!isExternalOrAuthRequired(request)) return next();
+  const session = webAuth.extractRequestSession(request);
+  if (!session) {
+    return response.status(401).json({
+      error: "Vui lòng đăng nhập để sử dụng công cụ.",
+      code: "WEB_AUTH_REQUIRED",
+    });
+  }
+  request.webSession = session;
+  return next();
+});
+
+app.post("/api/auth/password", asyncRoute(async (request, response) => {
+  const { username, token } = await webAuth.updateCredentials({
+    currentPassword: request.body?.currentPassword,
+    newUsername: request.body?.newUsername,
+    newPassword: request.body?.newPassword,
+  });
+  setSessionCookie(response, token, request);
+  response.json({ ok: true, username, token });
+}));
 
 app.get("/api/state", asyncRoute(async (_request, response) => {
   response.json(await dashboardState());
 }));
-
 app.post("/api/accounts", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;
   await store.addAccount(request.body?.name, request.body?.platform);
   response.status(201).json(await dashboardState());
+}));
+app.post("/api/accounts/bulk-toggle", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  await store.setAccountsEnabled({
+    platform: request.body?.platform || null,
+    enabled: request.body?.enabled !== false,
+    accountIds: Array.isArray(request.body?.accountIds) ? request.body.accountIds : null,
+  });
+  response.json(await dashboardState());
 }));
 
 app.patch("/api/accounts/:id", asyncRoute(async (request, response) => {
@@ -577,7 +692,17 @@ app.delete("/api/accounts/:id", asyncRoute(async (request, response) => {
   response.json(await dashboardState());
 }));
 
+function rejectRemoteBrowserAction(request, response) {
+  const host = String(request.headers?.host || "").toLowerCase();
+  const isLocalHost = !host || host.startsWith("127.0.0.1") || host.startsWith("localhost");
+  const isProxied = Boolean(request.headers?.["x-forwarded-for"] || request.headers?.["x-forwarded-host"]);
+  if (isLocalHost && !isProxied) return false;
+  response.status(403).json({ error: "Chức năng mở Chrome chỉ khả dụng khi mở trực tiếp trên máy chủ (localhost)." });
+  return true;
+}
+
 app.post("/api/accounts/:id/browser/open", asyncRoute(async (request, response) => {
+  if (rejectRemoteBrowserAction(request, response)) return;
   if (bulkSend.running) {
     return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi mở trình duyệt." });
   }
@@ -589,6 +714,7 @@ app.post("/api/accounts/:id/browser/open", asyncRoute(async (request, response) 
 }));
 
 app.post("/api/accounts/:id/browser/login", asyncRoute(async (request, response) => {
+  if (rejectRemoteBrowserAction(request, response)) return;
   if (bulkSend.running) {
     return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi đăng nhập." });
   }
@@ -612,10 +738,16 @@ app.post("/api/accounts/:id/login", asyncRoute(async (request, response) => {
   if (identity?.displayName) {
     await store.updateAccount(account.id, { profileName: identity.displayName });
   }
+  regCredentialsById.set(account.id, {
+    username: String(usernameOrEmail).trim(),
+    password: String(password),
+    uid: String(sessions.vault.get(account.id)?.credentials?.uid || ""),
+  });
   response.json(await dashboardState());
 }));
 
 app.post("/api/accounts/tokens/load", asyncRoute(async (request, response) => {
+  if (rejectRemoteBrowserAction(request, response)) return;
   if (bulkSend.running) {
     return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi nạp token." });
   }
@@ -625,6 +757,7 @@ app.post("/api/accounts/tokens/load", asyncRoute(async (request, response) => {
 }));
 
 app.post("/api/accounts/:id/browser/profile", asyncRoute(async (request, response) => {
+  if (rejectRemoteBrowserAction(request, response)) return;
   if (bulkSend.running) {
     return response.status(409).json({ error: "Hãy dừng lượt gửi trước khi mở hồ sơ." });
   }
@@ -687,6 +820,11 @@ app.delete("/api/messages", asyncRoute(async (_request, response) => {
   response.json({ ...(await dashboardState()), deletedCount });
 }));
 
+app.post("/api/messages/shuffle", asyncRoute(async (request, response) => {
+  if (rejectDuringBulk(response)) return;
+  await store.shuffleMessages(request.body?.platform || request.query?.platform || null);
+  response.json(await dashboardState());
+}));
 app.put("/api/settings", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;
   await store.updateSettings(request.body || {});
@@ -784,7 +922,100 @@ app.post("/api/comments/send-all/stop", asyncRoute(async (_request, response) =>
   requestBulkStop();
   response.json(await dashboardState());
 }));
+function firstGoshCredentials() {
+  for (const acc of store.snapshot().accounts) {
+    if (acc.platform !== "gosh") continue;
+    const cred = sessions.vault.get(acc.id)?.credentials;
+    if (cred?.token) return cred;
+  }
+  return undefined;
+}
 
+app.get("/api/gosh/channel", asyncRoute(async (request, response) => {
+  const targetUid = goshTargetUid(request.query?.target);
+  if (!targetUid) {
+    return response.status(400).json({ error: "URL hoặc UID kênh Gosh không hợp lệ." });
+  }
+  const profile = await goshChannelProfile(targetUid, { credentials: firstGoshCredentials() });
+  response.json({ channel: profile });
+}));
+app.post("/api/gosh/follow", asyncRoute(async (request, response) => {
+  const state = store.snapshot();
+  const rawTargets = request.body?.targets
+    || (request.body?.target ? String(request.body.target).split(/\r?\n/) : state.settings.channelLinks?.gosh || []);
+  const targetUids = [...new Set(
+    (Array.isArray(rawTargets) ? rawTargets : [rawTargets])
+      .map((item) => goshTargetUid(item))
+      .filter(Boolean),
+  )];
+  if (!targetUids.length) {
+    return response.status(400).json({ error: "Vui lòng nhập URL kênh Gosh hoặc UID cần tăng follow." });
+  }
+
+  const scope = request.body?.scope === "enabled" ? "enabled" : "all";
+  const allGoshAccounts = scope === "enabled"
+    ? store.getEnabledAccounts("gosh")
+    : state.accounts.filter((acc) => acc.platform === "gosh" && sessions.vault.get(acc.id)?.credentials);
+  if (!allGoshAccounts.length) {
+    return response.status(400).json({ error: "Không có tài khoản Gosh nào sẵn sàng để chạy." });
+  }
+
+  const requestedLimit = Number(request.body?.count);
+  const selectedAccounts = Number.isInteger(requestedLimit) && requestedLimit > 0
+    ? allGoshAccounts.slice(0, requestedLimit)
+    : allGoshAccounts;
+  const unfollow = Boolean(request.body?.unfollow);
+  const rawConcurrency = Number(request.body?.concurrency);
+  const concurrency = Number.isInteger(rawConcurrency) && rawConcurrency >= 1 && rawConcurrency <= 30
+    ? rawConcurrency
+    : 12;
+
+  const targetReports = [];
+  let totalSuccess = 0;
+  let totalFailure = 0;
+
+  const probeCreds = firstGoshCredentials();
+  for (const targetUid of targetUids) {
+    const beforeProfile = await goshChannelProfile(targetUid, { credentials: probeCreds }).catch(() => null);
+    const results = [];
+    for (let offset = 0; offset < selectedAccounts.length; offset += concurrency) {
+      const batch = selectedAccounts.slice(offset, offset + concurrency);
+      const batchResults = await Promise.all(batch.map(async (account) => {
+        try {
+          await sessions.followChannel(account.id, targetUid, "gosh", account.proxy, { unfollow });
+          return { accountId: account.id, accountName: account.profileName || account.name, ok: true };
+        } catch (error) {
+          return { accountId: account.id, accountName: account.profileName || account.name, ok: false, error: error.message };
+        }
+      }));
+      results.push(...batchResults);
+    }
+    const afterProfile = await goshChannelProfile(targetUid, { credentials: probeCreds }).catch(() => null);
+    const successCount = results.filter((r) => r.ok).length;
+    const failureCount = results.length - successCount;
+    totalSuccess += successCount;
+    totalFailure += failureCount;
+    targetReports.push({
+      targetUid,
+      nickname: afterProfile?.nickname || beforeProfile?.nickname || targetUid,
+      beforeFollowers: beforeProfile?.followerCount ?? null,
+      afterFollowers: afterProfile?.followerCount ?? null,
+      successCount,
+      failureCount,
+      results,
+    });
+  }
+
+  response.json({
+    followReport: {
+      unfollow,
+      accountCount: selectedAccounts.length,
+      totalSuccess,
+      totalFailure,
+      targets: targetReports,
+    },
+  });
+}));
 // --- Comment schedule -------------------------------------------------------
 
 function scheduleRunFields(state) {
@@ -935,8 +1166,12 @@ export async function startServer({
     ? resolve(process.env.DATA_DIRECTORY)
     : join(rootDirectory, "data"),
   host = "127.0.0.1",
+  requireAuth = false,
 } = {}) {
-  const { app, store, sessions, bulkSend, runScheduleTick, close: closeSessions } = await createServerApp({ dataDirectory });
+  const { app, store, sessions, bulkSend, runScheduleTick, close: closeSessions } = await createServerApp({
+    dataDirectory,
+    requireAuth,
+  });
 
   return new Promise((resolvePromise, rejectPromise) => {
     const server = app.listen(port, host, () => {
@@ -963,7 +1198,9 @@ const isDirectRun = process.argv[1] && (
 );
 
 if (isDirectRun) {
-  const instance = await startServer();
+  const instance = await startServer({
+    requireAuth: process.env.ALC_REQUIRE_AUTH !== "0",
+  });
   const shutdown = async () => {
     await instance.close();
     process.exit(0);

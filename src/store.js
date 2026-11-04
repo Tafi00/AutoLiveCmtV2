@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { normalizeChannelUrl, normalizePlatform, platformFromUrl, PLATFORMS } from "./platforms.js";
@@ -300,8 +300,19 @@ export class JsonStore {
     this.filePath = join(directory, "state.json");
     this.state = cloneDefaultState();
     this.writeQueue = Promise.resolve();
+    this.lastMtimeMs = 0;
   }
 
+  async reloadIfChanged() {
+    try {
+      const info = await stat(this.filePath);
+      if (info.mtimeMs > this.lastMtimeMs) {
+        const raw = await readFile(this.filePath, "utf8");
+        this.state = normalizeState(JSON.parse(raw));
+        this.lastMtimeMs = info.mtimeMs;
+      }
+    } catch {}
+  }
   async init() {
     await mkdir(this.directory, { recursive: true });
     try {
@@ -375,6 +386,21 @@ export class JsonStore {
     return { ...account };
   }
 
+  async setAccountsEnabled({ platform = null, enabled = true, accountIds = null } = {}) {
+    const cleanPlatform = platform ? normalizePlatform(platform) : null;
+    const idSet = Array.isArray(accountIds) ? new Set(accountIds) : null;
+    const nextValue = Boolean(enabled);
+    for (const account of this.state.accounts) {
+      if (cleanPlatform && account.platform !== cleanPlatform) continue;
+      if (idSet && !idSet.has(account.id)) continue;
+      account.enabled = nextValue;
+    }
+    if (!this.state.accounts.some((account) => account.enabled) && this.state.accounts.length > 0) {
+      this.state.accounts[0].enabled = true;
+    }
+    await this.persist();
+    return this.snapshot();
+  }
   async updateAccountProfileName(id, value) {
     const account = this.getAccount(id);
     if (!account) return null;
@@ -470,6 +496,21 @@ export class JsonStore {
     return deletedCount;
   }
 
+  async shuffleMessages(platform = null) {
+    const platforms = platform ? [normalizePlatform(platform)] : PLATFORM_IDS;
+    for (const itemPlatform of platforms) {
+      const list = [...(this.state.messagesByPlatform[itemPlatform] || [])];
+      for (let i = list.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [list[i], list[j]] = [list[j], list[i]];
+      }
+      this.state.messagesByPlatform[itemPlatform] = list;
+      this.state.cursorsByPlatform[itemPlatform] = 0;
+    }
+    this.#syncLegacyMessageAliases();
+    await this.persist();
+    return this.snapshot();
+  }
   async updateSettings(input) {
     const legacyPlatform = platformFromUrl(input.channelUrl);
     const preferredPlatform = normalizePlatform(input.platform, legacyPlatform || this.state.settings.platform);
@@ -613,6 +654,10 @@ export class JsonStore {
       await mkdir(dirname(this.filePath), { recursive: true });
       await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600 });
       await rename(temporaryPath, this.filePath);
+      try {
+        const info = await stat(this.filePath);
+        this.lastMtimeMs = info.mtimeMs;
+      } catch {}
     });
     await this.writeQueue;
   }

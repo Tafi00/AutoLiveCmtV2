@@ -12,7 +12,10 @@ import {
   goshAccount,
   goshChatPayload,
   goshChatUser,
+  goshFollowChannel,
   GoshImSession,
+  goshLogin,
+  goshRefresh,
   goshUpdateDisplayName,
   jwtExpiresWithin,
   locoIdentity,
@@ -176,6 +179,7 @@ export class TokenSession {
     const options = { credentials, ...this.transportOptions };
     if (this.platform === "gaquaytv") return gaquaytvRefresh(options);
     if (this.platform === "loco") return locoRefresh(options);
+    if (this.platform === "gosh") return goshRefresh(options);
     return null;
   }
 
@@ -324,6 +328,7 @@ export class TokenSession {
       this.goshIm = new GoshImSession({
         credentials,
         dispatcher: this.dispatcher,
+        fetchImpl: this.deps.fetch,
         createChat: this.deps.createTencentChat,
       });
       void stale?.destroy();
@@ -350,7 +355,7 @@ export class TokenSession {
       } else {
         const room = await resolveGoshRoom(safeUrl, this.transportOptions);
         await this.#goshUserFor(credentials);
-        await (await this.#goshImFor(credentials)).join(room.groupId);
+        await (await this.#goshImFor(credentials)).join(room.groupId, room.liveId);
       }
     });
   }
@@ -362,7 +367,7 @@ export class TokenSession {
     const payloadData = goshChatPayload({ user: goshChatUser(account, displayName), liveId: room.liveId, content });
     const im = await this.#goshImFor(credentials);
     try {
-      return await im.send({ groupId: room.groupId, payloadData });
+      return await im.send({ groupId: room.groupId, liveId: room.liveId, payloadData });
     } catch (error) {
       if (error.code === "AUTH_EXPIRED" || /group|10007|10010|10015/i.test(error.message)) {
         // A new broadcast can move the chat group; resolve it again next time.
@@ -397,16 +402,45 @@ export class TokenSession {
     return { displayName: cleanName, updatedAt: new Date().toISOString() };
   }
 
+  async followChannel(channelUrlOrUid, { unfollow = false } = {}) {
+    if (this.platform !== "gosh") {
+      throw new Error("Chức năng tăng follow hiện chỉ hỗ trợ tài khoản Gosh.");
+    }
+    try {
+      const result = await this.#withCredentials((credentials) => goshFollowChannel(channelUrlOrUid, {
+        unfollow,
+        credentials,
+        ...this.transportOptions,
+      }));
+      this.lastError = "";
+      this.authFailed = false;
+      return { followedAt: new Date().toISOString(), ...result };
+    } catch (error) {
+      this.lastError = error.message;
+      throw error;
+    }
+  }
   // GaQuayTV also accepts a username/password login through its API, which
   // gives tokens directly without opening Chrome.
   async login({ usernameOrEmail, password }) {
-    if (this.platform !== "gaquaytv") {
-      throw new Error("Đăng nhập bằng mật khẩu chỉ hỗ trợ GaQuayTV.");
+    if (this.platform === "gaquaytv") {
+      const credentials = await gaquaytvLogin({ usernameOrEmail, password, ...this.transportOptions });
+      await this.#saveCredentials(credentials, "api_login");
+      await this.identityDetection;
+      return this.identity;
     }
-    const credentials = await gaquaytvLogin({ usernameOrEmail, password, ...this.transportOptions });
-    await this.#saveCredentials(credentials, "api_login");
-    await this.identityDetection;
-    return this.identity;
+    if (this.platform === "gosh") {
+      const result = await goshLogin({ usernameOrEmail, password, ...this.transportOptions });
+      const { nickname, ...credentials } = result;
+      await this.#saveCredentials(credentials, "api_login");
+      if (nickname) {
+        this.identity = this.#identityFrom(nickname, "api_login");
+      } else {
+        await this.identityDetection;
+      }
+      return this.identity;
+    }
+    throw new Error("Đăng nhập trực tiếp bằng mật khẩu hiện hỗ trợ Gosh và GaQuayTV.");
   }
 
   status() {

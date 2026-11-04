@@ -470,3 +470,23 @@ test("lưu và cập nhật proxy riêng cho từng tài khoản", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("bật tắt hàng loạt tài khoản theo danh sách ID hoặc nền tảng", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bulk-toggle-accounts-test-"));
+  try {
+    const store = new JsonStore(directory);
+    await store.init();
+    const a1 = await store.addAccount("Acc Gosh 2", "gosh");
+    const a2 = await store.addAccount("Acc Loco 1", "loco");
+
+    await store.setAccountsEnabled({ accountIds: [a1.id, a2.id], enabled: false });
+    assert.equal(store.getAccount(a1.id).enabled, false);
+    assert.equal(store.getAccount(a2.id).enabled, false);
+
+    await store.setAccountsEnabled({ platform: "gosh", enabled: true });
+    assert.equal(store.getAccount(a1.id).enabled, true);
+    assert.equal(store.getAccount(a2.id).enabled, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

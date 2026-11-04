@@ -78,7 +78,29 @@ export class AccountSessionManager {
   async status(account) {
     try {
       await this.vault.init();
-      return { ...account, session: this.token(account.id, account.platform, account.proxy).status() };
+      const safeId = assertAccountId(account.id);
+      const existing = this.sessions.get(safeId);
+      if (existing && existing.token.platform === account.platform) {
+        return { ...account, session: existing.token.status() };
+      }
+      const record = this.vault.get(safeId);
+      const validRecord = record?.platform === account.platform ? record : null;
+      const hasToken = Boolean(validRecord?.credentials);
+      return {
+        ...account,
+        session: {
+          running: false,
+          loginState: hasToken ? "signed_in" : "unknown",
+          readyToComment: hasToken,
+          hasToken,
+          tokenSource: validRecord?.source || "",
+          tokenUpdatedAt: validRecord?.updatedAt || null,
+          url: "",
+          identity: account.profileName
+            ? { displayName: account.profileName, source: "profile", detectedAt: null }
+            : null,
+        },
+      };
     } catch (error) {
       return {
         ...account,
@@ -133,6 +155,13 @@ export class AccountSessionManager {
     return this.token(accountId, platform, proxy).sendComment(input);
   }
 
+  async followChannel(accountId, channelUrlOrUid, platform = "gosh", proxy = "", options = {}) {
+    if (platform !== "gosh") {
+      throw new Error("Chức năng tăng follow hiện chỉ hỗ trợ tài khoản Gosh.");
+    }
+    await this.vault.init();
+    return this.token(accountId, platform, proxy).followChannel(channelUrlOrUid, options);
+  }
   // Warms up an account's connection for its next send; failures surface on
   // the real send instead.
   async prepare(accountId, input, platform, proxy) {

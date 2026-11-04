@@ -52,11 +52,13 @@ test("ký request Gosh theo thứ tự khóa và băm body POST", () => {
   assert.equal(goshSignature({ did: "d", uid: "5", ts: "10", method: "POST", path: "/x", body }), expected);
 });
 
-test("payload chat Gosh bỏ thông tin đăng nhập và dùng tên vừa đổi", () => {
+test("payload chat Gosh bỏ thông tin đăng nhập, gắn màu vàng #FFE1A6 và dùng tên vừa đổi", () => {
   const user = goshChatUser({ id: 1, nickname: "Cũ", tim_user_sig: "secret", ip: "1.2.3.4", avatar: "a.png" }, "Tên Mới");
-  assert.deepEqual(user, { id: 1, nickname: "Tên Mới", avatar: "a.png" });
+  assert.deepEqual(user, { id: 1, nickname: "Tên Mới", avatar: "a.png", name_color: "#FFE1A6" });
   const payload = JSON.parse(goshChatPayload({ user, liveId: "live-1", content: "Xin chào" }));
   assert.equal(payload.type, 10_000);
+  assert.ok(Number(payload.msg_id) > 0);
+  assert.equal(payload.user.name_color, "#FFE1A6");
   assert.equal(payload.live_id, "live-1");
   assert.deepEqual(payload.data, { text: "Xin chào", rich_content: [{ type: "text", text: "Xin chào" }] });
   assert.equal(payload.client_request_id, payload.trace_id);

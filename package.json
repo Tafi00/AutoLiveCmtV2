@@ -10,7 +10,12 @@
     "start": "electron .",
     "dist:win": "electron-builder --win nsis --publish never",
     "web": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "gosh:mail": "node src/gosh-otp-reg.js login-mail",
+    "gosh:otp": "node src/gosh-otp-reg.js watch-otp",
+    "gosh:reg": "node src/gosh-otp-reg.js reg",
+    "gosh:follow": "node src/gosh-otp-reg.js follow",
+    "gosh:unfollow": "node src/gosh-otp-reg.js unfollow"
   },
   "engines": {
     "node": ">=20"

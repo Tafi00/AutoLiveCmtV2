@@ -811,11 +811,25 @@ export class BrowserSession {
   }
 
   async readCookies() {
+    if (!this.context) {
+      try {
+        await access(this.profileDirectory, constants.F_OK);
+      } catch {
+        return [];
+      }
+    }
     return this.#withProfileContext((context) => context.cookies());
   }
 
   async writeCookies(cookies) {
     if (!cookies?.length) return;
+    if (!this.context) {
+      try {
+        await access(this.profileDirectory, constants.F_OK);
+      } catch {
+        return;
+      }
+    }
     await this.#withProfileContext((context) => context.addCookies(cookies));
   }
 

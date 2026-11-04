@@ -121,6 +121,12 @@ test("gửi Gosh qua Tencent IM với payload của website", async () => {
     const { fetchImpl, calls } = fakeFetch((call) => {
       if (call.url.includes("batch_get_by_anchor")) return { body: { code: 0, data: { lives: [{ id: "live-9", im_room: "@AVC#16427037" }] } } };
       if (call.url.includes("user_info")) return { body: { code: 0, data: { user: { id: 123, nickname: "Gosh User", tim_user_sig: "sig", ip: "x" } } } };
+      if (call.url.includes("refresh_typex_usersig")) return { body: { code: 0, data: { typex_user_sig: "typex-sig-1" } } };
+      if (call.url.includes("/device_api/device_id")) return { body: { code: 0, data: "dev-typex-1" } };
+      if (call.url.includes("/user/session/login")) return { body: { code: 0, data: { id: "tx-u1", key: "secret-key-1" } } };
+      if (call.url.includes("/liveshow/join")) return { body: { code: 0, data: "success" } };
+      if (call.url.includes("/liveshow/send_message")) return { body: { code: 0, data: { message_id: "typex-msg-1" } } };
+      if (call.url.includes("/gosh_base/app/live/join")) return { body: { code: 0, data: {} } };
       return { status: 404, body: {} };
     });
     const im = { logins: [], joins: [], sent: [] };
@@ -147,7 +153,7 @@ test("gửi Gosh qua Tencent IM với payload của website", async () => {
     const url = "https://gosh.com/vi/16427037";
     const result = await session.sendComment({ channelUrl: url, content: "Xin chào" });
     await session.sendComment({ channelUrl: url, content: "Lần hai" });
-    assert.equal(result.providerMessageId, "tim-1");
+    assert.equal(result.providerMessageId, "typex-msg-1");
     assert.deepEqual(im.logins, [{ userID: "123", userSig: "sig" }]);
     assert.deepEqual(im.joins, ["@AVC#16427037"]);
     assert.equal(im.sent[0].to, "@AVC#16427037");
@@ -155,9 +161,14 @@ test("gửi Gosh qua Tencent IM với payload của website", async () => {
     const payload = JSON.parse(im.sent[0].payload.data);
     assert.equal(payload.live_id, "live-9");
     assert.equal(payload.user.nickname, "Gosh User");
+    assert.equal(payload.user.name_color, "#FFE1A6");
+    assert.ok(Number(payload.msg_id) > 0);
     assert.equal(payload.user.tim_user_sig, undefined);
+    const typexSendCall = calls.find((call) => call.url.includes("/liveshow/send_message"));
+    assert.ok(typexSendCall);
+    assert.equal(typexSendCall.headers["X-Sid"], "typex-sig-1");
+    assert.ok(typexSendCall.headers.sign);
     assert.equal(calls.filter((call) => call.url.includes("user_info")).length, 1);
-    assert.match(calls.find((call) => call.url.includes("user_info")).headers.cookie, /token=gosh-token/);
     await session.close();
   });
 });

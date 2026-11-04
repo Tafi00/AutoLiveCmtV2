@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 // Saved API tokens per account. Kept outside state.json so they never reach
@@ -9,6 +9,7 @@ export class TokenVault {
     this.records = new Map();
     this.loading = null;
     this.writing = Promise.resolve();
+    this.lastMtimeMs = 0;
   }
 
   init() {
@@ -16,6 +17,15 @@ export class TokenVault {
     return this.loading;
   }
 
+  async reloadIfChanged() {
+    try {
+      const info = await stat(this.filePath);
+      if (info.mtimeMs > this.lastMtimeMs) {
+        this.lastMtimeMs = info.mtimeMs;
+        await this.#load();
+      }
+    } catch {}
+  }
   async #load() {
     let raw;
     try {
@@ -36,8 +46,11 @@ export class TokenVault {
     for (const [accountId, record] of Object.entries(parsed?.accounts || {})) {
       if (record && typeof record === "object" && record.credentials) this.records.set(accountId, record);
     }
+    try {
+      const info = await stat(this.filePath);
+      this.lastMtimeMs = info.mtimeMs;
+    } catch {}
   }
-
   get(accountId) {
     return this.records.get(accountId) || null;
   }
@@ -59,6 +72,10 @@ export class TokenVault {
       const payload = { version: 1, accounts: Object.fromEntries(this.records) };
       await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       await rename(temporaryPath, this.filePath);
+      try {
+        const info = await stat(this.filePath);
+        this.lastMtimeMs = info.mtimeMs;
+      } catch {}
     });
     return this.writing;
   }
