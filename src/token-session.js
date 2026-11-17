@@ -30,7 +30,7 @@ import {
 
 // Warm realtime connections are dropped after this long without a send, so a
 // few hundred rotating accounts never hold a few hundred sockets open.
-export const REALTIME_IDLE_MS = 3 * 60_000;
+export const REALTIME_IDLE_MS = 20_000;
 const MAX_DISPLAY_NAME_LENGTH = 20;
 
 function userActionRequired(message) {
@@ -355,7 +355,9 @@ export class TokenSession {
       } else {
         const room = await resolveGoshRoom(safeUrl, this.transportOptions);
         await this.#goshUserFor(credentials);
-        await (await this.#goshImFor(credentials)).join(room.groupId, room.liveId);
+        if (this.deps.createTencentChat) {
+          await (await this.#goshImFor(credentials)).join(room.groupId, room.liveId);
+        }
       }
     });
   }

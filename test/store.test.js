@@ -16,9 +16,12 @@ import {
   normalizeRenameEveryComments,
   parseProxy,
 } from "../src/store.js";
-test("chấp nhận URL HTTPS của cả hai miền Gosh", () => {
+test("chấp nhận URL HTTPS của cả hai miền Gosh (cả mã số và slug chữ)", () => {
   assert.equal(normalizeGoshUrl("https://gosh6.app/15942759"), "https://gosh6.app/15942759");
   assert.equal(normalizeGoshUrl("https://gosh.com/vi/16427037"), "https://gosh.com/vi/16427037");
+  assert.equal(normalizeGoshUrl("https://gosh.com/zaucute00"), "https://gosh.com/zaucute00");
+  assert.equal(normalizeGoshUrl("https://gosh.com/vi/zaucute00"), "https://gosh.com/vi/zaucute00");
+  assert.throws(() => normalizeGoshUrl("https://gosh.com/vi"));
   assert.throws(() => normalizeGoshUrl("http://gosh6.app/15942759"));
   assert.throws(() => normalizeGoshUrl("http://gosh.com/vi/16427037"));
   assert.throws(() => normalizeGoshUrl("https://example.com/15942759"));

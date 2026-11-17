@@ -403,8 +403,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .pf-tag { display: inline-flex; align-items: center; gap: 7px; color: var(--text-2); white-space: nowrap; }
 
 .meter { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--surface-3); }
-.meter > span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--green); transition: width 300ms var(--ease); }
-
+.meter > span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--green); }
 /* Form fields */
 input[type="text"], input[type="password"], input[type="number"], input[type="search"], input[type="time"], textarea, select {
   width: 100%;
@@ -977,10 +976,34 @@ legend.field-label { margin-bottom: 8px; padding: 0; }
   box-shadow: var(--shadow-pop);
 }
 .dialog::backdrop { background: var(--backdrop); }
+.dialog-md { width: min(520px, calc(100vw - 32px)); }
 .dialog h2 { font-size: 15px; }
 .dialog p { margin-top: 8px; color: var(--text-2); overflow-wrap: anywhere; }
+.dialog .field { margin-top: 14px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 
+.autoreg-banner {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+}
+.autoreg-banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.autoreg-banner-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.autoreg-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 /* Toasts */
 .toasts {
   position: fixed;
@@ -1123,3 +1146,246 @@ legend.field-label { margin-bottom: 8px; padding: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---------- Mắt xem livestream ---------- */
+
+.viewbot-jobs { display: grid; gap: 10px; }
+
+.viewbot-job {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.viewbot-job-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.viewbot-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.viewbot-stats div { display: grid; gap: 2px; }
+.viewbot-stats dt { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.viewbot-stats dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.viewbot-job-actions { display: flex; justify-content: flex-end; }
+
+.viewbot-check { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.viewbot-check input { flex: 1 1 220px; }
+
+/* ---------- Máy phụ (hub) ---------- */
+
+.hub-list { display: grid; gap: 10px; }
+
+.hub-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.hub-card.is-online { border-color: var(--green-soft); }
+
+.hub-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hub-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
+.hub-card.is-online .hub-dot { background: var(--green); animation: pulse 1.4s ease-in-out infinite; }
+.hub-meta { color: var(--text-3); font-size: 12px; }
+
+.hub-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.hub-actions .danger { color: var(--red); }
+
+.hub-install { display: grid; gap: 8px; }
+.hub-cmd { display: grid; gap: 4px; }
+.hub-cmd pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+}
+
+.hub-jobs { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 12px; }
+.hub-guide { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13px; display: grid; gap: 4px; }
+
+/* ---------- Chọn máy chạy ---------- */
+
+.target-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 10px;
+}
+
+.target-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.target-item.is-offline { opacity: .5; cursor: not-allowed; }
+.target-item input { margin: 0; }
+.target-note { margin-left: auto; color: var(--text-3); font-size: 11px; }
+
+/* ---------- Telegram ---------- */
+
+.tg-list { display: grid; gap: 4px; max-height: 320px; overflow: auto; }
+
+.tg-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12px;
+  align-items: center;
+}
+
+.tg-row.is-joined { border-color: var(--green-soft); }
+.tg-row.is-error { border-color: rgba(240, 87, 92, .35); }
+.tg-state { color: var(--text-3); text-align: right; }
+
+/* ---------- Telegram tabs ---------- */
+
+.tg-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.tg-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  padding: 7px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tg-tab:hover { color: var(--text); }
+.tg-tab.is-active { background: var(--seg-active); color: var(--text); }
+
+.tg-panel { display: block; }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.comment-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.comment-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+.comment-list .danger { color: var(--red); }
+.form-actions-start { justify-content: flex-start; gap: 8px; }
+
+@media (max-width: 720px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ---------- Tăng mắt Telegram ---------- */
+
+.tg-bignum { display: flex; align-items: center; gap: 8px; }
+.tg-bignum-compact {
+  justify-content: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tg-bignum-compact .tg-step {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 4px;
+  font-size: 13px;
+}
+.tg-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
+.tg-live-layout { gap: 16px; }
+.tg-live-layout .launch-card .field { margin-top: 12px; }
+.tg-live-layout .checklist { margin-bottom: 14px; }
+.tg-live-layout .input-affix input { padding-right: 56px; }
+.tg-live-layout .field-inline .switch-field { flex: 1; }
+.tg-count-input {
+  flex: 1;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 700;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--field);
+  color: var(--text);
+}
+.tg-step {
+  min-width: 52px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.tg-step:hover { border-color: var(--border-strong); }
+.tg-presets { margin-top: 8px; }
+.tg-presets button { all: unset; cursor: pointer; display: block; text-align: center; padding: 6px 4px; }
+.tg-presets label { display: block; }
+
+.tg-bigstats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tg-bigstat {
+  display: grid;
+  gap: 2px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.tg-bigstat-label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.tg-bigstat strong { font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tg-meter { height: 6px; margin: 10px 0 8px; }

@@ -109,6 +109,9 @@ test("tự động bỏ qua biến thể email đã dùng và chọn biến th�
 test("trích xuất đúng target UID kênh Gosh từ các dạng URL và mã số", () => {
   assert.equal(extractGoshTargetUid("https://gosh.com/vi/16427037"), "16427037");
   assert.equal(extractGoshTargetUid("https://gosh6.app/15942759"), "15942759");
+  assert.equal(extractGoshTargetUid("https://gosh.com/zaucute00"), "zaucute00");
+  assert.equal(extractGoshTargetUid("https://gosh.com/vi/zaucute00"), "zaucute00");
+  assert.equal(extractGoshTargetUid("zaucute00"), "zaucute00");
   assert.equal(extractGoshTargetUid("16427037"), "16427037");
   assert.equal(extractGoshTargetUid("https://example.com/"), "");
 });

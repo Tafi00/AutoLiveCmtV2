@@ -19,6 +19,24 @@ const ProxyAgent = undiciModule?.ProxyAgent || null;
 const UndiciWebSocket = undiciModule?.WebSocket || globalThis.WebSocket;
 dns.setDefaultResultOrder("ipv4first");
 net.setDefaultAutoSelectFamily?.(false);
+
+if (!globalThis.__goshTimRejectionGuardInstalled) {
+  globalThis.__goshTimRejectionGuardInstalled = true;
+  process.on("unhandledRejection", (reason) => {
+    const stack = String(reason?.stack || "");
+    if (reason?.code === 2801 || reason?.code === 2800 || stack.includes("loadTencentChat")) {
+      return;
+    }
+    console.error("[UnhandledRejection]", reason);
+  });
+  process.on("uncaughtException", (error) => {
+    const stack = String(error?.stack || "");
+    if (error?.code === 2801 || error?.code === 2800 || stack.includes("loadTencentChat")) {
+      return;
+    }
+    console.error("[UncaughtException]", error);
+  });
+}
 export const BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -675,9 +693,32 @@ export async function goshRequest(path, { method = "GET", query = {}, body, cred
   return response.data?.data || {};
 }
 
+const GOSH_HOST_PATTERN = /(^|\.)(?:gosh6\.app|gosh\.com)$/i;
+const GOSH_RESERVED_SEGMENTS = new Set([
+  "streamer-dashboard", "agreement", "_next", "cdn-cgi", "api", "static", "assets", "favicon.ico", "robots.txt",
+]);
+const goshSlugUidCache = new Map();
+
 export function goshAnchorId(channelUrl) {
   try {
-    return new URL(channelUrl).pathname.match(/^\/(?:[a-z]{2}(?:-[A-Za-z]+)?\/)?(\d+)/)?.[1] || "";
+    const raw = String(channelUrl || "").trim();
+    const normalized = /^https?:\/\//i.test(raw)
+      ? raw
+      : (/^(?:www\.)?(?:gosh6\.app|gosh\.com)\//i.test(raw) ? `https://${raw}` : "");
+    if (!normalized) return "";
+    const parsed = new URL(normalized);
+    if (!GOSH_HOST_PATTERN.test(parsed.hostname)) return "";
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (!segments.length) return "";
+    const first = segments[0];
+    if (GOSH_RESERVED_SEGMENTS.has(first.toLowerCase())) return "";
+    if (segments.length >= 2 && /^[a-z]{2}(?:-[A-Za-z]{2,4})?$/.test(first)) {
+      const second = segments[1];
+      if (GOSH_RESERVED_SEGMENTS.has(second.toLowerCase())) return "";
+      return /^[A-Za-z0-9_.-]{2,64}$/.test(second) ? second : "";
+    }
+    if (/^[a-z]{2}(?:-[A-Za-z]{2,4})?$/i.test(first)) return "";
+    return /^[A-Za-z0-9_.-]{2,64}$/.test(first) ? first : "";
   } catch {
     return "";
   }
@@ -687,7 +728,7 @@ export async function resolveGoshRoom(channelUrl, { dispatcher, fetchImpl } = {}
   const anchorId = goshAnchorId(channelUrl);
   if (!anchorId) throw new Error("URL Gosh chưa trỏ tới phòng live của streamer.");
   // A live id changes every broadcast; keep it only briefly.
-  return cachedRoom(`gosh:${anchorId}`, 30_000, async () => {
+  return cachedRoom(`gosh:${anchorId.toLowerCase()}`, 30_000, async () => {
     const data = await goshRequest("/gosh_base/app/live/batch_get_by_anchor", {
       method: "POST",
       body: { anchor_ids: [anchorId] },
@@ -696,10 +737,14 @@ export async function resolveGoshRoom(channelUrl, { dispatcher, fetchImpl } = {}
     });
     const live = (Array.isArray(data.lives) ? data.lives : []).find(Boolean);
     if (!live?.id) throw new Error("Phòng Gosh hiện không phát live.");
+    const resolvedUid = String(live.uid || live.user?.id || anchorId);
+    if (/^\d+$/.test(resolvedUid)) {
+      goshSlugUidCache.set(anchorId.toLowerCase(), resolvedUid);
+    }
     return {
       anchorId,
       liveId: String(live.id),
-      groupId: String(live.im_room || live.avc_room || `@AVC#${anchorId}`),
+      groupId: String(live.im_room || live.avc_room || `@AVC#${resolvedUid}`),
     };
   });
 }
@@ -835,16 +880,59 @@ export async function goshUpdateDisplayName({ displayName, credentials, dispatch
 
 export function goshTargetUid(channelUrlOrUid) {
   const raw = String(channelUrlOrUid || "").trim();
+  if (!raw) return "";
   if (/^\d+$/.test(raw)) return raw;
   const fromUrl = goshAnchorId(raw);
   if (fromUrl) return fromUrl;
-  const tailDigits = raw.match(/\/(\d+)(?:[/?#]|$)/)?.[1];
-  return tailDigits || "";
+  if (!raw.includes("/") && !raw.includes(":") && /^[A-Za-z0-9_.-]{2,64}$/.test(raw)) {
+    return raw;
+  }
+  return "";
+}
+
+export async function resolveGoshTargetUid(channelUrlOrUid, { credentials, dispatcher, fetchImpl } = {}) {
+  const target = goshTargetUid(channelUrlOrUid);
+  if (!target) return "";
+  if (/^\d+$/.test(target)) return target;
+  const cacheKey = target.toLowerCase();
+  if (goshSlugUidCache.has(cacheKey)) return goshSlugUidCache.get(cacheKey);
+
+  try {
+    const batchData = await goshRequest("/gosh_base/app/live/batch_get_by_anchor", {
+      method: "POST",
+      body: { anchor_ids: [target] },
+      dispatcher,
+      fetchImpl,
+    });
+    const live = (Array.isArray(batchData?.lives) ? batchData.lives : []).find(Boolean);
+    const resolved = String(live?.uid || live?.user?.id || "");
+    if (/^\d+$/.test(resolved)) {
+      goshSlugUidCache.set(cacheKey, resolved);
+      return resolved;
+    }
+  } catch {}
+
+  try {
+    const anchorData = await goshRequest("/gosh_base/app/live/get_by_anchor_v1", {
+      method: "GET",
+      query: { anchor_id: target },
+      credentials,
+      dispatcher,
+      fetchImpl,
+    });
+    const resolved = String(anchorData?.live?.uid || anchorData?.live?.user?.id || "");
+    if (/^\d+$/.test(resolved)) {
+      goshSlugUidCache.set(cacheKey, resolved);
+      return resolved;
+    }
+  } catch {}
+
+  return "";
 }
 
 export async function goshChannelProfile(channelUrlOrUid, { credentials, dispatcher, fetchImpl } = {}) {
-  const targetUid = goshTargetUid(channelUrlOrUid);
-  if (!targetUid) throw new Error("URL hoặc UID kênh Gosh không hợp lệ.");
+  const targetUid = await resolveGoshTargetUid(channelUrlOrUid, { credentials, dispatcher, fetchImpl });
+  if (!targetUid) throw new Error("Không tìm thấy kênh Gosh hoặc URL/ID không hợp lệ.");
   const data = await goshRequest("/gosh_base/app/user/profile_card", {
     method: "GET",
     query: { target_uid: targetUid },
@@ -852,6 +940,9 @@ export async function goshChannelProfile(channelUrlOrUid, { credentials, dispatc
     dispatcher,
     fetchImpl,
   });
+  if (data?.user?.show_id && data?.user?.id) {
+    goshSlugUidCache.set(String(data.user.show_id).toLowerCase(), String(data.user.id));
+  }
   return {
     targetUid: String(data?.user?.id || targetUid),
     nickname: String(data?.user?.nickname || data?.user?.show_id || targetUid),
@@ -862,8 +953,8 @@ export async function goshChannelProfile(channelUrlOrUid, { credentials, dispatc
 }
 
 export async function goshFollowChannel(channelUrlOrUid, { unfollow = false, credentials, dispatcher, fetchImpl } = {}) {
-  const targetUid = goshTargetUid(channelUrlOrUid);
-  if (!targetUid) throw new Error("URL hoặc UID kênh Gosh không hợp lệ.");
+  const targetUid = await resolveGoshTargetUid(channelUrlOrUid, { credentials, dispatcher, fetchImpl });
+  if (!targetUid) throw new Error("Không tìm thấy kênh Gosh hoặc URL/ID không hợp lệ.");
   const path = unfollow ? "/gosh_social/app/relationship/unfollow" : "/gosh_social/app/relationship/follow";
   const data = await goshRequest(path, {
     method: "POST",
@@ -884,11 +975,96 @@ let chatSdkFactory = null;
 // closure. Evaluating a fresh copy per account gives each account its own
 // instance, and passing WebSocket as a parameter routes that copy's socket
 // through the account's proxy.
+const safeUnrefInterval = (fn, ms, ...args) => {
+  const timer = setInterval(() => {
+    try { fn(...args); } catch {}
+  }, ms);
+  timer.unref?.();
+  return timer;
+};
+const safeUnrefTimeout = (fn, ms, ...args) => {
+  const timer = setTimeout(() => {
+    try { fn(...args); } catch {}
+  }, ms);
+  timer.unref?.();
+  return timer;
+};
+
+// The SDK stops its 1 s check timers only at the very end of destroy(), after
+// a logout round-trip that can hang forever, and any timer it leaves running
+// keeps that whole copy of the SDK alive. A run creates a copy every round, so
+// leaked copies piled up to gigabytes over a few days. Each copy therefore gets
+// its own timers and sockets, which releaseTencentChat() clears.
+const SDK_RELEASE_AFTER_MS = 20_000;
+const sdkCopyResources = new WeakMap();
+let liveSdkCopies = 0;
+const sdkCopyFinalizer = new FinalizationRegistry(() => {
+  liveSdkCopies -= 1;
+});
+
+// SDK copies created and not yet garbage-collected; logged to spot leaks.
+export function liveTencentChatCopies() {
+  return liveSdkCopies;
+}
+
+export function releaseTencentChat(TencentCloudChat) {
+  const resources = TencentCloudChat && sdkCopyResources.get(TencentCloudChat);
+  if (!resources) return;
+  sdkCopyResources.delete(TencentCloudChat);
+  for (const timer of resources.timers) clearInterval(timer);
+  resources.timers.clear();
+  for (const socket of resources.sockets) {
+    try { socket.close(); } catch {}
+  }
+  resources.sockets.clear();
+}
+
+function sdkCopyScope(WebSocketImpl) {
+  const timers = new Set();
+  const sockets = new Set();
+  const forget = (timer) => {
+    timers.delete(timer);
+    clearInterval(timer);
+  };
+  const TrackedWebSocket = typeof WebSocketImpl === "function"
+    ? class extends WebSocketImpl {
+      constructor(...args) {
+        super(...args);
+        sockets.add(this);
+        this.addEventListener?.("close", () => sockets.delete(this));
+      }
+    }
+    : WebSocketImpl;
+  return {
+    resources: { timers, sockets },
+    WebSocket: TrackedWebSocket,
+    setInterval: (fn, ms, ...args) => {
+      const timer = safeUnrefInterval(fn, ms, ...args);
+      timers.add(timer);
+      return timer;
+    },
+    setTimeout: (fn, ms, ...args) => {
+      const timer = safeUnrefTimeout((...callArgs) => {
+        timers.delete(timer);
+        fn(...callArgs);
+      }, ms, ...args);
+      timers.add(timer);
+      return timer;
+    },
+    clearInterval: forget,
+    clearTimeout: forget,
+  };
+}
+
 export function loadTencentChat(WebSocketImpl = globalThis.WebSocket) {
   if (!chatSdkFactory) {
     try {
-      const source = readFileSync(moduleRequire.resolve("@tencentcloud/chat"), "utf8");
-      chatSdkFactory = new Function("module", "exports", "define", "WebSocket", source);
+      const rawSource = readFileSync(moduleRequire.resolve("@tencentcloud/chat"), "utf8");
+      const source = rawSource.replace(/s\._chM\.onRequestTimeout\(\)/g, "void 0");
+      chatSdkFactory = new Function(
+        "module", "exports", "define", "WebSocket", "setInterval", "setTimeout", "clearInterval", "clearTimeout",
+        source,
+      );
     } catch {
       return {
         EVENT: { SDK_READY: "ready", KICKED_OUT: "kicked" },
@@ -910,13 +1086,20 @@ export function loadTencentChat(WebSocketImpl = globalThis.WebSocket) {
       };
     }
   }
+  const scope = sdkCopyScope(WebSocketImpl);
   const module = { exports: {} };
-  chatSdkFactory(module, module.exports, undefined, WebSocketImpl);
+  chatSdkFactory(
+    module, module.exports, undefined, scope.WebSocket,
+    scope.setInterval, scope.setTimeout, scope.clearInterval, scope.clearTimeout,
+  );
+  sdkCopyResources.set(module.exports, scope.resources);
+  liveSdkCopies += 1;
+  sdkCopyFinalizer.register(module.exports, null);
   return module.exports;
 }
 
 export function proxiedWebSocketClass(dispatcher) {
-  if (!dispatcher || !undiciModule?.WebSocket) return UndiciWebSocket;
+  if (!dispatcher || !undiciModule?.WebSocket) return globalThis.WebSocket;
   return class ProxiedWebSocket extends UndiciWebSocket {
     constructor(url, protocols) {
       super(url, protocols === undefined ? { dispatcher } : { dispatcher, protocols });
@@ -925,6 +1108,21 @@ export function proxiedWebSocketClass(dispatcher) {
 }
 
 const TIM_AUTH_ERROR_CODES = new Set([70001, 70003, 70009, 70013, 70014, 70016, 70020, 70051, 70052]);
+// The patched SDK no longer times its own requests out, and a request on an
+// instance that gets destroyed never settles, so every joinGroup/sendMessage is
+// capped here.
+const TIM_REQUEST_TIMEOUT_MS = 12_000;
+
+function timeoutAfter(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 function timError(error, fallback) {
   const code = Number(error?.code);
@@ -959,14 +1157,15 @@ export class GoshImSession {
     this.userSig = credentials.timUserSig;
     this.TencentCloudChat = null;
     this.chat = null;
-    if (createChat) {
-      this.#ensureTencentChat();
-    }
+    if (createChat) this.#ensureTencentChat();
     this.joinedGroups = new Set();
     this.typexJoinedGroups = new Set();
+    // Sends of this account to several rooms run in parallel on one instance.
+    this.tencentSends = 0;
     this.typexSession = null;
     this.dead = false;
     this.loginPromise = null;
+    this.typexLoginPromise = null;
   }
 
   #ensureTencentChat() {
@@ -1059,25 +1258,58 @@ export class GoshImSession {
       });
     });
   }
+  #ensureTencentReady(timeoutMs = 8_000) {
+    if (!this.tencentLoginPromise) {
+      this.tencentLoginPromise = this.#loginTencent(timeoutMs).catch((err) => {
+        this.tencentLoginPromise = null;
+        throw err;
+      });
+    }
+    return this.tencentLoginPromise;
+  }
 
-  login(timeoutMs = 15_000) {
+  #ensureTypeXReady() {
+    if (!this.typexLoginPromise) {
+      this.typexLoginPromise = this.#loginTypeX().catch((err) => {
+        this.typexLoginPromise = null;
+        throw err;
+      });
+    }
+    return this.typexLoginPromise;
+  }
+
+  async #joinTencent(groupId) {
+    await this.#ensureTencentReady();
+    if (this.joinedGroups.has(groupId)) return;
+    const chat = this.chat;
+    if (!chat) throw new Error("Phiên chat Gosh vừa đóng, hãy gửi lại.");
+    try {
+      await timeoutAfter(chat.joinGroup({ groupID: groupId }), TIM_REQUEST_TIMEOUT_MS, "Vào phòng chat Gosh quá thời gian.");
+      if (this.chat === chat) this.joinedGroups.add(groupId);
+    } catch (error) {
+      throw timError(error, "Không vào được phòng chat Gosh.");
+    }
+  }
+
+  async #joinTypeX(groupId) {
+    await this.#ensureTypeXReady();
+    if (this.typexJoinedGroups.has(groupId)) return;
+    await this.#typexRequest("/liveshow/join", {
+      method: "POST",
+      body: { room_id: groupId },
+    });
+    this.typexJoinedGroups.add(groupId);
+  }
+
+  login(timeoutMs = 8_000) {
     if (this.loginPromise) return this.loginPromise;
     this.loginPromise = (async () => {
-      if (this.createChat) {
-        const [typexRes, timRes] = await Promise.allSettled([
-          this.#loginTypeX(),
-          this.#loginTencent(timeoutMs),
-        ]);
-        if (typexRes.status === "fulfilled" || timRes.status === "fulfilled") return;
-        throw timRes.reason || typexRes.reason || new Error("Không đăng nhập được chat Gosh.");
-      }
-      try {
-        await this.#loginTypeX();
-      } catch (typexErr) {
-        await this.#loginTencent(timeoutMs).catch(() => {
-          throw typexErr;
-        });
-      }
+      const [timRes, typexRes] = await Promise.allSettled([
+        this.#ensureTencentReady(timeoutMs),
+        this.#ensureTypeXReady(),
+      ]);
+      if (timRes.status === "fulfilled" || typexRes.status === "fulfilled") return;
+      throw timRes.reason || typexRes.reason || new Error("Không đăng nhập được chat Gosh.");
     })();
     this.loginPromise.catch(() => {
       this.dead = true;
@@ -1086,8 +1318,9 @@ export class GoshImSession {
   }
 
   async join(groupId, liveId = "") {
-    await this.login();
-    if (liveId && !this.joinedGroups.has(groupId) && !this.typexJoinedGroups.has(groupId)) {
+    const timRes = await this.#joinTencent(groupId).then(() => ({ ok: true })).catch((reason) => ({ ok: false, reason }));
+    const typexRes = await this.#joinTypeX(groupId).then(() => ({ ok: true })).catch((reason) => ({ ok: false, reason }));
+    if (liveId) {
       await goshRequest("/gosh_base/app/live/join", {
         method: "POST",
         body: { live_id: String(liveId), instance_id: randomUUID() },
@@ -1096,92 +1329,100 @@ export class GoshImSession {
         fetchImpl: this.fetchImpl,
       }).catch(() => {});
     }
-    const tasks = [];
-    if (this.typexSession && !this.typexJoinedGroups.has(groupId)) {
-      tasks.push(
-        this.#typexRequest("/liveshow/join", {
-          method: "POST",
-          body: { room_id: groupId },
-        }).then(() => {
-          this.typexJoinedGroups.add(groupId);
-        }),
-      );
-    }
-    if (this.chat && !this.joinedGroups.has(groupId)) {
-      tasks.push(
-        this.chat.joinGroup({ groupID: groupId }).then(() => {
-          this.joinedGroups.add(groupId);
-        }).catch((error) => {
-          throw timError(error, "Không vào được phòng chat Gosh.");
-        }),
-      );
-    }
-    if (!tasks.length) return;
-    const settled = await Promise.allSettled(tasks);
-    if (settled.every((item) => item.status === "rejected")) {
-      throw settled[0].reason;
+    if (!timRes.ok && !typexRes.ok) {
+      throw timRes.reason || typexRes.reason;
     }
   }
 
+  async #closeTencent() {
+    const chat = this.chat;
+    const sdk = this.TencentCloudChat;
+    this.chat = null;
+    this.TencentCloudChat = null;
+    this.tencentLoginPromise = null;
+    this.joinedGroups.clear();
+    if (!chat) return;
+    const destroyed = Promise.resolve(chat.destroy?.()).catch(() => {});
+    // Let a normal logout finish, but never keep the copy alive past the cap.
+    const release = () => releaseTencentChat(sdk);
+    const fallback = setTimeout(release, SDK_RELEASE_AFTER_MS);
+    fallback.unref?.();
+    void destroyed.then(() => {
+      clearTimeout(fallback);
+      release();
+    });
+    await Promise.race([destroyed, new Promise((r) => setTimeout(r, 400))]);
+  }
+
   async send({ groupId, payloadData, liveId = "" }) {
-    await this.join(groupId, liveId);
-    const tasks = [];
-    if (this.typexSession) {
-      tasks.push(
-        this.#typexRequest("/liveshow/send_message", {
-          method: "POST",
-          body: { room_id: groupId, content: payloadData },
-        }).then((data) => ({
-          provider: "typex",
-          providerMessageId: String(data?.message_id || ""),
-        })).catch((error) => {
-          this.typexJoinedGroups.delete(groupId);
-          throw error;
-        }),
-      );
+    const results = [];
+    let lastError = null;
+
+    // 1. Tencent IM pipeline (login -> joinGroup -> sendMessage -> cleanup once
+    // no other room of this account is still sending on the same instance)
+    this.tencentSends += 1;
+    try {
+      await this.#joinTencent(groupId);
+      const chat = this.chat;
+      const TencentCloudChat = this.TencentCloudChat;
+      if (!chat || !TencentCloudChat) throw new Error("Phiên chat Gosh vừa đóng, hãy gửi lại.");
+      const message = chat.createCustomMessage({
+        to: groupId,
+        conversationType: TencentCloudChat.TYPES.CONV_GROUP,
+        payload: { data: payloadData, description: "", extension: "" },
+      });
+      const result = await timeoutAfter(chat.sendMessage(message), TIM_REQUEST_TIMEOUT_MS, "Gửi vào chat Gosh quá thời gian.");
+      results.push({
+        provider: "tencent",
+        providerMessageId: String(result?.data?.message?.ID || ""),
+      });
+    } catch (error) {
+      this.joinedGroups.delete(groupId);
+      lastError = timError(error, "Gosh từ chối bình luận.");
+    } finally {
+      this.tencentSends -= 1;
+      if (!this.createChat && this.tencentSends === 0) {
+        await this.#closeTencent();
+      }
     }
-    if (this.chat) {
-      tasks.push(
-        (async () => {
-          const message = this.chat.createCustomMessage({
-            to: groupId,
-            conversationType: this.TencentCloudChat.TYPES.CONV_GROUP,
-            payload: { data: payloadData, description: "", extension: "" },
-          });
-          try {
-            const result = await this.chat.sendMessage(message);
-            return {
-              provider: "tencent",
-              providerMessageId: String(result?.data?.message?.ID || ""),
-            };
-          } catch (error) {
-            // Rejoin next time: the group session may have been dropped server side.
-            this.joinedGroups.delete(groupId);
-            throw timError(error, "Gosh từ chối bình luận.");
-          }
-        })(),
-      );
+    // 2. TypeX pipeline (login -> liveshow/join -> liveshow/send_message)
+    try {
+      await this.#joinTypeX(groupId);
+      const data = await this.#typexRequest("/liveshow/send_message", {
+        method: "POST",
+        body: { room_id: groupId, content: payloadData },
+      });
+      results.push({
+        provider: "typex",
+        providerMessageId: String(data?.message_id || ""),
+      });
+    } catch (error) {
+      this.typexJoinedGroups.delete(groupId);
+      lastError = lastError || error;
     }
-    const settled = await Promise.allSettled(tasks);
-    const fulfilled = settled.filter((item) => item.status === "fulfilled").map((item) => item.value);
-    if (!fulfilled.length) {
-      const rejected = settled.find((item) => item.status === "rejected");
-      throw rejected?.reason || new Error("Gosh từ chối bình luận.");
+
+    if (liveId) {
+      goshRequest("/gosh_base/app/live/join", {
+        method: "POST",
+        body: { live_id: String(liveId), instance_id: randomUUID() },
+        credentials: this.credentials,
+        dispatcher: this.dispatcher,
+        fetchImpl: this.fetchImpl,
+      }).catch(() => {});
     }
-    const primary = fulfilled.find((item) => item.provider === "typex" && item.providerMessageId)
-      || fulfilled.find((item) => item.providerMessageId)
-      || fulfilled[0];
+
+    if (!results.length) {
+      throw lastError || new Error("Gosh từ chối bình luận.");
+    }
+    const primary = results.find((item) => item.provider === "typex" && item.providerMessageId)
+      || results.find((item) => item.providerMessageId)
+      || results[0];
     return { providerMessageId: String(primary?.providerMessageId || "") };
   }
 
   async destroy() {
     this.dead = true;
     this.typexSession = null;
-    try {
-      await this.chat.logout();
-    } catch {}
-    try {
-      await this.chat.destroy();
-    } catch {}
+    await this.#closeTencent();
   }
 }

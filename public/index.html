@@ -12,7 +12,7 @@
         if (theme === "light" || theme === "system") document.documentElement.dataset.theme = theme;
       } catch {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=41" />
+    <link rel="stylesheet" href="/styles.css?v=42" />
   </head>
   <body>
     <div class="shell">
@@ -41,6 +41,21 @@
           <button class="nav-item" type="button" data-view="follow">
             <span class="nav-icon" data-icon="user-plus" aria-hidden="true"></span>
             <span class="nav-label">Tăng follow</span>
+          </button>
+          <button class="nav-item" type="button" data-view="viewbot">
+            <span class="nav-icon" data-icon="activity" aria-hidden="true"></span>
+            <span class="nav-label">Mắt xem</span>
+            <span id="nav-viewbot" class="nav-meta" hidden></span>
+          </button>
+          <button class="nav-item" type="button" data-view="hubs">
+            <span class="nav-icon" data-icon="users" aria-hidden="true"></span>
+            <span class="nav-label">Máy phụ</span>
+            <span id="nav-hubs" class="nav-meta">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view="telegram">
+            <span class="nav-icon" data-icon="radio-tower" aria-hidden="true"></span>
+            <span class="nav-label">Telegram</span>
+            <span id="nav-telegram" class="nav-meta" hidden></span>
           </button>
           <button class="nav-item" type="button" data-view="accounts">
             <span class="nav-icon" data-icon="users" aria-hidden="true"></span>
@@ -103,7 +118,7 @@
 
             <div class="live-layout">
               <div class="live-main">
-                <div class="platform-tabs" role="tablist" aria-label="Nền tảng">
+                <div class="platform-tabs" role="tablist" aria-label="Nền tảng" hidden>
                   <button class="platform-tab" type="button" role="tab" data-platform-tab="gosh" aria-selected="true">
                     <span class="pf-dot gosh" aria-hidden="true"></span>
                     <span class="pf-name">Gosh</span>
@@ -271,15 +286,15 @@
                     <label class="field-label" for="follow-target">Kênh mục tiêu</label>
                     <button id="follow-check" class="link-btn" type="button">Kiểm tra kênh</button>
                   </div>
-                  <textarea id="follow-target" class="mono" rows="3" spellcheck="false" autocomplete="off" placeholder="https://gosh.com/vi/16427037&#10;hoặc UID: 16427037"></textarea>
-                  <p class="field-hint">Mỗi dòng một kênh. Có thể dán link hoặc UID.</p>
+                  <textarea id="follow-target" class="mono" rows="3" spellcheck="false" autocomplete="off" placeholder="https://gosh.com/zaucute00&#10;hoặc ID / UID: zaucute00"></textarea>
+                  <p class="field-hint">Mỗi dòng một kênh. Có thể dán link, ID kênh hoặc UID số.</p>
                 </div>
 
                 <div id="channel-preview" class="channel-preview" hidden>
                   <span id="channel-avatar" class="avatar" aria-hidden="true">G</span>
                   <div class="channel-preview-name">
-                    <strong id="channel-name">—</strong>
-                    <span id="channel-uid" class="mono">—</span>
+                    <strong id="channel-name">-</strong>
+                    <span id="channel-uid" class="mono">-</span>
                   </div>
                   <dl class="channel-stats">
                     <div><dt>Follower</dt><dd id="channel-followers">0</dd></div>
@@ -331,12 +346,11 @@
                   <h2 id="follow-results-title">Kết quả gần nhất</h2>
                 </div>
                 <dl class="stat-grid">
-                  <div class="stat"><dt>Trước khi chạy</dt><dd id="follow-before">—</dd></div>
-                  <div class="stat"><dt>Sau khi chạy</dt><dd id="follow-after">—</dd></div>
-                  <div class="stat"><dt>Thay đổi</dt><dd id="follow-delta">—</dd></div>
-                  <div class="stat"><dt>Thành công</dt><dd id="follow-rate">—</dd></div>
+                  <div class="stat"><dt>Trước khi chạy</dt><dd id="follow-before">-</dd></div>
+                  <div class="stat"><dt>Sau khi chạy</dt><dd id="follow-after">-</dd></div>
+                  <div class="stat"><dt>Thay đổi</dt><dd id="follow-delta">-</dd></div>
+                  <div class="stat"><dt>Thành công</dt><dd id="follow-rate">-</dd></div>
                 </dl>
-
                 <div class="card-head card-head-sub">
                   <h3>Lịch sử trong phiên</h3>
                   <button id="clear-follow-history" class="link-btn" type="button" hidden>Xóa lịch sử</button>
@@ -353,30 +367,433 @@
           </section>
 
           <!-- TÀI KHOẢN -->
+          <section id="view-viewbot" class="view" data-view-panel="viewbot" hidden>
+            <header class="page-head">
+              <div>
+                <h1>Mắt xem livestream</h1>
+                <p class="page-sub">Mỗi mắt là một socket vào phòng chat của livestream — số người xem hiển thị trên QQ88 / Hi88 Live tăng theo.</p>
+              </div>
+              <span id="viewbot-tag" class="tag">Sẵn sàng</span>
+            </header>
+
+            <div class="page-body follow-layout">
+              <form id="viewbot-form" class="card follow-form" novalidate>
+                <fieldset class="field">
+                  <legend class="field-label">Nền tảng</legend>
+                  <div class="segmented segmented-fill">
+                    <label><input type="radio" name="viewbot-platform" value="qq88" checked /><span>QQ88 Live</span></label>
+                    <label><input type="radio" name="viewbot-platform" value="hi88" /><span>Hi88 Live</span></label>
+                    <label><input type="radio" name="viewbot-platform" value="mb66" /><span>MB66 Live</span></label>
+                    <label><input type="radio" name="viewbot-platform" value="coichua" /><span>Coichua TV</span></label>
+                  </div>
+                </fieldset>
+
+                <div class="field">
+                  <div class="field-label-row">
+                    <label class="field-label" for="viewbot-url">Link livestream</label>
+                    <button id="viewbot-load-streams" class="link-btn" type="button">Phòng đang live</button>
+                  </div>
+                  <input id="viewbot-url" class="mono" type="text" spellcheck="false" autocomplete="off" placeholder="https://www.qq88live.live/live/QQ88live-bunny" />
+                  <p class="field-hint">Dán link live hoặc mã phòng (vd QQ88live-bunny).</p>
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="viewbot-bots">Số mắt</label>
+                  <div class="count-row">
+                    <input id="viewbot-bots" type="number" min="1" max="20000" inputmode="numeric" value="50" />
+                    <div class="segmented" role="group" aria-label="Chọn nhanh số mắt">
+                      <button type="button" data-viewbot-preset="50">50</button>
+                      <button type="button" data-viewbot-preset="200">200</button>
+                      <button type="button" data-viewbot-preset="500">500</button>
+                      <button type="button" data-viewbot-preset="1000">1.000</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label class="field-label" for="viewbot-ramp">Tốc độ mở (socket mỗi giây)</label>
+                  <input id="viewbot-ramp" type="number" min="1" max="2000" inputmode="numeric" value="5" />
+                  <p class="field-hint">Mở chậm để giống người thật; 100 mắt nên để 5–10.</p>
+                </div>
+
+                <div class="field">
+                  <div class="field-label-row">
+                    <label class="field-label" for="viewbot-proxies">Proxy</label>
+                    <span class="field-hint"><span id="viewbot-proxy-count">0 proxy</span> · <button id="viewbot-check-proxies" class="link-btn" type="button">Kiểm tra IP</button></span>
+                  </div>
+                  <textarea id="viewbot-proxies" class="mono" rows="5" spellcheck="false" autocomplete="off" placeholder="103.1.2.3:8080:username:password&#10;gw.geonode.io:9000:user-session-{i}:pass"></textarea>
+                  <p id="viewbot-proxy-result" class="field-hint" hidden></p>
+                  <p class="field-hint">Mỗi dòng một proxy dạng ip:port:user:pass (hoặc ip:port). Dùng <code>{i}</code> trong user để mỗi mắt một session/IP riêng (Geonode: <code>user-session-{i}</code>, hoặc <code>{rand}</code> cho session ngẫu nhiên). Trống = dùng IP máy.</p>
+                </div>
+
+                <div class="field">
+                  <div class="field-label-row">
+                    <label class="field-label">Máy chạy</label>
+                    <button id="viewbot-target-all" class="link-btn" type="button">Chọn mọi hub online</button>
+                  </div>
+                  <div id="viewbot-targets" class="target-list"></div>
+                  <p class="field-hint">Tick một hoặc nhiều máy — số mắt chia đều cho các máy đã chọn, phần dư dồn về máy đầu.</p>
+                </div>
+
+                <div class="form-actions">
+                  <button id="viewbot-stop" class="btn btn-ghost" type="button">Dừng tất cả</button>
+                  <button id="viewbot-submit" class="btn btn-primary" type="submit">
+                    <span data-icon="activity" aria-hidden="true"></span>Bắt đầu
+                  </button>
+                </div>
+              </form>
+
+              <section class="card follow-results" aria-labelledby="viewbot-results-title">
+                <div class="card-head">
+                  <h2 id="viewbot-results-title">Phiên đang chạy</h2>
+                  <span id="viewbot-count" class="tag">0</span>
+                </div>
+                <div id="viewbot-jobs" class="viewbot-jobs"></div>
+                <p id="viewbot-empty" class="field-hint">Chưa có phiên nào. Chọn nền tảng, dán link rồi bấm Bắt đầu.</p>
+                <div class="card-head card-head-sub">
+                  <h3>Kiểm tra nhanh</h3>
+                </div>
+                <div class="viewbot-check">
+                  <input id="viewbot-check-hub" class="mono" type="text" placeholder="Mã phòng" />
+                  <button id="viewbot-check" class="btn btn-secondary btn-sm" type="button">Đọc số mắt trên site</button>
+                  <span id="viewbot-check-result" class="field-hint">—</span>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="view-hubs" class="view" data-view-panel="hubs" hidden>
+            <header class="page-head">
+              <div>
+                <h1>Máy phụ (hub)</h1>
+                <p class="page-sub">Biến máy tính khác thành hub để gánh tăng mắt — máy chính chỉ điều phối.</p>
+              </div>
+              <span id="hubs-summary" class="tag">0 online</span>
+            </header>
+
+            <div class="page-body follow-layout">
+              <form id="hub-form" class="card follow-form" novalidate>
+                <div class="field">
+                  <label class="field-label" for="hub-name">Tên máy</label>
+                  <input id="hub-name" type="text" maxlength="60" placeholder="may-2" autocomplete="off" />
+                  <p class="field-hint">Tạo xong sẽ có lệnh một dòng — dán vào Terminal / PowerShell của máy đó.</p>
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-primary" type="submit"><span data-icon="plus" aria-hidden="true"></span>Tạo hub</button>
+                </div>
+              </form>
+
+              <section class="card follow-results" aria-labelledby="hub-list-title">
+                <div class="card-head">
+                  <h2 id="hub-list-title">Danh sách hub</h2>
+                  <button id="hub-refresh" class="link-btn" type="button">Làm mới</button>
+                </div>
+                <div id="hub-list" class="hub-list"></div>
+                <p id="hub-empty" class="field-hint">Chưa có hub nào. Tạo một cái ở bên trái.</p>
+                <div class="card-head card-head-sub"><h3>Hướng dẫn nhanh</h3></div>
+                <ul class="hub-guide">
+                  <li>Máy hub cần Node.js 18+ và npm (cùng mạng LAN hoặc IP public tới được máy chính).</li>
+                  <li>Dán lệnh một dòng vào terminal máy đó — agent tự tải code, cài thư viện, chạy và báo online.</li>
+                  <li>Sau khi hub online, sang tab <strong>Mắt xem</strong> chọn “Máy chạy” là hub đó hoặc để “Tự động chia hub”.</li>
+                </ul>
+              </section>
+            </div>
+          </section>
+
+          <section id="view-telegram" class="view" data-view-panel="telegram" hidden>
+            <header class="page-head">
+              <div>
+                <h1>Telegram</h1>
+                <p class="page-sub">Tăng mắt livestream và gửi bình luận bằng bộ tài khoản Telethon — có giới hạn an toàn per-acc.</p>
+              </div>
+              <span id="tg-tag" class="tag">Sẵn sàng</span>
+            </header>
+
+            <div class="page-body">
+              <div class="tg-tabs" role="tablist" aria-label="Telegram">
+                <button class="tg-tab is-active" type="button" role="tab" data-tg-tab="view" aria-selected="true">Tăng mắt</button>
+                <button class="tg-tab" type="button" role="tab" data-tg-tab="comment" aria-selected="false">Bình luận</button>
+                <button class="tg-tab" type="button" role="tab" data-tg-tab="accounts" aria-selected="false">Tài khoản</button>
+              </div>
+
+              <!-- MẮT XEM -->
+              <div class="tg-panel" data-tg-panel="view">
+                <div class="follow-layout">
+                  <form id="tg-form" class="card follow-form" novalidate>
+                    <div class="field">
+                      <div class="field-label-row">
+                        <label class="field-label" for="tg-link">Link livestream</label>
+                        <button id="tg-check-view" class="link-btn" type="button">Kiểm tra live</button>
+                      </div>
+                      <input id="tg-link" class="mono" type="text" spellcheck="false" placeholder="https://t.me/tenkenh" />
+                      <p class="field-hint">Dán link kênh/nhóm Telegram đang live. Có thể đổi phòng khi đang chạy.</p>
+                      <p id="tg-check-view-result" class="field-hint" hidden></p>
+                    </div>
+
+                    <div class="field">
+                      <label class="field-label" for="tg-target-count">Số mắt</label>
+                      <div class="count-row">
+                        <input id="tg-target-count" type="number" min="0" max="5000" value="20" inputmode="numeric" />
+                        <div class="segmented" role="group" aria-label="Chọn nhanh số mắt">
+                          <button type="button" data-tg-preset="10">10</button>
+                          <button type="button" data-tg-preset="20">20</button>
+                          <button type="button" data-tg-preset="50">50</button>
+                          <button type="button" data-tg-preset="100">100</button>
+                          <button type="button" data-tg-preset="200">200</button>
+                        </div>
+                      </div>
+                      <div class="tg-bignum tg-bignum-compact" role="group" aria-label="Chỉnh nhanh số mắt">
+                        <button class="tg-step" type="button" data-tg-step="-10">−10</button>
+                        <button class="tg-step" type="button" data-tg-step="-1">−1</button>
+                        <button class="tg-step" type="button" data-tg-step="1">+1</button>
+                        <button class="tg-step" type="button" data-tg-step="10">+10</button>
+                      </div>
+                      <p class="field-hint">Áp dụng ngay — đang chạy thì mở thêm hoặc rút bớt acc tự động.</p>
+                    </div>
+
+                    <div class="form-actions">
+                      <button id="tg-stop" class="btn btn-ghost" type="button">Dừng</button>
+                      <button id="tg-submit" class="btn btn-primary" type="submit">
+                        <span data-icon="activity" aria-hidden="true"></span>Bắt đầu
+                      </button>
+                    </div>
+                  </form>
+
+                  <section class="card follow-results" aria-labelledby="tg-view-title">
+                    <div class="card-head">
+                      <h2 id="tg-view-title">Phiên đang chạy</h2>
+                      <span id="tg-view-state" class="tag">Chưa chạy</span>
+                    </div>
+                    <div class="tg-bigstats">
+                      <div class="tg-bigstat">
+                        <span class="tg-bigstat-label">Người xem (Telegram báo)</span>
+                        <strong id="tg-participants">—</strong>
+                      </div>
+                      <div class="tg-bigstat">
+                        <span class="tg-bigstat-label">Acc trong phòng</span>
+                        <strong id="tg-joined">0/0</strong>
+                      </div>
+                    </div>
+                    <div class="meter tg-meter"><span id="tg-bar" style="width:0%"></span></div>
+                    <p id="tg-skip" class="field-hint" hidden></p>
+                    <div class="card-head card-head-sub">
+                      <h3>Tài khoản đang tham gia</h3>
+                    </div>
+                    <div id="tg-view-list" class="tg-list"></div>
+                    <p id="tg-view-empty" class="field-hint">Chưa chạy phiên nào. Dán link rồi bấm Bắt đầu.</p>
+                  </section>
+                </div>
+              </div>
+
+              <!-- BÌNH LUẬN -->
+              <div class="tg-panel" data-tg-panel="comment" hidden>
+                <div class="live-layout tg-live-layout">
+                  <div class="live-main">
+                    <section class="card" aria-labelledby="tg-store-title">
+                      <div class="card-head">
+                        <h2 id="tg-store-title">Kho bình luận</h2>
+                        <span id="tg-comment-count" class="tag">0 câu</span>
+                      </div>
+                      <div class="field">
+                        <label class="field-label" for="tg-comment-input">Thêm câu (mỗi dòng một câu)</label>
+                        <textarea id="tg-comment-input" class="mono" rows="4" spellcheck="false" placeholder="Nội dung bình luận&#10;Mỗi dòng sẽ thành một câu riêng"></textarea>
+                      </div>
+                      <div class="form-actions form-actions-start">
+                        <button id="tg-comment-shuffle" class="btn btn-ghost btn-sm" type="button">Xáo trộn</button>
+                        <button id="tg-comment-clear" class="btn btn-ghost btn-sm" type="button">Xoá hết</button>
+                        <button id="tg-comment-add" class="btn btn-secondary btn-sm" type="button">Thêm vào kho</button>
+                      </div>
+                      <ol id="tg-comment-list" class="comment-list"></ol>
+                      <p id="tg-comment-empty" class="field-hint">Kho đang rỗng.</p>
+                    </section>
+
+                    <section class="card" aria-labelledby="tg-comment-log-title" id="tg-comment-log-card" hidden>
+                      <div class="card-head">
+                        <h2 id="tg-comment-log-title">Lần gửi gần nhất</h2>
+                      </div>
+                      <div id="tg-comment-result" class="tg-list"></div>
+                    </section>
+                  </div>
+
+                  <aside class="launch">
+                    <section class="card launch-card" aria-labelledby="tg-launch-title">
+                      <div class="card-head">
+                        <h2 id="tg-launch-title">Khởi chạy</h2>
+                        <span id="tg-comment-state" class="tag">Chưa chạy</span>
+                      </div>
+
+                      <ul class="checklist" id="tg-comment-checklist">
+                        <li id="tg-check-link" class="check">
+                          <span class="check-icon" aria-hidden="true"></span>
+                          <span class="check-copy"><strong>Kênh / nhóm</strong><span class="check-detail">Chưa dán link</span></span>
+                        </li>
+                        <li id="tg-check-kho" class="check">
+                          <span class="check-icon" aria-hidden="true"></span>
+                          <span class="check-copy"><strong>Kho bình luận</strong><span class="check-detail">0 câu</span></span>
+                        </li>
+                        <li id="tg-check-acc" class="check">
+                          <span class="check-icon" aria-hidden="true"></span>
+                          <span class="check-copy"><strong>Tài khoản đủ tuổi</strong><span class="check-detail">—</span></span>
+                        </li>
+                      </ul>
+
+                      <div class="field">
+                        <div class="field-label-row">
+                          <label class="field-label" for="tg-comment-link">Link kênh / nhóm</label>
+                          <button id="tg-check" class="link-btn" type="button">Kiểm tra kênh</button>
+                        </div>
+                        <input id="tg-comment-link" class="mono" type="text" spellcheck="false" placeholder="https://t.me/tennhom" />
+                        <p id="tg-check-result" class="field-hint" hidden></p>
+                      </div>
+
+                      <div class="grid-2">
+                        <div class="field">
+                          <label class="field-label" for="tg-comment-accounts">Số acc gửi</label>
+                          <input id="tg-comment-accounts" type="number" min="1" max="200" value="10" inputmode="numeric" />
+                        </div>
+                        <div class="field">
+                          <label class="field-label" for="tg-comment-per">Câu / acc</label>
+                          <input id="tg-comment-per" type="number" min="1" max="10" value="1" inputmode="numeric" />
+                        </div>
+                      </div>
+                      <div class="grid-2">
+                        <div class="field">
+                          <label class="field-label" for="tg-comment-daily">Lượt / acc / ngày</label>
+                          <input id="tg-comment-daily" type="number" min="1" max="30" value="5" inputmode="numeric" />
+                        </div>
+                        <div class="field">
+                          <label class="field-label" for="tg-comment-age">Tuổi acc tối thiểu</label>
+                          <div class="input-affix">
+                            <input id="tg-comment-age" type="number" min="0" max="365" value="7" inputmode="numeric" />
+                            <span>ngày</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="field">
+                        <span class="field-label">Nghỉ giữa các câu</span>
+                        <div class="delay-row">
+                          <div class="input-affix">
+                            <input id="tg-comment-delay-min" type="number" min="5" max="600" value="25" inputmode="numeric" aria-label="Tối thiểu" />
+                            <span>min</span>
+                          </div>
+                          <div class="input-affix">
+                            <input id="tg-comment-delay-max" type="number" min="5" max="900" value="90" inputmode="numeric" aria-label="Tối đa" />
+                            <span>max</span>
+                          </div>
+                        </div>
+                        <p class="field-hint">Mỗi câu nghỉ ngẫu nhiên trong khoảng này — để tự nhiên hơn.</p>
+                      </div>
+
+                      <div class="field field-inline">
+                        <label class="switch-field" for="tg-comment-continuous">
+                          <input id="tg-comment-continuous" type="checkbox" role="switch" />
+                          <span class="switch" aria-hidden="true"></span>
+                          <span>Chạy liên tục</span>
+                        </label>
+                        <span id="tg-comment-rounds-meta" class="field-meta">Đợt: <span id="tg-comment-rounds" class="tabular">0</span></span>
+                      </div>
+
+                      <div class="field" id="tg-comment-round-field">
+                        <label class="field-label" for="tg-comment-round">Nghỉ giữa các đợt</label>
+                        <div class="input-affix">
+                          <input id="tg-comment-round" type="number" min="10" max="3600" value="60" inputmode="numeric" />
+                          <span>giây</span>
+                        </div>
+                      </div>
+
+                      <dl class="stat-grid tg-stat-grid">
+                        <div class="stat"><dt>Đã gửi</dt><dd id="tg-comment-sent">0</dd></div>
+                        <div class="stat"><dt>Lỗi</dt><dd id="tg-comment-errors">0</dd></div>
+                      </dl>
+                      <p id="tg-comment-note" class="field-hint" hidden></p>
+
+                      <div class="launch-actions">
+                        <button id="tg-comment-stop" class="btn btn-ghost" type="button">Dừng</button>
+                        <button id="tg-comment-start" class="btn btn-primary" type="button">
+                          <span data-icon="play" aria-hidden="true"></span>Gửi bình luận
+                        </button>
+                      </div>
+                      <p class="launch-note">Tài khoản dưới tuổi tối thiểu hoặc đã dùng hết lượt hôm nay sẽ bị bỏ qua.</p>
+                    </section>
+                  </aside>
+                </div>
+              </div>
+
+              <!-- TÀI KHOẢN -->
+              <div class="tg-panel" data-tg-panel="accounts" hidden>
+                <div class="follow-layout">
+                  <section class="card follow-form">
+                    <div class="card-head">
+                      <h2>Nhập tài khoản</h2>
+                      <span id="tg-account-count" class="tag">0</span>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="tg-upload">File zip tài khoản</label>
+                      <input id="tg-upload" type="file" accept=".zip" />
+                      <p class="field-hint">Mỗi acc một thư mục: <code>&lt;phone&gt;.session</code>, <code>&lt;phone&gt;.json</code>, <code>2FA.txt</code> (kèm <code>tdata</code> cũng được).</p>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="tg-path">…hoặc đường dẫn zip / thư mục trên máy chủ</label>
+                      <div class="viewbot-check">
+                        <input id="tg-path" class="mono" type="text" placeholder="/Users/tafi/Downloads/order-10690.zip" />
+                        <button id="tg-import-path" class="btn btn-secondary btn-sm" type="button">Nhập</button>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="card follow-results">
+                    <div class="card-head">
+                      <h2>Danh sách tài khoản</h2>
+                      <span id="tg-total" class="tag">0</span>
+                    </div>
+                    <p class="field-hint">Tuổi acc · lượt đã dùng hôm nay. Acc dưới ngưỡng tuổi sẽ bị bỏ qua khi chạy.</p>
+                    <div id="tg-account-list" class="tg-list"></div>
+                    <p id="tg-empty" class="field-hint">Chưa có tài khoản nào.</p>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section id="view-accounts" class="view" data-view-panel="accounts" hidden>
             <header class="page-head">
               <div>
-                <h1>Tài khoản</h1>
+                <h1>Tài khoản Gosh</h1>
                 <p id="account-summary" class="page-sub">0 tài khoản</p>
               </div>
               <div class="page-actions">
-                <button id="load-tokens" class="btn btn-secondary" type="button" title="Đọc token từ hồ sơ Chrome của các tài khoản chưa có token">
-                  <span data-icon="key-round" aria-hidden="true"></span>Nạp token từ Chrome
+                <button id="open-import-btn" class="btn btn-secondary" type="button">
+                  <span data-icon="key-round" aria-hidden="true"></span>Nhập user | pass
                 </button>
-                <div class="menu" id="add-account-menu">
-                  <button id="add-account" class="btn btn-primary" type="button" aria-haspopup="menu" aria-expanded="false">
-                    <span data-icon="plus" aria-hidden="true"></span>Thêm tài khoản
-                  </button>
-                  <div class="menu-pop" role="menu" hidden>
-                    <button type="button" role="menuitem" data-add-platform="gosh"><span class="pf-dot gosh"></span>Gosh</button>
-                    <button type="button" role="menuitem" data-add-platform="loco"><span class="pf-dot loco"></span>Loco</button>
-                    <button type="button" role="menuitem" data-add-platform="gaquaytv"><span class="pf-dot gaquaytv"></span>GaQuayTV</button>
-                  </div>
+                <button id="open-autoreg-btn" class="btn btn-primary" type="button">
+                  <span data-icon="plus" aria-hidden="true"></span>Tự reg Gosh
+                </button>
+                <button id="load-tokens" class="btn btn-secondary" type="button" hidden></button>
+                <div class="menu" id="add-account-menu" hidden>
+                  <button id="add-account" class="btn btn-primary" type="button"></button>
                 </div>
               </div>
             </header>
 
             <div class="page-body">
+              <section id="autoreg-banner" class="card autoreg-banner" hidden>
+                <div class="autoreg-banner-head">
+                  <div class="autoreg-banner-title">
+                    <span class="live-dot" aria-hidden="true"></span>
+                    <strong id="autoreg-banner-status">Đang tự động đăng ký Gosh…</strong>
+                  </div>
+                  <div class="autoreg-banner-actions">
+                    <span id="autoreg-banner-count" class="tabular">0/0</span>
+                    <button id="autoreg-stop-btn" class="btn btn-sm btn-danger-ghost" type="button">
+                      <span data-icon="square" aria-hidden="true"></span>Dừng reg
+                    </button>
+                  </div>
+                </div>
+                <span class="meter"><span id="autoreg-banner-bar"></span></span>
+                <p id="autoreg-banner-step" class="field-hint"></p>
+              </section>
+
               <div class="filter-tabs" role="tablist" aria-label="Lọc theo trạng thái">
                 <button type="button" role="tab" data-status-filter="all" aria-selected="true">Tất cả <span data-filter-count="all"></span></button>
                 <button type="button" role="tab" data-status-filter="ready" aria-selected="false">Có token <span data-filter-count="ready"></span></button>
@@ -390,9 +807,9 @@
                   <span data-icon="search" aria-hidden="true"></span>
                   <input id="account-search" type="search" placeholder="Tìm theo tên, username hoặc ID" autocomplete="off" aria-label="Tìm tài khoản" />
                 </div>
-                <select id="account-filter-platform" aria-label="Lọc theo nền tảng">
+                <select id="account-filter-platform" aria-label="Lọc theo nền tảng" hidden>
+                  <option value="gosh" selected>Gosh</option>
                   <option value="all">Mọi nền tảng</option>
-                  <option value="gosh">Gosh</option>
                   <option value="loco">Loco</option>
                   <option value="gaquaytv">GaQuayTV</option>
                 </select>
@@ -603,6 +1020,50 @@
       </form>
     </dialog>
 
+    <dialog id="import-dialog" class="dialog dialog-md">
+      <form id="import-form">
+        <h2>Nhập tài khoản Gosh (username | pass)</h2>
+        <p>Dán một hoặc nhiều tài khoản (mỗi dòng 1 tài khoản theo dạng <code>username|password</code>). Hệ thống sẽ tự đăng nhập trực tiếp qua API và lưu token.</p>
+        <div class="field">
+          <label class="field-label" for="import-raw-input">Danh sách tài khoản</label>
+          <textarea id="import-raw-input" class="mono" rows="6" spellcheck="false" placeholder="user1@yahoo.com|Gosh@123456!&#10;user2@yahoo.com|Gosh@654321!" required></textarea>
+        </div>
+        <div class="dialog-actions">
+          <button id="import-cancel-btn" class="btn btn-ghost" type="button">Hủy</button>
+          <button id="import-submit-btn" class="btn btn-primary" type="submit">Đăng nhập &amp; thêm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="autoreg-dialog" class="dialog dialog-md">
+      <form id="autoreg-form">
+        <h2>Tự động đăng ký thêm tài khoản Gosh</h2>
+        <p>Nhập Proxy Geonode và số lượng tài khoản cần tạo thêm. Các tài khoản mới sẽ tự động được tạo và nạp thẳng vào danh sách.</p>
+        <div class="field">
+          <label class="field-label" for="autoreg-proxy">Proxy Geonode</label>
+          <input id="autoreg-proxy" class="mono" type="text" value="geonode_qQ1uSovUZR:d708e8ff-7815-4838-926e-5c793216642f" placeholder="geonode_user:pass hoặc http://user:pass@host:port" required />
+          <p class="field-hint">Hỗ trợ mã <code>geonode_user:pass</code> (tự xoay 5.000 sticky session) hoặc URL proxy HTTP.</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="autoreg-count">Số lượng tài khoản cần reg thêm</label>
+          <div class="count-row">
+            <input id="autoreg-count" type="number" min="1" max="2000" value="50" inputmode="numeric" required />
+            <div class="segmented" role="group" aria-label="Chọn nhanh số lượng reg">
+              <button type="button" data-autoreg-preset="10">10</button>
+              <button type="button" data-autoreg-preset="25">25</button>
+              <button type="button" data-autoreg-preset="50">50</button>
+              <button type="button" data-autoreg-preset="100">100</button>
+              <button type="button" data-autoreg-preset="200">200</button>
+              <button type="button" data-autoreg-preset="500">500</button>
+            </div>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button id="autoreg-cancel-btn" class="btn btn-ghost" type="button">Hủy</button>
+          <button id="autoreg-submit-btn" class="btn btn-primary" type="submit">Bắt đầu tự reg</button>
+        </div>
+      </form>
+    </dialog>
     <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 
     <div id="login-overlay" class="login" hidden>
@@ -626,7 +1087,6 @@
         </form>
       </div>
     </div>
-
-    <script type="module" src="/app.js?v=41"></script>
+    <script type="module" src="/app.js?v=44"></script>
   </body>
 </html>

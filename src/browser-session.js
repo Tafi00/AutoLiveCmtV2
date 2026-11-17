@@ -102,6 +102,13 @@ export function recordObservedEndpoint(url, method = "GET", status = 200) {
   } catch {}
 }
 
+// Keeps each Chrome profile small on disk: without a cap the HTTP cache of a
+// single profile grows to several hundred MB.
+export const CHROME_LIGHT_ARGS = [
+  "--disk-cache-size=52428800",
+  "--media-cache-size=10485760",
+  "--disable-component-update",
+];
 export const CHROME_PROFILE_IGNORE_DEFAULT_ARGS = [
   "--enable-automation",
   "--password-store=basic",
@@ -744,6 +751,7 @@ export class BrowserSession {
         "--disable-blink-features=AutomationControlled",
         "--disable-features=MediaRouter",
         "--mute-audio",
+        ...CHROME_LIGHT_ARGS,
       ],
     });
 
@@ -800,7 +808,7 @@ export class BrowserSession {
         // Same keychain handling as the login window so encrypted cookies
         // stay readable.
         ignoreDefaultArgs: CHROME_PROFILE_IGNORE_DEFAULT_ARGS,
-        args: ["--headless=new", "--mute-audio"],
+        args: ["--headless=new", "--mute-audio", ...CHROME_LIGHT_ARGS],
       });
       try {
         return await task(context);
@@ -869,6 +877,7 @@ export class BrowserSession {
       "--remote-debugging-address=127.0.0.1",
       "--no-first-run",
       "--no-default-browser-check",
+      ...CHROME_LIGHT_ARGS,
     ];
     if (proxyConfig?.server) {
       chromeArgs.push(`--proxy-server=${proxyConfig.server}`);

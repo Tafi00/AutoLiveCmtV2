@@ -300,6 +300,7 @@ export class JsonStore {
     this.filePath = join(directory, "state.json");
     this.state = cloneDefaultState();
     this.writeQueue = Promise.resolve();
+    this.pendingWrite = null;
     this.lastMtimeMs = 0;
   }
 
@@ -647,18 +648,29 @@ export class JsonStore {
     await this.persist();
   }
 
+  // Calls made while a write is still queued share that write: a burst of
+  // changes (one per sent comment) serializes and writes the state once.
   async persist() {
+    if (!this.pendingWrite) {
+      const write = this.writeQueue.catch(() => {}).then(() => {
+        this.pendingWrite = null;
+        return this.#write();
+      });
+      this.pendingWrite = write;
+      this.writeQueue = write;
+    }
+    await this.pendingWrite;
+  }
+
+  async #write() {
     const payload = `${JSON.stringify(this.state, null, 2)}\n`;
     const temporaryPath = `${this.filePath}.tmp`;
-    this.writeQueue = this.writeQueue.then(async () => {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600 });
-      await rename(temporaryPath, this.filePath);
-      try {
-        const info = await stat(this.filePath);
-        this.lastMtimeMs = info.mtimeMs;
-      } catch {}
-    });
-    await this.writeQueue;
+    await mkdir(dirname(this.filePath), { recursive: true });
+    await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600 });
+    await rename(temporaryPath, this.filePath);
+    try {
+      const info = await stat(this.filePath);
+      this.lastMtimeMs = info.mtimeMs;
+    } catch {}
   }
 }

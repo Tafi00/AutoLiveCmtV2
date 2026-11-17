@@ -360,3 +360,55 @@ test("Chạy tất cả gửi đủ từng mẫu trên mỗi link của cùng we
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("Dừng kết thúc lượt chạy ngay cả khi một lần gửi bị treo", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "server-bulk-stop-hang-test-"));
+  const instance = await startServer({ port: 0, dataDirectory: tempDir });
+  const port = instance.server.address().port;
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  try {
+    await instance.store.updateSettings({
+      channelLinks: { gosh: ["https://gosh.com/vi/16427037", "https://gosh6.app/15942759"], loco: [] },
+      delaySeconds: 0,
+      displayNames: [],
+      renameEveryComments: 1,
+    });
+    await instance.store.addMessage("Gosh 1\nGosh 2\nGosh 3", "gosh");
+    instance.sessions.statuses = async (accounts) => accounts.map((account) => ({
+      ...account,
+      session: { running: true, loginState: "signed_in", readyToComment: true },
+    }));
+
+    // The second room's send never settles, like a chat request on a destroyed instance.
+    let started = 0;
+    instance.sessions.sendComment = async (_accountId, input) => {
+      started += 1;
+      if (input.channelUrl.includes("gosh6")) return new Promise(() => {});
+      return { sentAt: new Date().toISOString(), transport: "test" };
+    };
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/comments/send-all`, { method: "POST" });
+    assert.equal(response.status, 202);
+    while (started < 2) await pause(5);
+
+    const stoppedAt = Date.now();
+    const stopResponse = await fetch(`http://127.0.0.1:${port}/api/comments/send-all/stop`, { method: "POST" });
+    assert.equal(stopResponse.status, 200);
+    assert.equal((await stopResponse.json()).bulkSend.phase, "stopping");
+    while (instance.bulkSend.running) await pause(5);
+
+    assert.ok(Date.now() - stoppedAt < 3_000, "stop does not wait for the stuck send");
+    assert.equal(instance.bulkSend.phase, "stopped");
+
+    // The lock is released: a new run starts and finishes normally.
+    instance.sessions.sendComment = async () => ({ sentAt: new Date().toISOString(), transport: "test" });
+    const again = await fetch(`http://127.0.0.1:${port}/api/comments/send-all`, { method: "POST" });
+    assert.equal(again.status, 202);
+    while (instance.bulkSend.running) await pause(5);
+    assert.equal(instance.bulkSend.failed, 0);
+  } finally {
+    await instance.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

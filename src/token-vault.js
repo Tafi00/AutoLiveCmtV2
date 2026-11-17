@@ -9,6 +9,7 @@ export class TokenVault {
     this.records = new Map();
     this.loading = null;
     this.writing = Promise.resolve();
+    this.pendingWrite = null;
     this.lastMtimeMs = 0;
   }
 
@@ -65,8 +66,12 @@ export class TokenVault {
     return this.#persist();
   }
 
+  // Calls made while a write is still queued share that write, so a batch of
+  // token refreshes rewrites the file once instead of once per account.
   #persist() {
-    this.writing = this.writing.catch(() => {}).then(async () => {
+    if (this.pendingWrite) return this.pendingWrite;
+    this.writing = this.pendingWrite = this.writing.catch(() => {}).then(async () => {
+      this.pendingWrite = null;
       await mkdir(dirname(this.filePath), { recursive: true });
       const temporaryPath = `${this.filePath}.tmp`;
       const payload = { version: 1, accounts: Object.fromEntries(this.records) };

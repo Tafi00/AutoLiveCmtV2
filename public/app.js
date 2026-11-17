@@ -78,15 +78,14 @@ mountIcons();
 
 /* ---------- Constants ---------- */
 
-const PLATFORM_IDS = ["gosh", "loco", "gaquaytv"];
+const PLATFORM_IDS = ["gosh"];
 const PLATFORM_INFO = {
-  gosh: { name: "Gosh", placeholder: "https://gosh.com/vi/16427037" },
-  loco: { name: "Loco", placeholder: "https://loco.com/stream/…" },
+  gosh: { name: "Gosh", placeholder: "https://gosh.com/zaucute00" },
   gaquaytv: { name: "GaQuayTV", placeholder: "https://gaquaytv.com/live/…" },
 };
 const MAX_ROOMS = 20;
 const ACCOUNTS_PER_PAGE = 100;
-const VIEWS = ["live", "schedule", "follow", "accounts", "system"];
+const VIEWS = ["live", "schedule", "follow", "viewbot", "telegram", "hubs", "accounts", "system"];
 const DAY_OPTIONS = [
   [1, "T2", "Thứ hai"],
   [2, "T3", "Thứ ba"],
@@ -186,6 +185,25 @@ const el = {
   clearFollowHistory: $("#clear-follow-history"),
 
   accountSummary: $("#account-summary"),
+  openImportBtn: $("#open-import-btn"),
+  openAutoregBtn: $("#open-autoreg-btn"),
+  autoregBanner: $("#autoreg-banner"),
+  autoregBannerStatus: $("#autoreg-banner-status"),
+  autoregBannerCount: $("#autoreg-banner-count"),
+  autoregBannerBar: $("#autoreg-banner-bar"),
+  autoregBannerStep: $("#autoreg-banner-step"),
+  autoregStopBtn: $("#autoreg-stop-btn"),
+  importDialog: $("#import-dialog"),
+  importForm: $("#import-form"),
+  importRawInput: $("#import-raw-input"),
+  importCancelBtn: $("#import-cancel-btn"),
+  importSubmitBtn: $("#import-submit-btn"),
+  autoregDialog: $("#autoreg-dialog"),
+  autoregForm: $("#autoreg-form"),
+  autoregProxy: $("#autoreg-proxy"),
+  autoregCount: $("#autoreg-count"),
+  autoregCancelBtn: $("#autoreg-cancel-btn"),
+  autoregSubmitBtn: $("#autoreg-submit-btn"),
   loadTokens: $("#load-tokens"),
   addAccountMenu: $("#add-account-menu"),
   addAccount: $("#add-account"),
@@ -198,12 +216,10 @@ const el = {
   accountPageInfo: $("#account-page-info"),
   accountPrevPage: $("#account-prev-page"),
   accountNextPage: $("#account-next-page"),
-
   drawer: $("#drawer"),
   drawerTitle: $("#drawer-title"),
   drawerSub: $("#drawer-sub"),
   drawerBody: $("#drawer-body"),
-
   settingsSaveState: $("#settings-save-state"),
   displayNames: $("#display-names"),
   renameEveryComments: $("#rename-every-comments"),
@@ -326,15 +342,36 @@ async function copyText(text, message = "Đã copy.") {
 
 /* ---------- API ---------- */
 
-async function api(path, options = {}) {
+// Text of the last /api/state poll, so an unchanged poll can skip parsing and rendering.
+let lastStateText = "";
+
+async function request(path, options = {}) {
+  // The server leaves the (large) account list out when we already hold this revision.
+  const sentRev = state?.accountsRev;
+  const sentAccounts = state?.accounts;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(sentRev ? { "X-Accounts-Rev": sentRev } : {}),
+      ...(options.headers || {}),
+    },
   });
-  const body = await response.json().catch(() => ({}));
+  const text = await response.text();
+  let body = {};
+  try { body = text ? JSON.parse(text) : {}; } catch {}
   if (response.status === 401 && body.code === "WEB_AUTH_REQUIRED") showLogin();
   if (!response.ok) throw new Error(body.error || `Yêu cầu thất bại (${response.status}).`);
-  return body;
+  if (body.accountsUnchanged && sentAccounts) {
+    body.accounts = sentAccounts;
+    delete body.accountsUnchanged;
+  }
+  if (path !== "/api/state") lastStateText = "";
+  return { body, text };
+}
+
+async function api(path, options = {}) {
+  return (await request(path, options)).body;
 }
 
 /* ---------- Derived data ---------- */
@@ -421,6 +458,21 @@ function switchView(view, { focusId = null } = {}) {
   if (state) {
     if (view === "accounts") renderAccounts();
     if (view === "schedule") renderSchedule();
+    if (view === "viewbot") {
+      renderViewbot();
+      void loadViewbot();
+      void loadHubs();
+    }
+    if (view === "hubs") {
+      renderHubs();
+      void loadHubs();
+      startHubPolling();
+    }
+    if (view === "telegram") {
+      renderFromCache();
+      void loadTelegram();
+      startTelegramPolling();
+    }
     if (view === "system") renderHealth();
   }
   if (focusId) window.requestAnimationFrame(() => document.getElementById(focusId)?.focus());
@@ -429,6 +481,10 @@ function switchView(view, { focusId = null } = {}) {
 for (const button of $$("[data-view]")) {
   button.addEventListener("click", () => switchView(button.dataset.view));
 }
+window.addEventListener("hashchange", () => {
+  const view = window.location.hash.slice(1);
+  if (VIEWS.includes(view) && view !== currentView) switchView(view);
+});
 document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-go-view]");
   if (!trigger) return;
@@ -444,7 +500,8 @@ document.addEventListener("click", (event) => {
 function closeMenus(except = null) {
   for (const menu of $$(".menu")) {
     if (menu === except) continue;
-    $(".menu-pop", menu).hidden = true;
+    const pop = $(".menu-pop", menu);
+    if (pop) pop.hidden = true;
     $("[aria-expanded]", menu)?.setAttribute("aria-expanded", "false");
   }
 }
@@ -452,6 +509,8 @@ function closeMenus(except = null) {
 for (const menu of $$(".menu")) {
   const trigger = $("[aria-expanded]", menu);
   const pop = $(".menu-pop", menu);
+  // A .menu wrapper without its trigger or popover is just a container; skip it.
+  if (!trigger || !pop) continue;
   trigger.addEventListener("click", (event) => {
     event.stopPropagation();
     const open = pop.hidden;
@@ -1378,7 +1437,7 @@ el.addScheduleSlot.addEventListener("click", async () => {
 
 // Keeps the countdowns moving between state refreshes.
 function tickClock() {
-  if (!state) return;
+  if (!state || document.hidden) return;
   const bulk = state.bulkSend;
   if (bulk?.running && bulk.mode === "schedule") {
     const progress = bulkProgressView(bulk);
@@ -1394,13 +1453,49 @@ function tickClock() {
 
 const followHistory = [];
 
+function normalizeFollowHistoryItem(item) {
+  const total = Number(item.total ?? item.accountCount ?? 0);
+  const successCount = Number(item.successCount ?? 0);
+  const unfollow = Boolean(item.unfollow);
+  const hasCounts = item.beforeFollowers != null && item.afterFollowers != null;
+  const delta = item.delta != null
+    ? Number(item.delta)
+    : (hasCounts ? Number(item.afterFollowers) - Number(item.beforeFollowers) : successCount * (unfollow ? -1 : 1));
+  const deltaText = item.deltaText || (hasCounts
+    ? `${fmt(item.beforeFollowers)} → ${fmt(item.afterFollowers)}`
+    : `${unfollow ? "−" : "+"}${fmt(successCount)}`);
+  return {
+    time: String(item.time || "").slice(0, 8),
+    targetUid: String(item.targetUid || ""),
+    nickname: String(item.nickname || item.targetUid || ""),
+    unfollow,
+    beforeFollowers: item.beforeFollowers ?? null,
+    afterFollowers: item.afterFollowers ?? null,
+    delta,
+    deltaText,
+    successCount,
+    accountCount: total,
+  };
+}
+
+function applyLatestFollowStats(entry) {
+  if (!entry) return;
+  const hasCounts = entry.beforeFollowers != null && entry.afterFollowers != null;
+  const diff = entry.delta ?? (hasCounts ? entry.afterFollowers - entry.beforeFollowers : entry.successCount * (entry.unfollow ? -1 : 1));
+  el.followBefore.textContent = entry.beforeFollowers != null ? fmt(entry.beforeFollowers) : "—";
+  el.followAfter.textContent = entry.afterFollowers != null ? fmt(entry.afterFollowers) : "—";
+  el.followDelta.textContent = diff >= 0 ? `+${fmt(diff)}` : `−${fmt(Math.abs(diff))}`;
+  el.followDelta.className = diff > 0 ? "is-up" : diff < 0 ? "is-down" : "";
+  el.followRate.textContent = `${fmt(entry.successCount)}/${fmt(entry.accountCount)}`;
+}
+
 function followValues() {
   const form = el.followForm;
   return {
     target: el.followTarget.value.trim(),
     count: Number(el.followCount.value),
     scope: form.elements["follow-scope"].value || "all",
-    concurrency: Number(form.elements["follow-concurrency"].value) || 15,
+    concurrency: Number(form.elements["follow-concurrency"].value) || 20,
   };
 }
 
@@ -1409,6 +1504,23 @@ function renderFollow() {
   el.followSummary.textContent = `${fmt(goshReady)} tài khoản Gosh có token sẵn sàng. Không cần mở trình duyệt.`;
   for (const chip of $$("[data-follow-preset]")) {
     chip.classList.toggle("is-active", chip.dataset.followPreset === el.followCount.value);
+  }
+  if (Array.isArray(state?.followHistory)) {
+    followHistory.length = 0;
+    for (const item of state.followHistory) {
+      followHistory.push(normalizeFollowHistoryItem(item));
+    }
+    renderFollowHistory();
+    if (followHistory.length > 0 && (el.followAfter.textContent === "-" || el.followAfter.textContent === "—")) {
+      applyLatestFollowStats(followHistory[0]);
+    }
+  }
+  const run = state?.followRun;
+  if (run?.running) {
+    el.followStatus.className = "tag tag-live";
+    el.followStatus.textContent = `${run.unfollow ? "Đang gỡ" : "Đang chạy"} ${run.nickname || run.targetUid}: ${fmt(run.completed)}/${fmt(run.total)}`;
+    if (run.beforeFollowers != null) el.followBefore.textContent = fmt(run.beforeFollowers);
+    el.followRate.textContent = `${fmt(run.successCount)}/${fmt(run.total)}`;
   }
 }
 
@@ -1444,9 +1556,13 @@ function renderFollowHistory() {
   )));
 }
 
-el.clearFollowHistory.addEventListener("click", () => {
+el.clearFollowHistory.addEventListener("click", async () => {
   followHistory.length = 0;
+  if (state) state.followHistory = [];
   renderFollowHistory();
+  try {
+    await api("/api/gosh/follow/history", { method: "DELETE" });
+  } catch {}
 });
 
 el.followCheck.addEventListener("click", async () => {
@@ -1504,9 +1620,12 @@ async function executeFollow(unfollow = false) {
   setBusy(button, true, unfollow ? "Đang gỡ…" : "Đang chạy…");
   setFollowRunning(true, unfollow);
   let statusText = "Sẵn sàng";
+  const progressPoll = window.setInterval(() => {
+    refreshState().catch(() => {});
+  }, 1500);
   try {
     await flushSettingsBeforeSend();
-    const { followReport: report } = await api("/api/gosh/follow", {
+    const res = await api("/api/gosh/follow", {
       method: "POST",
       body: JSON.stringify({
         target,
@@ -1516,44 +1635,31 @@ async function executeFollow(unfollow = false) {
         unfollow,
       }),
     });
+    const report = res?.followReport;
+    if (Array.isArray(res?.followHistory) && state) {
+      state.followHistory = res.followHistory;
+      renderFollow();
+    }
     const first = report?.targets?.[0];
     if (first) {
-      const hasCounts = first.beforeFollowers != null && first.afterFollowers != null;
-      const diff = hasCounts ? first.afterFollowers - first.beforeFollowers : report.totalSuccess * (unfollow ? -1 : 1);
-      el.followBefore.textContent = first.beforeFollowers != null ? fmt(first.beforeFollowers) : "—";
-      el.followAfter.textContent = first.afterFollowers != null ? fmt(first.afterFollowers) : "—";
-      el.followDelta.textContent = diff >= 0 ? `+${fmt(diff)}` : `−${fmt(Math.abs(diff))}`;
-      el.followDelta.className = diff > 0 ? "is-up" : diff < 0 ? "is-down" : "";
-      el.followRate.textContent = `${fmt(report.totalSuccess)}/${fmt(report.accountCount)}`;
+      applyLatestFollowStats(normalizeFollowHistoryItem({
+        ...first,
+        unfollow,
+        total: report.accountCount,
+      }));
       showChannel({ ...first, followerCount: first.afterFollowers ?? first.beforeFollowers });
     }
-    const now = formatClock(new Date());
-    for (const item of report?.targets || []) {
-      const hasCounts = item.beforeFollowers != null && item.afterFollowers != null;
-      const delta = hasCounts ? item.afterFollowers - item.beforeFollowers : item.successCount * (unfollow ? -1 : 1);
-      followHistory.unshift({
-        time: now.slice(0, 5),
-        targetUid: item.targetUid,
-        nickname: item.nickname || item.targetUid,
-        unfollow,
-        delta,
-        deltaText: hasCounts
-          ? `${fmt(item.beforeFollowers)} → ${fmt(item.afterFollowers)}`
-          : `${unfollow ? "−" : "+"}${fmt(item.successCount)}`,
-        successCount: item.successCount,
-        accountCount: report.accountCount,
-      });
-    }
-    renderFollowHistory();
     statusText = first?.afterFollowers != null ? `${fmt(first.afterFollowers)} follower` : `${fmt(report?.totalSuccess)}/${fmt(report?.accountCount)} thành công`;
     const summary = first
       ? `${unfollow ? "Đã gỡ follow" : "Đã follow"} ${first.nickname}: ${fmt(report.totalSuccess)}/${fmt(report.accountCount)} tài khoản thành công.`
       : `Hoàn tất: ${fmt(report?.totalSuccess)}/${fmt(report?.accountCount)} tài khoản thành công.`;
     notify(summary, report?.totalFailure ? "warning" : "success");
   } catch (error) {
+    await refreshState().catch(() => {});
     statusText = "Lỗi";
     notify(error.message);
   } finally {
+    window.clearInterval(progressPoll);
     setBusy(button, false);
     setFollowRunning(false);
     el.followStatus.textContent = statusText;
@@ -1602,6 +1708,9 @@ async function setAccountEnabled(account, enabled) {
     render();
   } catch (error) {
     notify(error.message);
+    // The switch already flipped in the DOM; force a rebuild so it shows the real value.
+    accountTableKey = [];
+    drawerKey = [];
     render();
   }
 }
@@ -1643,8 +1752,37 @@ function createAccountRow(account) {
   return row;
 }
 
+let accountTableKey = [];
+
+function renderAutoReg() {
+  if (!el.autoregBanner) return;
+  const reg = state?.autoReg;
+  if (!reg || (!reg.running && !reg.completed && !reg.error)) {
+    el.autoregBanner.hidden = true;
+    return;
+  }
+  el.autoregBanner.hidden = false;
+  const total = reg.count || 1;
+  const pct = Math.min(100, Math.round(((reg.completed || 0) / total) * 100));
+  el.autoregBannerStatus.textContent = reg.running
+    ? "Đang tự động đăng ký Gosh…"
+    : reg.error ? `Tự reg dừng: ${reg.error}` : "Tự động đăng ký Gosh hoàn tất";
+  el.autoregBannerCount.textContent = `${fmt(reg.completed || 0)}/${fmt(reg.count || 0)}`;
+  el.autoregBannerBar.style.width = `${pct}%`;
+  el.autoregBannerStep.textContent = reg.error || reg.currentStep || "";
+  if (el.autoregStopBtn) el.autoregStopBtn.hidden = !reg.running;
+  if (el.openAutoregBtn) el.openAutoregBtn.disabled = Boolean(reg.running);
+}
+
 function renderAccounts() {
   if (!state) return;
+  renderAutoReg();
+  const key = [state.accounts, statusFilter, el.accountSearch.value, el.accountFilterPlatform.value, accountPage, selectedAccountId, el.drawer.hidden, isRunning()];
+  if (key.length === accountTableKey.length && key.every((part, index) => part === accountTableKey[index])) {
+    renderDrawer();
+    return;
+  }
+  accountTableKey = key;
   const searchMatches = accountsMatchingSearch();
   for (const tab of $$("[data-status-filter]")) {
     const filter = tab.dataset.statusFilter;
@@ -1793,10 +1931,96 @@ async function loadTokens() {
     setBusy(el.loadTokens, false);
   }
 }
-el.loadTokens.addEventListener("click", loadTokens);
-el.loadTokens.hidden = !isLocalMachine;
+el.loadTokens?.addEventListener("click", loadTokens);
+if (el.loadTokens) el.loadTokens.hidden = true;
 
-/* ---------- Account drawer ---------- */
+el.openImportBtn?.addEventListener("click", () => {
+  el.importRawInput.value = "";
+  el.importDialog?.showModal();
+  el.importRawInput.focus();
+});
+el.importCancelBtn?.addEventListener("click", () => el.importDialog?.close());
+el.importForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const raw = el.importRawInput.value.trim();
+  if (!raw) {
+    notify("Vui lòng dán ít nhất 1 dòng username|password.", "warning");
+    return;
+  }
+  setBusy(el.importSubmitBtn, true, "Đang đăng nhập…");
+  try {
+    const res = await api("/api/gosh/import-login", {
+      method: "POST",
+      body: JSON.stringify({ raw }),
+    });
+    const { importReport, ...nextState } = res;
+    state = nextState;
+    accountTableKey = [];
+    render();
+    el.importDialog?.close();
+    const failCount = importReport?.failed?.length || 0;
+    notify(
+      `Đã đăng nhập thành công: thêm mới ${fmt(importReport?.added || 0)} acc, cập nhật ${fmt(importReport?.updated || 0)} acc${failCount ? `, lỗi ${fmt(failCount)} acc` : ""}.`,
+      failCount ? "warning" : "success",
+    );
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.importSubmitBtn, false);
+  }
+});
+
+el.openAutoregBtn?.addEventListener("click", () => {
+  if (state?.autoReg?.proxy && !el.autoregProxy.value) {
+    el.autoregProxy.value = state.autoReg.proxy;
+  }
+  el.autoregDialog?.showModal();
+  el.autoregCount.focus();
+});
+el.autoregCancelBtn?.addEventListener("click", () => el.autoregDialog?.close());
+for (const chip of $$("[data-autoreg-preset]")) {
+  chip.addEventListener("click", () => {
+    el.autoregCount.value = chip.dataset.autoregPreset;
+    for (const c of $$("[data-autoreg-preset]")) {
+      c.classList.toggle("is-active", c === chip);
+    }
+  });
+}
+el.autoregForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const proxy = el.autoregProxy.value.trim();
+  const count = Number(el.autoregCount.value) || 50;
+  if (!proxy) {
+    notify("Vui lòng nhập Proxy Geonode.", "warning");
+    return;
+  }
+  setBusy(el.autoregSubmitBtn, true, "Đang khởi tạo…");
+  try {
+    state = await api("/api/gosh/auto-reg/start", {
+      method: "POST",
+      body: JSON.stringify({ proxy, count }),
+    });
+    el.autoregDialog?.close();
+    render();
+    notify(`Đã bắt đầu tự động đăng ký ${fmt(count)} tài khoản Gosh.`, "success");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.autoregSubmitBtn, false);
+  }
+});
+el.autoregStopBtn?.addEventListener("click", async () => {
+  setBusy(el.autoregStopBtn, true, "Đang dừng…");
+  try {
+    state = await api("/api/gosh/auto-reg/stop", { method: "POST" });
+    render();
+    notify("Đã tạm dừng tiến trình tự động đăng ký Gosh.", "info");
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(el.autoregStopBtn, false);
+  }
+});
 
 let drawerReturnFocus = null;
 
@@ -1878,6 +2102,8 @@ async function deleteAccount(account) {
   }
 }
 
+let drawerKey = [];
+
 function renderDrawer({ force = false } = {}) {
   if (el.drawer.hidden || !state) return;
   const account = state.accounts.find((item) => item.id === selectedAccountId);
@@ -1887,6 +2113,9 @@ function renderDrawer({ force = false } = {}) {
   }
   // Do not wipe what the user is typing in the drawer during background refreshes.
   if (!force && el.drawer.contains(document.activeElement) && document.activeElement.matches("input, textarea")) return;
+  const key = [account, isRunning(), state.accounts.length];
+  if (!force && key.every((part, index) => part === drawerKey[index])) return;
+  drawerKey = key;
 
   const running = isRunning();
   const token = tokenPresentation(account);
@@ -1984,30 +2213,6 @@ function renderDrawer({ force = false } = {}) {
     });
     sections.push(drawerSection("Tên hiển thị", `Tên đang hiện trên ${platform}: ${accountLabel(account)}. Tối đa 20 ký tự.`, form));
   }
-
-  const proxyInput = h("input", { type: "text", class: "mono", placeholder: "http://user:pass@host:port", "aria-label": "Proxy", autocomplete: "off" });
-  proxyInput.value = account.proxy || "";
-  const proxySubmit = h("button", { class: "btn btn-secondary", type: "submit" }, "Lưu");
-  proxyInput.disabled = proxySubmit.disabled = running;
-  const proxyForm = h("form", { class: "drawer-row" }, proxyInput, proxySubmit);
-  proxyForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    setBusy(proxySubmit, true, "Đang lưu…");
-    try {
-      state = await api(`/api/accounts/${encodeURIComponent(account.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ proxy: proxyInput.value.trim() }),
-      });
-      render();
-      renderDrawer({ force: true });
-      notify(proxyInput.value.trim() ? "Đã lưu proxy." : "Đã bỏ proxy.", "success");
-    } catch (error) {
-      notify(error.message);
-    } finally {
-      setBusy(proxySubmit, false);
-    }
-  });
-  sections.push(drawerSection("Proxy", "Chỉ hỗ trợ HTTP/HTTPS: http://user:pass@host:port hoặc host:port:user:pass. Để trống nếu không dùng.", proxyForm));
 
   if (isLocalMachine) {
     const openButton = h("button", { class: "btn btn-secondary", type: "button" },
@@ -2189,6 +2394,7 @@ function render() {
   renderLive();
   renderSchedule();
   renderFollow();
+  renderAutoReg();
   if (currentView === "accounts") renderAccounts();
   else renderDrawer();
   if (currentView === "system") renderHealth();
@@ -2196,7 +2402,10 @@ function render() {
 }
 
 async function refreshState() {
-  state = await api("/api/state");
+  const { body, text } = await request("/api/state");
+  if (state && text === lastStateText) return;
+  lastStateText = text;
+  state = body;
   render();
 }
 
@@ -2280,8 +2489,1084 @@ async function bootDashboard() {
   render();
 }
 
+
+/* ---------- Mắt xem livestream (qq88 / hi88) ---------- */
+
+const viewbotEl = {
+  form: $("#viewbot-form"),
+  url: $("#viewbot-url"),
+  bots: $("#viewbot-bots"),
+  ramp: $("#viewbot-ramp"),
+  proxies: $("#viewbot-proxies"),
+  proxyCount: $("#viewbot-proxy-count"),
+  submit: $("#viewbot-submit"),
+  stop: $("#viewbot-stop"),
+  jobs: $("#viewbot-jobs"),
+  empty: $("#viewbot-empty"),
+  count: $("#viewbot-count"),
+  tag: $("#viewbot-tag"),
+  navMeta: $("#nav-viewbot"),
+  checkHub: $("#viewbot-check-hub"),
+  check: $("#viewbot-check"),
+  checkResult: $("#viewbot-check-result"),
+  loadStreams: $("#viewbot-load-streams"),
+  targets: $("#viewbot-targets"),
+  targetAll: $("#viewbot-target-all"),
+  checkProxies: $("#viewbot-check-proxies"),
+  proxyResult: $("#viewbot-proxy-result"),
+};
+
+let viewbotJobs = [];
+let viewbotTimer = null;
+let viewbotBusy = false;
+
+function viewbotPlatform() {
+  return $('input[name="viewbot-platform"]:checked')?.value || "qq88";
+}
+
+function viewbotProxyLines(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function refreshViewbotProxyCount() {
+  if (!viewbotEl.proxyCount) return;
+  const lines = viewbotProxyLines(viewbotEl.proxies?.value);
+  viewbotEl.proxyCount.textContent = lines.length ? `${lines.length} proxy` : "0 proxy";
+}
+
+function viewbotUptime(seconds) {
+  const total = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (v) => String(v).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+function renderViewbot() {
+  if (!viewbotEl.jobs) return;
+  const totalLive = viewbotJobs.reduce((sum, job) => sum + (job.live || 0), 0);
+  if (viewbotEl.count) viewbotEl.count.textContent = `${viewbotJobs.length} phiên · ${totalLive} mắt`;
+  if (viewbotEl.navMeta) {
+    viewbotEl.navMeta.hidden = !viewbotJobs.length;
+    viewbotEl.navMeta.textContent = String(totalLive);
+  }
+  if (viewbotEl.tag) {
+    viewbotEl.tag.textContent = viewbotJobs.length ? "Đang chạy" : "Sẵn sàng";
+    viewbotEl.tag.classList.toggle("tag-live", viewbotJobs.length > 0);
+  }
+  viewbotEl.empty.hidden = viewbotJobs.length > 0;
+  viewbotEl.jobs.innerHTML = "";
+  for (const job of viewbotJobs) {
+    const row = document.createElement("article");
+    row.className = "viewbot-job";
+    const percent = job.target ? Math.min(100, Math.round((job.live / job.target) * 100)) : 0;
+    row.innerHTML = `
+      <div class="viewbot-job-head">
+        <strong>${job.platformName}</strong>
+        <span class="mono">${job.hub}</span>
+        <span class="tag">${job.hubName || "Máy chính"}</span>
+        <span class="tag">${job.count ?? "-"} mắt trên site</span>
+      </div>
+      <div class="meter"><span style="width:${percent}%"></span></div>
+      <dl class="viewbot-stats">
+        <div><dt>Trong phòng</dt><dd>${job.live}/${job.target}</dd></div>
+        <div><dt>Join OK</dt><dd>${job.joined}</dd></div>
+        <div><dt>Rớt</dt><dd>${job.drops}</dd></div>
+        <div><dt>Lỗi</dt><dd>${job.errors}</dd></div>
+        <div><dt>Proxy</dt><dd>${job.proxies}</dd></div>
+        <div><dt>Chạy</dt><dd>${viewbotUptime(job.uptimeSeconds)}</dd></div>
+      </dl>
+      <div class="viewbot-job-actions">
+        <button class="btn btn-ghost btn-sm" type="button" data-viewbot-stop="${job.id}">Dừng phiên</button>
+      </div>`;
+    viewbotEl.jobs.append(row);
+  }
+}
+
+async function loadViewbot() {
+  try {
+    const data = await api("/api/viewbot/status");
+    viewbotJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    if (Array.isArray(data.hubs)) {
+      hubList = data.hubs;
+      renderHubs();
+      syncViewbotTargets();
+    }
+    renderViewbot();
+    if (viewbotJobs.length) startViewbotPolling();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function startViewbotPolling() {
+  if (viewbotTimer) return;
+  viewbotTimer = window.setInterval(() => {
+    if (currentView !== "viewbot" || document.hidden) return;
+    void loadViewbot();
+  }, 2000);
+}
+
+async function submitViewbot(event) {
+  event.preventDefault();
+  if (viewbotBusy) return;
+  const url = String(viewbotEl.url?.value || "").trim();
+  if (!url) {
+    notify("Dán link livestream hoặc mã phòng trước đã.");
+    return;
+  }
+  viewbotBusy = true;
+  viewbotEl.submit.disabled = true;
+  try {
+    const payload = {
+      platform: viewbotPlatform(),
+      url,
+      bots: Number(viewbotEl.bots?.value) || 50,
+      ramp: Number(viewbotEl.ramp?.value) || 5,
+      proxies: viewbotProxyLines(viewbotEl.proxies?.value).join("\n"),
+      targets: viewbotSelectedTargets(),
+    };
+    const result = await api("/api/viewbot/start", { method: "POST", body: JSON.stringify(payload) });
+    const mode = result.mode === "auto" || result.mode === "multi" ? ` — ${result.note || "chia theo máy"}` : "";
+    notify(`Đã bắt đầu ${payload.bots} mắt cho ${payload.platform.toUpperCase()}${mode}.`, "info");
+    await loadViewbot();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    viewbotBusy = false;
+    viewbotEl.submit.disabled = false;
+  }
+}
+
+async function stopViewbot(id) {
+  try {
+    await api("/api/viewbot/stop", { method: "POST", body: JSON.stringify({ id }) });
+    notify("Đã dừng phiên.", "info");
+    await loadViewbot();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function stopAllViewbot() {
+  try {
+    await api("/api/viewbot/stop-all", { method: "POST", body: "{}" });
+    notify("Đã dừng tất cả phiên.", "info");
+    await loadViewbot();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function checkViewbotViewer() {
+  const hub = String(viewbotEl.checkHub?.value || viewbotEl.url?.value || "").trim();
+  if (!hub) {
+    notify("Nhập mã phòng để kiểm tra.");
+    return;
+  }
+  viewbotEl.checkResult.textContent = "Đang đọc…";
+  try {
+    const info = await api(`/api/viewbot/viewer?platform=${viewbotPlatform()}&hub=${encodeURIComponent(hub)}`);
+    viewbotEl.checkResult.textContent = `${info.viewer} mắt · ${info.isStreaming ? "đang live" : "chưa live"}`;
+  } catch (error) {
+    viewbotEl.checkResult.textContent = "—";
+    notify(error.message);
+  }
+}
+
+async function loadViewbotStreams() {
+  try {
+    const data = await api(`/api/viewbot/streams?platform=${viewbotPlatform()}`);
+    const streams = Array.isArray(data.streams) ? data.streams : [];
+    if (!streams.length) {
+      notify("Không lấy được danh sách phòng.", "info");
+      return;
+    }
+    const live = streams.filter((item) => item.isStreaming);
+    const chosen = live[0] || streams[0];
+    if (viewbotEl.url) viewbotEl.url.value = chosen.hub;
+    if (viewbotEl.checkHub) viewbotEl.checkHub.value = chosen.hub;
+    notify(`${streams.length} phòng, ${live.length} đang live. Đã chọn ${chosen.name}.`, "info");
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function checkViewbotProxies() {
+  const lines = viewbotProxyLines(viewbotEl.proxies?.value);
+  if (!lines.length) {
+    notify("Dán danh sách proxy trước đã.");
+    return;
+  }
+  viewbotEl.proxyResult.hidden = false;
+  viewbotEl.proxyResult.textContent = `Đang kiểm tra ${lines.length} proxy…`;
+  try {
+    const data = await api("/api/viewbot/proxies/check", {
+      method: "POST",
+      body: JSON.stringify({ proxies: lines.join("\n"), limit: 500 }),
+    });
+    viewbotEl.proxyResult.textContent = `${data.alive}/${data.checked} proxy sống · ${data.uniqueIps} IP khác nhau → tối đa ${data.uniqueIps} mắt mỗi phòng.`;
+  } catch (error) {
+    viewbotEl.proxyResult.textContent = "—";
+    notify(error.message);
+  }
+}
+
+if (viewbotEl.form) {
+  viewbotEl.form.addEventListener("submit", submitViewbot);
+  viewbotEl.checkProxies?.addEventListener("click", checkViewbotProxies);
+  viewbotEl.targetAll?.addEventListener("click", () => {
+    const box = viewbotEl.targets;
+    if (!box) return;
+    const hubs = [...box.querySelectorAll("input[value^='hub_']:not([disabled])")];
+    for (const input of box.querySelectorAll("input")) input.checked = false;
+    for (const input of hubs) input.checked = true;
+    if (!hubs.length) notify("Chưa có hub nào online.", "info");
+  });
+  viewbotEl.stop?.addEventListener("click", stopAllViewbot);
+  viewbotEl.check?.addEventListener("click", checkViewbotViewer);
+  viewbotEl.loadStreams?.addEventListener("click", loadViewbotStreams);
+  viewbotEl.proxies?.addEventListener("input", refreshViewbotProxyCount);
+  for (const button of $$("[data-viewbot-preset]")) {
+    button.addEventListener("click", () => {
+      if (viewbotEl.bots) viewbotEl.bots.value = button.dataset.viewbotPreset;
+    });
+  }
+  viewbotEl.jobs?.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-viewbot-stop]");
+    if (trigger) void stopViewbot(trigger.dataset.viewbotStop);
+  });
+  refreshViewbotProxyCount();
+  renderViewbot();
+}
+
+
+/* ---------- Máy phụ (hub) ---------- */
+
+const hubEl = {
+  form: $("#hub-form"),
+  name: $("#hub-name"),
+  list: $("#hub-list"),
+  empty: $("#hub-empty"),
+  summary: $("#hubs-summary"),
+  navMeta: $("#nav-hubs"),
+  refresh: $("#hub-refresh"),
+};
+
+let hubList = [];
+let hubBusy = false;
+let hubTimer = null;
+let hubLoadError = "";
+let hubLoaded = false;
+
+function hubStatusText(hub) {
+  if (!hub.online) return "offline";
+  const sockets = hub.stats?.sockets;
+  return sockets != null ? `${sockets} socket` : "online";
+}
+
+function hubMeta(hub) {
+  const stats = hub.stats || {};
+  const parts = [];
+  if (hub.online) {
+    if (stats.rss) parts.push(`RAM ${(stats.rss / 1048576).toFixed(0)}MB`);
+    if (stats.load != null) parts.push(`load ${Number(stats.load).toFixed(2)}`);
+    if (stats.cpu) parts.push(`${stats.cpu} core`);
+    if (stats.platform) parts.push(stats.platform);
+  } else {
+    parts.push("chưa kết nối");
+  }
+  return parts.join(" · ");
+}
+
+function startHubPolling() {
+  if (hubTimer) return;
+  hubTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    void loadHubs();
+  }, 4000);
+}
+
+let hubLastError = "";
+
+function renderHubs() {
+  if (!hubEl.list) return;
+  const online = hubList.filter((hub) => hub.online).length;
+  if (hubEl.summary) hubEl.summary.textContent = `${online}/${hubList.length} online`;
+  if (hubEl.navMeta) hubEl.navMeta.textContent = String(hubList.length);
+  hubEl.empty.hidden = hubList.length > 0;
+  if (!hubList.length) {
+    hubEl.empty.textContent = !hubLoaded
+      ? "Đang tải danh sách hub…"
+      : hubLoadError
+        ? `Không tải được danh sách hub: ${hubLoadError} — thử tải lại trang hoặc khởi động lại server.`
+        : "Chưa có hub nào. Tạo một cái ở bên trái.";
+  }
+  hubEl.list.innerHTML = "";
+  for (const hub of hubList) {
+    const card = document.createElement("article");
+    card.className = `hub-card${hub.online ? " is-online" : ""}`;
+    const jobRows = (hub.jobs || [])
+      .map((job) => `<li>${job.platform} · ${job.hub} · ${job.live}/${job.target} mắt · ${job.errors} lỗi</li>`)
+      .join("");
+    card.innerHTML = `
+      <div class="hub-head">
+        <span class="hub-dot" aria-hidden="true"></span>
+        <strong>${hub.name}</strong>
+        <span class="tag">${hubStatusText(hub)}</span>
+        <span class="hub-meta">${hubMeta(hub)}</span>
+      </div>
+      <div class="hub-actions">
+        <button class="link-btn" type="button" data-hub-install="${hub.id}">Lệnh cài</button>
+        <button class="link-btn" type="button" data-hub-rotate="${hub.id}">Đổi token</button>
+        <button class="link-btn danger" type="button" data-hub-delete="${hub.id}">Xóa</button>
+      </div>
+      <div class="hub-install" id="hub-install-${hub.id}" hidden></div>
+      ${jobRows ? `<ul class="hub-jobs">${jobRows}</ul>` : ""}`;
+    hubEl.list.append(card);
+  }
+  syncViewbotTargets();
+}
+
+function syncViewbotTargets() {
+  const box = viewbotEl.targets;
+  if (!box) return;
+  const previous = new Set([...box.querySelectorAll("input:checked")].map((input) => input.value));
+  if (!previous.size) previous.add("main");
+  const rows = [
+    { id: "main", label: "Máy chính", online: true },
+    ...hubList.map((hub) => ({ id: hub.id, label: hub.name, online: hub.online })),
+  ];
+  box.innerHTML = rows
+    .map((row) => {
+      const checked = previous.has(row.id) ? "checked" : "";
+      const disabled = row.online ? "" : "disabled";
+      const note = row.online ? "" : '<span class="target-note">offline</span>';
+      return `<label class="target-item${row.online ? "" : " is-offline"}">
+        <input type="checkbox" value="${row.id}" ${checked} ${disabled} />
+        <span>${row.label}</span>${note}
+      </label>`;
+    })
+    .join("");
+}
+
+function viewbotSelectedTargets() {
+  const box = viewbotEl.targets;
+  if (!box) return ["main"];
+  const picked = [...box.querySelectorAll("input:checked")].map((input) => input.value);
+  return picked.length ? picked : ["main"];
+}
+
+async function loadHubs() {
+  try {
+    const data = await api("/api/hubs");
+    hubList = Array.isArray(data.hubs) ? data.hubs : [];
+    hubLoadError = "";
+    hubLastError = "";
+    hubLoaded = true;
+    renderHubs();
+  } catch (error) {
+    hubLoadError = error.message;
+    hubLoaded = true;
+    renderHubs();
+    if (error.message !== hubLastError) notify(error.message);
+    hubLastError = error.message;
+  }
+}
+
+async function hubInstall(hubId) {
+  const box = $(`#hub-install-${hubId}`);
+  if (!box) return;
+  if (!box.hidden) {
+    box.hidden = true;
+    return;
+  }
+  try {
+    const data = await api(`/api/hubs/${hubId}/install`);
+    const { sh, ps } = data.install;
+    box.innerHTML = `
+      <div class="hub-cmd">
+        <span class="field-label">macOS / Linux</span>
+        <pre class="mono">${sh}</pre>
+        <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(sh)}">Copy</button>
+      </div>
+      <div class="hub-cmd">
+        <span class="field-label">Windows (PowerShell)</span>
+        <pre class="mono">${ps}</pre>
+        <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(ps)}">Copy</button>
+      </div>`;
+    box.hidden = false;
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function createHub(event) {
+  event.preventDefault();
+  if (hubBusy) return;
+  hubBusy = true;
+  try {
+    const name = String(hubEl.name?.value || "").trim() || "hub";
+    const data = await api("/api/hubs", { method: "POST", body: JSON.stringify({ name }) });
+    notify(`Đã tạo ${data.hub.name}. Copy lệnh cài bên phải.`, "info");
+    if (hubEl.name) hubEl.name.value = "";
+    await loadHubs();
+    const box = $(`#hub-install-${data.hub.id}`);
+    if (box) {
+      box.innerHTML = `
+        <div class="hub-cmd">
+          <span class="field-label">macOS / Linux</span>
+          <pre class="mono">${data.install.sh}</pre>
+          <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(data.install.sh)}">Copy</button>
+        </div>
+        <div class="hub-cmd">
+          <span class="field-label">Windows (PowerShell)</span>
+          <pre class="mono">${data.install.ps}</pre>
+          <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(data.install.ps)}">Copy</button>
+        </div>`;
+      box.hidden = false;
+    }
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    hubBusy = false;
+  }
+}
+
+async function deleteHub(hubId) {
+  try {
+    await api(`/api/hubs/${hubId}`, { method: "DELETE" });
+    notify("Đã xóa hub.", "info");
+    await loadHubs();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function rotateHub(hubId) {
+  try {
+    const data = await api(`/api/hubs/${hubId}/rotate`, { method: "POST", body: "{}" });
+    notify("Đã đổi token — dán lại lệnh cài trên máy đó.", "info");
+    await loadHubs();
+    const box = $(`#hub-install-${hubId}`);
+    if (box) {
+      box.innerHTML = `
+        <div class="hub-cmd">
+          <span class="field-label">macOS / Linux</span>
+          <pre class="mono">${data.install.sh}</pre>
+          <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(data.install.sh)}">Copy</button>
+        </div>`;
+      box.hidden = false;
+    }
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+if (hubEl.form) {
+  hubEl.form.addEventListener("submit", createHub);
+  hubEl.refresh?.addEventListener("click", () => void loadHubs());
+  hubEl.list?.addEventListener("click", (event) => {
+    const install = event.target.closest("[data-hub-install]");
+    if (install) return void hubInstall(install.dataset.hubInstall);
+    const copy = event.target.closest("[data-hub-copy]");
+    if (copy) return void copyText(decodeURIComponent(copy.dataset.hubCopy));
+    const rotate = event.target.closest("[data-hub-rotate]");
+    if (rotate) return void rotateHub(rotate.dataset.hubRotate);
+    const remove = event.target.closest("[data-hub-delete]");
+    if (remove) return void deleteHub(remove.dataset.hubDelete);
+  });
+}
+
+
+/* ---------- Telegram: tăng mắt + bình luận ---------- */
+
+const tgEl = {
+  tab: $(".tg-tabs"),
+  panels: $$("[data-tg-panel]"),
+  tag: $("#tg-tag"),
+  // tăng mắt
+  form: $("#tg-form"),
+  link: $("#tg-link"),
+  targetCount: $("#tg-target-count"),
+  participants: $("#tg-participants"),
+  bar: $("#tg-bar"),
+  checkView: $("#tg-check-view"),
+  checkViewResult: $("#tg-check-view-result"),
+  submit: $("#tg-submit"),
+  stop: $("#tg-stop"),
+  viewState: $("#tg-view-state"),
+  joined: $("#tg-joined"),
+  skip: $("#tg-skip"),
+  viewList: $("#tg-view-list"),
+  viewEmpty: $("#tg-view-empty"),
+  // bình luận
+  commentInput: $("#tg-comment-input"),
+  commentAdd: $("#tg-comment-add"),
+  commentShuffle: $("#tg-comment-shuffle"),
+  commentClear: $("#tg-comment-clear"),
+  commentList: $("#tg-comment-list"),
+  commentEmpty: $("#tg-comment-empty"),
+  commentCount: $("#tg-comment-count"),
+  commentLink: $("#tg-comment-link"),
+  commentAccounts: $("#tg-comment-accounts"),
+  commentPer: $("#tg-comment-per"),
+  commentDaily: $("#tg-comment-daily"),
+  commentAge: $("#tg-comment-age"),
+  commentDelayMin: $("#tg-comment-delay-min"),
+  commentDelayMax: $("#tg-comment-delay-max"),
+  commentStart: $("#tg-comment-start"),
+  commentStop: $("#tg-comment-stop"),
+  commentSent: $("#tg-comment-sent"),
+  commentContinuous: $("#tg-comment-continuous"),
+  commentRound: $("#tg-comment-round"),
+  commentRounds: $("#tg-comment-rounds"),
+  commentNote: $("#tg-comment-note"),
+  check: $("#tg-check"),
+  checkResult: $("#tg-check-result"),
+  commentErrors: $("#tg-comment-errors"),
+  commentState: $("#tg-comment-state"),
+  commentResult: $("#tg-comment-result"),
+  // tài khoản
+  upload: $("#tg-upload"),
+  path: $("#tg-path"),
+  importPath: $("#tg-import-path"),
+  list: $("#tg-account-list"),
+  empty: $("#tg-empty"),
+  count: $("#tg-account-count"),
+  total: $("#tg-total"),
+  navMeta: $("#nav-telegram"),
+};
+
+let tgAccounts = [];
+let tgComments = [];
+let tgStatus = { running: false, joined: 0, errors: 0, comments: { running: false, sent: 0, errors: 0 } };
+let tgTimer = null;
+let tgBusy = false;
+let tgTab = localStorage.getItem("tgTab") || "view";
+let tgAccountsSig = "";
+let tgViewSig = "";
+let tgCommentSig = "";
+
+function switchTgTab(tab) {
+  tgTab = ["view", "comment", "accounts"].includes(tab) ? tab : "view";
+  localStorage.setItem("tgTab", tgTab);
+  for (const button of $$("[data-tg-tab]")) {
+    const active = button.dataset.tgTab === tgTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  }
+  for (const panel of tgEl.panels) panel.hidden = panel.dataset.tgPanel !== tgTab;
+}
+
+function tgRow(phone, left, right, cls = "") {
+  return `<div class="tg-row ${cls}"><span class="mono">${phone}</span><span>${left}</span><span class="tg-state">${right}</span></div>`;
+}
+
+function renderTgAccounts() {
+  if (!tgEl.list) return;
+  const sig = `${tgAccounts.length}|${tgAccounts.map((a) => `${a.phone}:${a.ageDays}:${a.joinsToday}`).join(",")}|${tgStatus.safety?.dailyLimit}`;
+  if (sig === tgAccountsSig) return;
+  tgAccountsSig = sig;
+  tgEl.count.textContent = String(tgAccounts.length);
+  tgEl.total.textContent = String(tgAccounts.length);
+  tgEl.empty.hidden = tgAccounts.length > 0;
+  const limit = tgStatus.safety?.dailyLimit ?? 3;
+  tgEl.list.innerHTML = tgAccounts
+    .map((account) => {
+      const age = account.ageDays != null ? `${account.ageDays}d` : "?";
+      const used = `${account.joinsToday ?? 0}/${limit}`;
+      const name = account.name || account.username || "—";
+      const ready = account.hasSession || account.hasJson;
+      return tgRow(account.phone, `${name} · ${age} · hôm nay ${used}`, ready ? "sẵn sàng" : "thiếu session", ready ? "" : "is-error");
+    })
+    .join("");
+}
+
+function tgHubState() {
+  const hubId = tgEl.target?.value || "main";
+  if (hubId === "main") return null;
+  return (tgStatus.hubTelegram || []).find((row) => row.hubId === hubId) || null;
+}
+
+function syncTgTargets() {
+  const select = tgEl.target;
+  if (!select) return;
+  const current = select.value;
+  const hubs = hubList || [];
+  select.innerHTML = [
+    '<option value="main">Máy chính</option>',
+    ...hubs.map((hub) => {
+      const ready = hub.stats?.telegram;
+      const label = `${hub.name}${hub.online ? "" : " (offline)"}${ready ? "" : " · thiếu python/telethon"}`;
+      return `<option value="${hub.id}" ${ready ? "" : "disabled"}>${label}</option>`;
+    }),
+  ].join("");
+  select.value = [...select.options].some((option) => option.value === current) ? current : "main";
+}
+
+function renderTgView() {
+  if (!tgEl.joined) return;
+  const joined = tgStatus.joined || 0;
+  const target = tgStatus.target || 0;
+  const participants = tgStatus.participants;
+  tgEl.joined.textContent = `${joined}/${target || 0}`;
+  if (tgEl.participants) tgEl.participants.textContent = participants == null ? "—" : String(participants);
+  if (tgEl.bar) tgEl.bar.style.width = `${target ? Math.min(100, Math.round((joined / target) * 100)) : 0}%`;
+  tgEl.viewState.textContent = tgStatus.running ? "Đang chạy" : "Chưa chạy";
+  tgEl.viewState.classList.toggle("tag-live", Boolean(tgStatus.running));
+
+  if (tgEl.skip) {
+    const notes = [];
+    if (tgStatus.lastError) notes.push(`Lỗi gần nhất: ${tgStatus.lastError}`);
+    if (tgStatus.skipped && tgStatus.skipped.dead) notes.push(`${tgStatus.skipped.dead} acc chết session (đã bỏ qua)`);
+    tgEl.skip.hidden = notes.length === 0;
+    tgEl.skip.textContent = notes.join(" — ");
+  }
+
+  const rows = tgStatus.accounts || [];
+  tgEl.viewEmpty.hidden = rows.length > 0;
+  tgEl.viewList.innerHTML = rows
+    .map((row) =>
+      tgRow(
+        row.phone,
+        row.name || "—",
+        row.state === "joined" ? "trong phòng" : row.state === "cooldown" ? row.error || "cooldown" : row.error || "lỗi",
+        row.state === "joined" ? "is-joined" : "is-error",
+      ),
+    )
+    .join("");
+}
+
+function renderTgComments() {
+  if (!tgEl.commentList) return;
+  const linkValue = String(tgEl.commentLink?.value || "").trim();
+  const csig = JSON.stringify([
+    tgStatus.comments?.sent,
+    tgStatus.comments?.errors,
+    tgStatus.comments?.running,
+    tgStatus.comments?.accounts?.length,
+    tgComments.length,
+    linkValue,
+    Number(tgEl.commentAge?.value) || 0,
+    tgAccounts.length,
+  ]);
+  if (csig === tgCommentSig) return;
+  tgCommentSig = csig;
+  const data = tgStatus.comments || {};
+  tgEl.commentSent.textContent = String(data.sent || 0);
+  tgEl.commentErrors.textContent = String(data.errors || 0);
+  tgEl.commentState.textContent = data.running ? (data.running && tgEl.commentContinuous?.checked ? "Đang chạy (liên tục)" : "Đang chạy") : "Chưa chạy";
+  if (tgEl.commentRounds) tgEl.commentRounds.textContent = String(data.rounds || 0);
+  if (tgEl.commentNote) {
+    if (data.lastError) {
+      tgEl.commentNote.hidden = false;
+      tgEl.commentNote.textContent = data.lastError;
+    } else if (!data.running && data.rounds) {
+      tgEl.commentNote.hidden = false;
+      tgEl.commentNote.textContent = `Đã chạy ${data.rounds} đợt, gửi ${data.sent || 0} câu. Bật “Chạy liên tục” để tự sang đợt mới.`;
+    } else {
+      tgEl.commentNote.hidden = true;
+    }
+  }
+  tgEl.commentState.classList.toggle("tag-live", Boolean(data.running));
+  const rows = data.accounts || [];
+  tgEl.commentResult.innerHTML = rows
+    .map((row) =>
+      tgRow(
+        row.phone,
+        row.state === "sent" ? row.text || "đã gửi" : "—",
+        row.state === "sent" ? `đã gửi ${row.sent ?? ""}` : row.error || row.state,
+        row.state === "sent" ? "is-joined" : "is-error",
+      ),
+    )
+    .join("");
+  const logCard = document.getElementById("tg-comment-log-card");
+  if (logCard) logCard.hidden = rows.length === 0;
+  tgEl.commentCount.textContent = `${tgComments.length} câu`;
+  tgEl.commentEmpty.hidden = tgComments.length > 0;
+  tgEl.commentList.innerHTML = tgComments
+    .map(
+      (text, index) =>
+        `<li><span>${escapeHtml(text)}</span><button class="link-btn danger" type="button" data-tg-comment-del="${index}">xóa</button></li>`,
+    )
+    .join("");
+
+  renderTgCommentChecklist(linkValue);
+}
+
+function renderTgCommentChecklist(linkValue) {
+  const minAge = Number(tgEl.commentAge?.value) || 0;
+  const limit = tgStatus.safety?.dailyLimit ?? 3;
+  const link = document.getElementById("tg-check-link");
+  const kho = document.getElementById("tg-check-kho");
+  const acc = document.getElementById("tg-check-acc");
+  if (link) {
+    const ok = linkValue.length > 0;
+    link.classList.toggle("is-ok", ok);
+    link.classList.toggle("is-warn", !ok);
+    link.querySelector(".check-detail").textContent = ok ? linkValue.replace(/^https?:\/\//, "") : "Chưa dán link";
+  }
+  if (kho) {
+    const ok = tgComments.length > 0;
+    kho.classList.toggle("is-ok", ok);
+    kho.classList.toggle("is-warn", !ok);
+    kho.querySelector(".check-detail").textContent = ok ? `${tgComments.length} câu trong kho` : "Thêm ít nhất 1 câu";
+  }
+  if (acc) {
+    const eligible = tgAccounts.filter((a) => (a.hasSession || a.hasJson) && (a.ageDays ?? 0) >= minAge && (a.joinsToday ?? 0) < limit);
+    const ok = eligible.length > 0;
+    acc.classList.toggle("is-ok", ok);
+    acc.classList.toggle("is-warn", !ok);
+    acc.querySelector(".check-detail").textContent = ok
+      ? `${eligible.length} acc đủ tuổi · còn lượt hôm nay`
+      : tgAccounts.length === 0
+        ? "Chưa có tài khoản — nhập zip ở tab Tài khoản"
+        : `0/${tgAccounts.length} đủ điều kiện (tuổi ≥ ${minAge} ngày, lượt < ${limit}/ngày)`;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+}
+
+function renderTelegram() {
+  renderTgAccounts();
+  renderTgView();
+  renderTgComments();
+  const running = Boolean(tgStatus.running || tgStatus.comments?.running);
+  if (tgEl.tag) {
+    tgEl.tag.textContent = running ? "Đang chạy" : "Sẵn sàng";
+    tgEl.tag.classList.toggle("tag-live", running);
+  }
+  if (tgEl.navMeta) {
+    tgEl.navMeta.hidden = !running;
+    tgEl.navMeta.textContent = running ? `${tgStatus.joined || 0}` : "";
+  }
+}
+
+function tgCacheKey() {
+  return "tgCacheV1";
+}
+
+function renderFromCache() {
+  try {
+    const raw = localStorage.getItem(tgCacheKey());
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (Array.isArray(cached.accounts) && cached.accounts.length) tgAccounts = cached.accounts;
+    if (Array.isArray(cached.comments)) tgComments = cached.comments;
+    tgAccountsSig = "";
+    tgCommentSig = "";
+    renderTelegram();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadTelegram() {
+  if (!tgAccounts.length) renderFromCache();
+  try {
+    const [accounts, comments, status] = await Promise.all([
+      api("/api/telegram/accounts"),
+      api("/api/telegram/comments"),
+      api("/api/telegram/status"),
+    ]);
+    tgAccounts = Array.isArray(accounts.accounts) ? accounts.accounts : [];
+    tgComments = Array.isArray(comments.messages) ? comments.messages : [];
+    tgStatus = status || tgStatus;
+    try {
+      localStorage.setItem(tgCacheKey(), JSON.stringify({ accounts: tgAccounts, comments: tgComments }));
+    } catch {
+      // localStorage đầy thì thôi
+    }
+    tgAccountsSig = "";
+    tgViewSig = "";
+    tgCommentSig = "";
+    renderTelegram();
+    syncTgTargets();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+let tgAccountsTick = 0;
+
+function startTelegramPolling() {
+  if (tgTimer) return;
+  tgTimer = window.setInterval(async () => {
+    if (currentView !== "telegram" || document.hidden || tgBusy) return;
+    try {
+      tgStatus = await api("/api/telegram/status");
+      tgAccountsTick += 1;
+      // mỗi 5s đồng bộ lại danh sách acc (thiết bị khác vừa nhập thêm)
+      if (tgAccountsTick % 2 === 0) {
+        const accounts = await api("/api/telegram/accounts");
+        tgAccounts = Array.isArray(accounts.accounts) ? accounts.accounts : tgAccounts;
+        renderTgAccounts();
+      }
+      renderTgView();
+      renderTgComments();
+      renderTelegram();
+    } catch {
+      // nhịp lỗi bỏ qua
+    }
+  }, 2500);
+}
+
+async function importTelegramZip(file) {
+  const response = await fetch("/api/telegram/accounts/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: file,
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = {};
+  }
+  if (!response.ok) throw new Error(body.error || `Tải lên thất bại (${response.status})`);
+  return body;
+}
+
+async function startTelegram(event) {
+  event?.preventDefault?.();
+  if (tgBusy) return;
+  const link = String(tgEl.link?.value || "").trim();
+  if (!link) return notify("Dán link livestream Telegram trước đã.");
+  tgBusy = true;
+  tgEl.submit.disabled = true;
+  try {
+    await api("/api/telegram/boost/start", {
+      method: "POST",
+      body: JSON.stringify({
+        link,
+        concurrency: 25,
+        targetCount: Number(tgEl.targetCount?.value) || 0,
+      }),
+    });
+    notify("Đã bắt đầu đưa tài khoản vào phòng.", "info");
+    await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    tgBusy = false;
+    tgEl.submit.disabled = false;
+  }
+}
+
+async function adjustTelegram(target) {
+  const value = Math.max(0, Math.floor(Number(target) || 0));
+  if (tgEl.targetCount) tgEl.targetCount.value = String(value);
+  if (!tgStatus.running) return; // chưa chạy thì chỉ đổi số trong form
+  try {
+    await api("/api/telegram/boost/adjust", { method: "POST", body: JSON.stringify({ target: value }) });
+    await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function stopTelegram(mode = "view") {
+  try {
+    await api("/api/telegram/boost/stop", { method: "POST", body: JSON.stringify({ mode }) });
+    notify("Đã dừng phiên Telegram.", "info");
+    await new Promise((r) => setTimeout(r, 800));
+    await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function startTelegramComments() {
+  if (tgBusy) return;
+  const link = String(tgEl.commentLink?.value || "").trim();
+  if (!link) return notify("Dán link kênh/nhóm Telegram trước đã.");
+  if (!tgComments.length) return notify("Kho bình luận đang rỗng — thêm câu trước đã.");
+  tgBusy = true;
+  tgEl.commentStart.disabled = true;
+  try {
+    await api("/api/telegram/comments/start", {
+      method: "POST",
+      body: JSON.stringify({
+        link,
+        accountLimit: Number(tgEl.commentAccounts?.value) || 10,
+        perAccount: Number(tgEl.commentPer?.value) || 1,
+        dailyLimit: Number(tgEl.commentDaily?.value) || 5,
+        minAgeDays: Number(tgEl.commentAge?.value) || 0,
+        sendDelayMin: Number(tgEl.commentDelayMin?.value) || 25,
+        sendDelayMax: Number(tgEl.commentDelayMax?.value) || 90,
+        continuous: Boolean(tgEl.commentContinuous?.checked),
+        roundDelay: Number(tgEl.commentRound?.value) || 60,
+      }),
+    });
+    notify("Đã bắt đầu gửi bình luận.", "info");
+    await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    tgBusy = false;
+    tgEl.commentStart.disabled = false;
+  }
+}
+
+async function addTelegramComments() {
+  const text = String(tgEl.commentInput?.value || "").trim();
+  if (!text) return notify("Nhập nội dung trước đã.");
+  try {
+    const data = await api("/api/telegram/comments", { method: "POST", body: JSON.stringify({ text }) });
+    tgComments = data.messages || [];
+    tgEl.commentInput.value = "";
+    renderTgComments();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function deleteTelegramComment(index) {
+  try {
+    const data = await api(`/api/telegram/comments/${index}`, { method: "DELETE" });
+    tgComments = data.messages || [];
+    renderTgComments();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function shuffleTelegramComments() {
+  try {
+    const data = await api("/api/telegram/comments/shuffle", { method: "POST", body: "{}" });
+    tgComments = data.messages || [];
+    renderTgComments();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function clearTelegramComments() {
+  try {
+    await api("/api/telegram/comments/clear", { method: "POST", body: "{}" });
+    tgComments = [];
+    renderTgComments();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+if (tgEl.form) {
+  tgEl.form.addEventListener("submit", startTelegram);
+  tgEl.stop?.addEventListener("click", () => stopTelegram("view"));
+  tgEl.commentStart?.addEventListener("click", startTelegramComments);
+  tgEl.check?.addEventListener("click", async () => {
+    const link = String(tgEl.commentLink?.value || tgEl.link?.value || "").trim();
+    if (!link) return notify("Dán link kênh trước đã.");
+    tgEl.checkResult.hidden = false;
+    tgEl.checkResult.textContent = "Đang kiểm tra…";
+    try {
+      const info = await api("/api/telegram/check", { method: "POST", body: JSON.stringify({ link }) });
+      if (info.ok === false) {
+        tgEl.checkResult.textContent = `Không kiểm tra được: ${info.error}`;
+        return;
+      }
+      const bits = [
+        `${info.title || info.username || "?"} (${info.type}${info.megagroup ? " · supergroup" : ""})`,
+        info.call ? `livestream: có · ${info.participants} người xem` : "livestream: KHÔNG có call đang chạy",
+        info.canSend ? "gửi tin: được" : `gửi tin: KHÔNG (${info.sendError || "không rõ"})`,
+      ];
+      tgEl.checkResult.textContent = bits.join(" — ");
+    } catch (error) {
+      tgEl.checkResult.textContent = `Lỗi: ${error.message}`;
+    }
+  });
+  tgEl.commentStop?.addEventListener("click", () => stopTelegram("comment"));
+  tgEl.commentAdd?.addEventListener("click", addTelegramComments);
+  tgEl.commentShuffle?.addEventListener("click", shuffleTelegramComments);
+  tgEl.commentClear?.addEventListener("click", clearTelegramComments);
+  tgEl.commentList?.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-tg-comment-del]");
+    if (trigger) void deleteTelegramComment(trigger.dataset.tgCommentDel);
+  });
+  const rerenderCheck = () => {
+    tgCommentSig = "";
+    renderTgComments();
+  };
+  tgEl.commentLink?.addEventListener("input", rerenderCheck);
+  tgEl.commentAge?.addEventListener("input", rerenderCheck);
+  tgEl.commentContinuous?.addEventListener("change", rerenderCheck);
+  for (const button of $$("[data-tg-preset]")) {
+    button.addEventListener("click", () => void adjustTelegram(Number(button.dataset.tgPreset)));
+  }
+  tgEl.checkView?.addEventListener("click", async () => {
+    const link = String(tgEl.link?.value || "").trim();
+    if (!link) return notify("Dán link livestream trước đã.");
+    tgEl.checkViewResult.hidden = false;
+    tgEl.checkViewResult.textContent = "Đang kiểm tra…";
+    try {
+      const info = await api("/api/telegram/check", { method: "POST", body: JSON.stringify({ link }) });
+      tgEl.checkViewResult.textContent = info.ok === false
+        ? `Lỗi: ${info.error}`
+        : `${info.title || info.username} · ${info.call ? `LIVE · ${info.participants} người xem` : "chưa có livestream"}`;
+      if (info.call) tgStatus.participants = info.participants;
+      renderTgView();
+    } catch (error) {
+      tgEl.checkViewResult.textContent = `Lỗi: ${error.message}`;
+    }
+  });
+  for (const button of $$("[data-tg-step]")) {
+    button.addEventListener("click", () => {
+      const current = Number(tgEl.targetCount?.value) || 0;
+      void adjustTelegram(current + Number(button.dataset.tgStep));
+    });
+  }
+  tgEl.tab?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-tg-tab]");
+    if (button) switchTgTab(button.dataset.tgTab);
+  });
+  tgEl.upload?.addEventListener("change", async () => {
+    const file = tgEl.upload.files?.[0];
+    if (!file) return;
+    try {
+      const data = await importTelegramZip(file);
+      notify(`Đã nhập ${data.imported} tài khoản.`, "info");
+      await loadTelegram();
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      tgEl.upload.value = "";
+    }
+  });
+  tgEl.importPath?.addEventListener("click", async () => {
+    const path = String(tgEl.path?.value || "").trim();
+    if (!path) return notify("Nhập đường dẫn zip hoặc thư mục.");
+    try {
+      const data = await api("/api/telegram/accounts/import", { method: "POST", body: JSON.stringify({ path }) });
+      notify(`Đã nhập ${data.imported} tài khoản.`, "info");
+      await loadTelegram();
+    } catch (error) {
+      notify(error.message);
+    }
+  });
+  switchTgTab(tgTab);
+  renderTelegram();
+}
+
 buildPlatformPanels();
 renderFollowHistory();
+startHubPolling();
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    void loadHubs();
+    if (currentView === "viewbot") void loadViewbot();
+    if (currentView === "telegram") void loadTelegram();
+  }
+});
 switchView(VIEWS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "live");
 void updateVersionDisplay();
 window.setInterval(tickClock, 1000);
@@ -2300,11 +3585,10 @@ api("/api/auth/status")
 window.setInterval(async () => {
   if (!webAuthenticated || document.hidden || statusRefreshRunning || isRunning()) return;
   const focused = document.activeElement;
-  if ((currentView === "accounts" || !el.drawer.hidden) && ["INPUT", "TEXTAREA"].includes(focused?.tagName)) return;
+  if (!state?.autoReg?.running && (currentView === "accounts" || !el.drawer.hidden) && ["INPUT", "TEXTAREA"].includes(focused?.tagName)) return;
   statusRefreshRunning = true;
   try {
-    state = await api("/api/state");
-    render();
+    await refreshState();
   } catch {
     // Keep the last known state; an explicit refresh still reports errors.
   } finally {

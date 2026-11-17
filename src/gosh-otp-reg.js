@@ -621,6 +621,11 @@ export class OtpMailBrowser {
       "--remote-debugging-address=127.0.0.1",
       "--no-first-run",
       "--no-default-browser-check",
+      // Same caps as CHROME_LIGHT_ARGS in browser-session.js (not imported
+      // here to keep Playwright out of this script).
+      "--disk-cache-size=52428800",
+      "--media-cache-size=10485760",
+      "--disable-component-update",
       targetUrl,
     ];
     const child = spawn(executablePath, args, {
@@ -1646,13 +1651,29 @@ export async function runGoshOtpRegistration({
 }
 export function extractGoshTargetUid(target) {
   const raw = String(target || "").trim();
+  if (!raw) return "";
   if (/^\d+$/.test(raw)) return raw;
   try {
-    const parsed = new URL(raw);
-    const match = parsed.pathname.match(/^\/(?:[a-z]{2}(?:-[A-Za-z]+)?\/)?(\d+)/);
-    if (match?.[1]) return match[1];
+    const normalized = /^https?:\/\//i.test(raw)
+      ? raw
+      : (/^(?:www\.)?(?:gosh6\.app|gosh\.com)\//i.test(raw) ? `https://${raw}` : "");
+    if (normalized) {
+      const parsed = new URL(normalized);
+      if (!/(^|\.)(?:gosh6\.app|gosh\.com)$/i.test(parsed.hostname)) return "";
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      if (!segments.length) return "";
+      const first = segments[0];
+      if (segments.length >= 2 && /^[a-z]{2}(?:-[A-Za-z]{2,4})?$/.test(first)) {
+        return /^[A-Za-z0-9_.-]{2,64}$/.test(segments[1]) ? segments[1] : "";
+      }
+      if (/^[a-z]{2}(?:-[A-Za-z]{2,4})?$/i.test(first)) return "";
+      return /^[A-Za-z0-9_.-]{2,64}$/.test(first) ? first : "";
+    }
   } catch {}
-  return raw.match(/\/(\d+)(?:[/?#]|$)/)?.[1] || "";
+  if (!raw.includes("/") && !raw.includes(":") && /^[A-Za-z0-9_.-]{2,64}$/.test(raw)) {
+    return raw;
+  }
+  return "";
 }
 
 export async function runGoshFollowBoost({
@@ -1662,9 +1683,9 @@ export async function runGoshFollowBoost({
   unfollow = false,
   concurrency = 12,
 } = {}) {
-  const targetUid = extractGoshTargetUid(target);
-  if (!targetUid) {
-    throw new Error("Vui lòng nhập URL kênh Gosh (ví dụ https://gosh.com/vi/16427037) hoặc UID số của kênh.");
+  const rawTarget = extractGoshTargetUid(target);
+  if (!rawTarget) {
+    throw new Error("Vui lòng nhập URL kênh Gosh (ví dụ https://gosh.com/zaucute00) hoặc UID/ID của kênh.");
   }
 
   const store = new JsonStore(dataDirectory);
@@ -1678,6 +1699,32 @@ export async function runGoshFollowBoost({
   }
   const selected = count > 0 ? enabledGosh.slice(0, count) : enabledGosh;
   const firstCred = vault.get(selected[0].id).credentials;
+
+  let targetUid = rawTarget;
+  if (!/^\d+$/.test(targetUid)) {
+    try {
+      const batch = await goshApiRequest("/gosh_base/app/live/batch_get_by_anchor", {
+        method: "POST",
+        body: { anchor_ids: [rawTarget] },
+        did: firstCred.did,
+        uid: firstCred.uid,
+        token: firstCred.token,
+      });
+      const resolved = batch?.lives?.[0]?.uid || batch?.lives?.[0]?.user?.id;
+      if (resolved) targetUid = String(resolved);
+    } catch {}
+    if (!/^\d+$/.test(targetUid)) {
+      const anchor = await goshApiRequest("/gosh_base/app/live/get_by_anchor_v1", {
+        method: "GET",
+        query: { anchor_id: rawTarget },
+        did: firstCred.did,
+        uid: firstCred.uid,
+        token: firstCred.token,
+      });
+      const resolved = anchor?.live?.uid || anchor?.live?.user?.id;
+      if (resolved) targetUid = String(resolved);
+    }
+  }
 
   const getFollowerInfo = async () => {
     try {
@@ -1744,6 +1791,28 @@ export async function runGoshFollowBoost({
   const afterInfo = await getFollowerInfo();
   const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(`✅ Hoàn tất trong ${elapsedSec}s! Thành công: ${successCount}/${selected.length} acc${failureCount ? ` (${failureCount} lỗi)` : ""}${beforeInfo.followers != null && afterInfo.followers != null ? ` | Followers: ${beforeInfo.followers} → ${afterInfo.followers}` : ""}.`);
+
+  try {
+    const historyPath = join(dataDirectory, "follow-history.json");
+    let history = [];
+    try {
+      const parsed = JSON.parse(await readFile(historyPath, "utf8"));
+      if (Array.isArray(parsed)) history = parsed;
+    } catch {}
+    const now = new Date();
+    history.unshift({
+      time: now.toLocaleTimeString("vi-VN", { hour12: false }),
+      createdAt: now.toISOString(),
+      unfollow,
+      targetUid,
+      nickname: afterInfo.nickname || beforeInfo.nickname || targetUid,
+      beforeFollowers: beforeInfo.followers ?? null,
+      afterFollowers: afterInfo.followers ?? null,
+      successCount,
+      total: selected.length,
+    });
+    await writeFile(historyPath, `${JSON.stringify(history.slice(0, 100), null, 2)}\n`, "utf8");
+  } catch {}
 
   return {
     targetUid,

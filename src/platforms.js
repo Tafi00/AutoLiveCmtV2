@@ -6,7 +6,7 @@ export const PLATFORMS = Object.freeze({
     profileUrl: "https://gosh6.app/streamer-dashboard/settings/profile",
     // Gosh uses both domains for live-room links.
     hostPattern: /(^|\.)(?:gosh6\.app|gosh\.com)$/i,
-    roomPathPattern: /^\/(?:[a-z]{2}(?:-[A-Za-z]+)?\/)?\d+/,
+    roomPathPattern: /^\/(?:(?:[a-z]{2}(?:-[A-Za-z]{2,4})?)\/)?(?!(?:streamer-dashboard|agreement|_next|cdn-cgi|api|static|assets|favicon\.ico|robots\.txt)(?:\/|$))(?!([a-z]{2}(?:-[A-Za-z]{2,4})?)\/?$)[A-Za-z0-9_.-]{2,64}(?:\/|$)/i,
   }),
   loco: Object.freeze({
     id: "loco",
