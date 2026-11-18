@@ -1,3 +1,4 @@
+import { sharedProxies, sharedProxyEnabled, sharedProxySummary } from "./proxy-pool.js";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -1640,8 +1641,12 @@ app.post("/api/viewbot/stop-all", (_request, response) => {
   response.json({ stopped: true });
 });
 
+app.get("/api/proxies/shared", (_request, response) => {
+  response.json(sharedProxySummary());
+});
+
 app.post("/api/viewbot/proxies/check", asyncRoute(async (request, response) => {
-  const proxies = request.body?.proxies;
+  const proxies = sharedProxyEnabled() ? sharedProxies().join("\n") : request.body?.proxies;
   if (!proxies) return response.status(400).json({ error: "Thiếu danh sách proxy." });
   const result = await viewbot.checkProxies(proxies, {
     limit: Math.min(500, Number(request.body?.limit) || 200),

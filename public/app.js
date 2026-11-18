@@ -2804,8 +2804,35 @@ function viewbotProxyLines(text) {
     .filter((line) => line && !line.startsWith("#"));
 }
 
+// 18/11: proxy dùng chung kho code-tele-v4 (settings.json của code-tele) — ô proxy chỉ để xem, sửa ở trang Cài đặt của code-tele.
+let sharedProxy = null;
+
+async function loadSharedProxies() {
+  try {
+    sharedProxy = await api("/api/proxies/shared");
+  } catch {
+    sharedProxy = null;
+  }
+  const box = viewbotEl.proxies;
+  if (!box || !sharedProxy?.enabled) return;
+  box.readOnly = true;
+  box.dataset.shared = "1";
+  box.removeAttribute("data-sync"); // không lưu / không bị bản nháp cũ (danh sách proxy riêng) ghi đè
+  box.value = sharedProxy.proxies.join("\n");
+  box.title = "Proxy dùng chung kho code-tele-v4 — thêm / bớt proxy ở trang Cài đặt của code-tele";
+  const hint = $("#viewbot-proxy-hint");
+  if (hint) {
+    hint.textContent = "Proxy lấy từ kho proxy chung của code-tele-v4 (trang Cài đặt → Proxy bên code-tele). Hai tool dùng chung một kho: muốn thêm / bớt proxy thì sửa ở code-tele, bên này tự cập nhật.";
+  }
+  refreshViewbotProxyCount();
+}
+
 function refreshViewbotProxyCount() {
   if (!viewbotEl.proxyCount) return;
+  if (viewbotEl.proxies?.dataset.shared && sharedProxy) {
+    viewbotEl.proxyCount.textContent = `${fmt(sharedProxy.count)} proxy · kho chung code-tele`;
+    return;
+  }
   const lines = viewbotProxyLines(viewbotEl.proxies?.value);
   viewbotEl.proxyCount.textContent = lines.length ? `${fmt(lines.length)} proxy` : "0 proxy";
 }
@@ -3035,7 +3062,8 @@ function viewbotPayload() {
     platform,
     url: String(viewbotEl.url?.value || "").trim(),
     bots: Number(viewbotEl.bots?.value) || 50,
-    proxies: viewbotProxyLines(viewbotEl.proxies?.value).join("\n"),
+    // kho chung: máy chủ tự lấy proxy từ code-tele (ô trên trang chỉ hiện bản che mật khẩu)
+    proxies: viewbotEl.proxies?.dataset.shared ? "" : viewbotProxyLines(viewbotEl.proxies?.value).join("\n"),
     targets: viewbotSelectedTargets(),
   };
   if (platform === "telegram") {
@@ -3177,13 +3205,14 @@ async function loadViewbotStreams() {
 }
 
 async function checkViewbotProxies() {
-  const lines = viewbotProxyLines(viewbotEl.proxies?.value);
-  if (!lines.length) {
+  const shared = Boolean(viewbotEl.proxies?.dataset.shared);
+  const lines = shared ? [] : viewbotProxyLines(viewbotEl.proxies?.value);
+  if (!shared && !lines.length) {
     notify("Dán danh sách proxy trước đã.");
     return;
   }
   viewbotEl.proxyResult.hidden = false;
-  viewbotEl.proxyResult.textContent = `Đang kiểm tra ${fmt(lines.length)} proxy…`;
+  viewbotEl.proxyResult.textContent = `Đang kiểm tra ${fmt(shared ? sharedProxy?.count || 0 : lines.length)} proxy…`;
   try {
     const data = await api("/api/viewbot/proxies/check", {
       method: "POST",
@@ -3241,6 +3270,8 @@ if (viewbotEl.form) {
   refreshViewbotProxyCount();
   applyViewbotPlatform();
   renderViewbot();
+  void loadSharedProxies();
+  window.setInterval(() => void loadSharedProxies(), 60000); // code-tele thêm / bớt proxy: bên này tự cập nhật
 }
 
 

@@ -1,6 +1,7 @@
 // Chọn chạy job ở đâu: máy chính, một hub cụ thể, hay chia đều cho các hub đang online.
 // Telegram dùng chung luồng này: mỗi máy nhận một phần tài khoản + proxy.
 import { parseProxyList } from "./manager.js";
+import { effectiveProxies } from "../proxy-pool.js";
 import { buildProxyMap } from "../telegram/manager.js";
 
 const TELEGRAM = "telegram";
@@ -43,6 +44,8 @@ export class Deployments {
   }
 
   async start(input) {
+    // 18/11: proxy lấy từ kho chung code-tele-v4 (settings.json) cho mọi lượt chạy — ô proxy riêng chỉ dùng khi tắt kho chung
+    input = { ...input, proxies: effectiveProxies(input.proxies) };
     if (input.platform === TELEGRAM) return this.#startTelegram(input);
     const proxyList = parseProxyList(input.proxies || "");
     input = { ...input, proxyList };
