@@ -85,7 +85,9 @@ const PLATFORM_INFO = {
 };
 const MAX_ROOMS = 20;
 const ACCOUNTS_PER_PAGE = 100;
-const VIEWS = ["live", "schedule", "follow", "viewbot", "telegram", "hubs", "accounts", "system"];
+const VIEWS = ["live", "schedule", "follow", "viewbot", "hubs", "accounts", "system"];
+// link cũ #telegram chuyển sang màn mới tương ứng
+const VIEW_ALIASES = { telegram: "viewbot" };
 const DAY_OPTIONS = [
   [1, "T2", "Thứ hai"],
   [2, "T3", "Thứ ba"],
@@ -260,7 +262,9 @@ const el = {
 
 let state = null;
 let currentView = "live";
-let activePlatform = PLATFORM_IDS.includes(readPref("alc-platform", "")) ? readPref("alc-platform", "") : "gosh";
+let activePlatform = "gosh";
+// tab đang mở ở màn Chiến dịch: một nền tảng Gosh hoặc "telegram"
+let campaignTab = ["telegram", ...PLATFORM_IDS].includes(readPref("alc-platform", "")) ? readPref("alc-platform", "") : "gosh";
 let selectedAccountId = null;
 let statusFilter = "all";
 let accountPage = 0;
@@ -444,6 +448,7 @@ function formatClock(date) {
 /* ---------- Navigation ---------- */
 
 function switchView(view, { focusId = null } = {}) {
+  view = VIEW_ALIASES[view] || view;
   if (!VIEWS.includes(view)) return;
   currentView = view;
   for (const button of $$("[data-view]")) {
@@ -456,22 +461,22 @@ function switchView(view, { focusId = null } = {}) {
   if (window.location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
   $(".views").scrollTop = 0;
   if (state) {
-    if (view === "accounts") renderAccounts();
+    if (view === "accounts") {
+      renderAccounts();
+      renderAccountSummary();
+    }
     if (view === "schedule") renderSchedule();
     if (view === "viewbot") {
+      applyViewbotPlatform();
       renderViewbot();
-      void loadViewbot();
-      void loadHubs();
+      if (!realtimeConnected) {
+        void loadViewbot();
+        void loadHubs();
+      }
     }
     if (view === "hubs") {
       renderHubs();
-      void loadHubs();
-      startHubPolling();
-    }
-    if (view === "telegram") {
-      renderFromCache();
-      void loadTelegram();
-      startTelegramPolling();
+      if (!realtimeConnected) void loadHubs();
     }
     if (view === "system") renderHealth();
   }
@@ -483,7 +488,7 @@ for (const button of $$("[data-view]")) {
 }
 window.addEventListener("hashchange", () => {
   const view = window.location.hash.slice(1);
-  if (VIEWS.includes(view) && view !== currentView) switchView(view);
+  if ((VIEWS.includes(view) || VIEW_ALIASES[view]) && view !== currentView) switchView(view);
 });
 document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-go-view]");
@@ -492,6 +497,7 @@ document.addEventListener("click", (event) => {
     statusFilter = trigger.dataset.goFilter;
     accountPage = 0;
   }
+  if (trigger.dataset.goView === "accounts") selectAccountKind(trigger.dataset.goKind || "gosh");
   switchView(trigger.dataset.goView, { focusId: trigger.dataset.goFocus });
 });
 
@@ -644,16 +650,24 @@ function buildPlatformPanels() {
     tab.setAttribute("aria-controls", `panel-${tab.dataset.platformTab}`);
     tab.addEventListener("click", () => selectPlatform(tab.dataset.platformTab));
   }
-  selectPlatform(activePlatform);
+  selectPlatform(campaignTab);
 }
 
 function selectPlatform(platform) {
-  activePlatform = platform;
-  writePref("alc-platform", platform);
+  campaignTab = platform === "telegram" || PLATFORM_IDS.includes(platform) ? platform : "gosh";
+  if (PLATFORM_IDS.includes(campaignTab)) activePlatform = campaignTab;
+  writePref("alc-platform", campaignTab);
   for (const tab of $$("[data-platform-tab]")) {
-    tab.setAttribute("aria-selected", String(tab.dataset.platformTab === platform));
+    tab.setAttribute("aria-selected", String(tab.dataset.platformTab === campaignTab));
   }
-  for (const id of PLATFORM_IDS) panels[id].root.hidden = id !== platform;
+  for (const id of PLATFORM_IDS) panels[id].root.hidden = id !== campaignTab;
+  const telegramActive = campaignTab === "telegram";
+  const tgPanel = $("#panel-telegram");
+  if (tgPanel) tgPanel.hidden = !telegramActive;
+  const goshLaunch = $("#launch-gosh");
+  const tgLaunch = $("#launch-telegram");
+  if (goshLaunch) goshLaunch.hidden = telegramActive;
+  if (tgLaunch) tgLaunch.hidden = !telegramActive;
 }
 
 async function addMessages(platform) {
@@ -1053,20 +1067,24 @@ function stopBulkPolling() {
   bulkPollTimer = null;
 }
 
+function notifyBulkFinished() {
+  const bulk = state?.bulkSend;
+  if (!bulk || bulk.running || !activeBulkRun || bulk.startedAt !== activeBulkRun) return;
+  if (bulk.phase === "completed") notify(`Đã gửi xong ${fmt(bulk.sent)} lượt bình luận.`, "success");
+  else if (bulk.phase === "completed_with_errors") notify(`Đã gửi ${fmt(bulk.sent)}/${fmt(bulk.total)} lượt, ${bulk.failed} lỗi.`, "warning");
+  else if (bulk.phase === "stopped") notify(`Đã dừng sau ${fmt(bulk.sent)} lượt gửi.`, "warning");
+  else if (bulk.error) notify(bulk.error);
+  activeBulkRun = null;
+}
+
 function pollBulkSend() {
   stopBulkPolling();
-  if (!state?.bulkSend?.running) return;
+  notifyBulkFinished();
+  // có realtime thì máy chủ tự đẩy tiến độ, không cần hỏi lại mỗi giây
+  if (!state?.bulkSend?.running || realtimeConnected) return;
   bulkPollTimer = window.setTimeout(async () => {
     try {
       await refreshState();
-      const bulk = state.bulkSend;
-      if (!bulk.running && bulk.startedAt === activeBulkRun) {
-        if (bulk.phase === "completed") notify(`Đã gửi xong ${fmt(bulk.sent)} lượt bình luận.`, "success");
-        else if (bulk.phase === "completed_with_errors") notify(`Đã gửi ${fmt(bulk.sent)}/${fmt(bulk.total)} lượt, ${bulk.failed} lỗi.`, "warning");
-        else if (bulk.phase === "stopped") notify(`Đã dừng sau ${fmt(bulk.sent)} lượt gửi.`, "warning");
-        else if (bulk.error) notify(bulk.error);
-        activeBulkRun = null;
-      }
     } catch (error) {
       notify(error.message);
     }
@@ -2397,6 +2415,7 @@ function render() {
   renderAutoReg();
   if (currentView === "accounts") renderAccounts();
   else renderDrawer();
+  renderAccountSummary();
   if (currentView === "system") renderHealth();
   pollBulkSend();
 }
@@ -2470,6 +2489,7 @@ el.loginForm.addEventListener("submit", async (event) => {
 });
 
 async function logout() {
+  disconnectRealtime();
   try { await api("/api/auth/logout", { method: "POST" }); } catch {}
   showLogin();
 }
@@ -2479,26 +2499,268 @@ el.logoutBtnSecondary.addEventListener("click", logout);
 /* ---------- Boot ---------- */
 
 async function bootDashboard() {
-  const [, health, observed] = await Promise.all([
+  connectRealtime();
+  const [, health, observed, drafts] = await Promise.all([
     refreshState(),
     api("/api/health").catch(() => ({ checks: [] })),
     api("/api/endpoints/observed").catch(() => ({ endpoints: [] })),
+    api("/api/drafts").catch(() => null),
+    loadTelegram(),
+    realtimeConnected ? null : loadHubs(),
   ]);
+  if (drafts) applyDrafts(drafts, { force: true });
   healthChecks = health.checks || [];
   observedEndpoints = observed.endpoints || [];
   render();
 }
 
 
-/* ---------- Mắt xem livestream (qq88 / hi88) ---------- */
+/* ---------- Dữ liệu dùng chung + đồng bộ realtime ---------- */
+
+let hubList = [];
+let hubLoaded = false;
+let hubLoadError = "";
+let tgAccounts = [];
+let tgComments = [];
+let tgStatus = { running: false, joined: 0, errors: 0, busy: 0, comments: { running: false, sent: 0, errors: 0 } };
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+}
+
+function tgRow(phone, left, right, cls = "") {
+  return `<div class="tg-row ${cls}"><span class="mono">${escapeHtml(phone)}</span><span>${left}</span><span class="tg-state">${right}</span></div>`;
+}
+
+// mỗi tab trình duyệt một id để bỏ qua bản nháp do chính mình gửi lên
+const clientId = (() => {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+})();
+
+let realtimeConnected = false;
+let eventSource = null;
+let realtimeRetryTimer = null;
+let pendingAccounts = null;
+const pendingDrafts = {};
+let draftTimer = null;
+let draftValues = {};
+let draftRev = 0;
+
+/* --- Ô nhập đồng bộ: phần tử có data-sync="khoá" --- */
+
+function syncedFields(key) {
+  return $$(key ? `[data-sync="${key}"]` : "[data-sync]");
+}
+
+function readSyncedField(field) {
+  if (field.type === "radio") {
+    const checked = syncedFields(field.dataset.sync).find((item) => item.checked);
+    return checked ? checked.value : null;
+  }
+  if (field.type === "checkbox") return field.checked;
+  return field.value;
+}
+
+function writeSyncedField(field, value) {
+  if (field === document.activeElement && field.type !== "radio" && field.type !== "checkbox") return false;
+  if (field.type === "radio") {
+    const next = field.value === String(value);
+    if (field.checked === next) return false;
+    field.checked = next;
+    return next;
+  }
+  if (field.type === "checkbox") {
+    if (field.checked === Boolean(value)) return false;
+    field.checked = Boolean(value);
+    return true;
+  }
+  const text = value == null ? "" : String(value);
+  if (field.value === text) return false;
+  field.value = text;
+  return true;
+}
+
+function queueDraft(key, value) {
+  pendingDrafts[key] = value;
+  draftValues[key] = value;
+  window.clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(flushDrafts, 350);
+}
+
+function flushDrafts() {
+  window.clearTimeout(draftTimer);
+  const values = { ...pendingDrafts };
+  if (!Object.keys(values).length) return;
+  for (const key of Object.keys(values)) delete pendingDrafts[key];
+  api("/api/drafts", { method: "PUT", body: JSON.stringify({ values, clientId }) }).catch(() => {
+    // lần sau gõ tiếp sẽ gửi lại; giữ giá trị chưa gửi được
+    for (const [key, value] of Object.entries(values)) if (!(key in pendingDrafts)) pendingDrafts[key] = value;
+  });
+}
+
+// đổi giá trị bằng code (nút preset…) mà vẫn đồng bộ sang máy khác
+function setSyncedValue(field, value) {
+  if (!field) return;
+  field.value = String(value);
+  if (field.dataset.sync) queueDraft(field.dataset.sync, readSyncedField(field));
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function applyDrafts(snapshot, { force = false } = {}) {
+  if (!snapshot || typeof snapshot.values !== "object") return;
+  const rev = Number(snapshot.rev) || 0;
+  if (!force && rev <= draftRev) return;
+  draftRev = Math.max(draftRev, rev);
+  if (!force && snapshot.origin === clientId) return;
+  draftValues = { ...snapshot.values };
+  const changedKeys = new Set();
+  for (const field of syncedFields()) {
+    const key = field.dataset.sync;
+    if (key in pendingDrafts || !(key in draftValues)) continue;
+    if (writeSyncedField(field, draftValues[key])) changedKeys.add(key);
+  }
+  if (Array.isArray(draftValues["viewbot.targets"]) && !("viewbot.targets" in pendingDrafts)) {
+    applyViewbotTargetDraft(draftValues["viewbot.targets"]);
+  }
+  if (changedKeys.size) onDraftsApplied(changedKeys);
+}
+
+function onDraftsApplied(keys) {
+  if ([...keys].some((key) => key.startsWith("viewbot."))) {
+    refreshViewbotProxyCount();
+    applyViewbotPlatform();
+  }
+  if ([...keys].some((key) => key.startsWith("tg."))) renderTgComments(true);
+}
+
+document.addEventListener("input", (event) => {
+  const field = event.target.closest?.("[data-sync]");
+  if (!field || !event.isTrusted) return;
+  queueDraft(field.dataset.sync, readSyncedField(field));
+});
+document.addEventListener("change", (event) => {
+  const field = event.target.closest?.("[data-sync]");
+  if (!field || !event.isTrusted) return;
+  queueDraft(field.dataset.sync, readSyncedField(field));
+});
+window.addEventListener("pagehide", flushDrafts);
+
+/* --- Kênh realtime (Server-Sent Events) --- */
+
+// state đẩy về không kèm danh sách acc (nặng); giữ danh sách đang có cùng đúng revision của nó
+function applyStatePush(body) {
+  const accounts = state?.accounts || pendingAccounts?.accounts || [];
+  const rev = state?.accounts ? state.accountsRev : pendingAccounts?.rev;
+  pendingAccounts = null;
+  state = { ...body, accounts, accountsRev: rev };
+  lastStateText = "";
+  render();
+}
+
+function applyAccountsPush({ rev, accounts }) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  if (!state) {
+    pendingAccounts = { rev, accounts: list };
+    return;
+  }
+  state = { ...state, accounts: list, accountsRev: rev };
+  render();
+}
+
+function applyTelegramPush(data) {
+  tgStatus = data || tgStatus;
+  if (Array.isArray(data?.messages)) tgComments = data.messages;
+  renderTelegram();
+}
+
+function applyTelegramAccountsPush(data) {
+  tgAccounts = Array.isArray(data?.accounts) ? data.accounts : [];
+  if (data?.dailyLimit != null) tgStatus = { ...tgStatus, safety: { ...(tgStatus.safety || {}), dailyLimit: data.dailyLimit } };
+  renderTgAccounts();
+  renderTgComments(true);
+  renderViewbotEligible();
+}
+
+function setRealtimeIndicator(connected) {
+  document.documentElement.classList.toggle("is-realtime", connected);
+  const button = el.refreshStatus;
+  if (button) button.title = connected ? "Đang đồng bộ realtime · bấm để tải lại" : "Mất kết nối realtime · bấm để tải lại";
+}
+
+function connectRealtime() {
+  if (eventSource || typeof EventSource === "undefined") return;
+  window.clearTimeout(realtimeRetryTimer);
+  const source = new EventSource("/api/events");
+  eventSource = source;
+  const on = (name, handler) => source.addEventListener(name, (event) => {
+    try {
+      handler(JSON.parse(event.data));
+    } catch (error) {
+      console.warn(`[realtime] ${name}`, error);
+    }
+  });
+  on("state", applyStatePush);
+  on("accounts", applyAccountsPush);
+  on("viewbot", applyViewbotData);
+  on("telegram", applyTelegramPush);
+  on("telegramAccounts", applyTelegramAccountsPush);
+  on("drafts", (snapshot) => applyDrafts(snapshot));
+  source.addEventListener("ready", () => {
+    realtimeConnected = true;
+    setRealtimeIndicator(true);
+  });
+  source.addEventListener("error", () => {
+    realtimeConnected = false;
+    setRealtimeIndicator(false);
+    if (source.readyState === EventSource.CLOSED) {
+      eventSource = null;
+      // có thể phiên đăng nhập đã hết: kiểm tra rồi mới nối lại
+      realtimeRetryTimer = window.setTimeout(async () => {
+        try {
+          const auth = await api("/api/auth/status");
+          if (!auth.authenticated) return showLogin(auth.username || "admin");
+        } catch {
+          // mạng chập chờn: vẫn thử nối lại
+        }
+        connectRealtime();
+      }, 3000);
+    }
+  });
+}
+
+function disconnectRealtime() {
+  window.clearTimeout(realtimeRetryTimer);
+  eventSource?.close();
+  eventSource = null;
+  realtimeConnected = false;
+  setRealtimeIndicator(false);
+}
+
+/* ---------- Mắt xem livestream (QQ88 / Hi88 / MB66 / Coichua / Telegram) ---------- */
 
 const viewbotEl = {
   form: $("#viewbot-form"),
+  sub: $("#viewbot-sub"),
   url: $("#viewbot-url"),
+  urlHint: $("#viewbot-url-hint"),
   bots: $("#viewbot-bots"),
   ramp: $("#viewbot-ramp"),
+  rampField: $("#viewbot-ramp-field"),
+  tgFields: $("#viewbot-tg-fields"),
+  tgDelayMin: $("#viewbot-tg-delay-min"),
+  tgDelayMax: $("#viewbot-tg-delay-max"),
+  tgAge: $("#viewbot-tg-age"),
+  tgDaily: $("#viewbot-tg-daily"),
+  tgEligible: $("#viewbot-tg-eligible"),
+  tgCheck: $("#viewbot-tg-check"),
+  tgCheckResult: $("#viewbot-tg-check-result"),
   proxies: $("#viewbot-proxies"),
   proxyCount: $("#viewbot-proxy-count"),
+  proxyHint: $("#viewbot-proxy-hint"),
   submit: $("#viewbot-submit"),
   stop: $("#viewbot-stop"),
   jobs: $("#viewbot-jobs"),
@@ -2516,13 +2778,24 @@ const viewbotEl = {
   proxyResult: $("#viewbot-proxy-result"),
 };
 
+const VIEWBOT_PLATFORM_COPY = {
+  qq88: { placeholder: "https://www.qq88live.live/live/QQ88live-bunny", hint: "Dán link live hoặc mã phòng (vd QQ88live-bunny)." },
+  hi88: { placeholder: "https://hi88live.../live/…", hint: "Dán link live hoặc mã phòng Hi88." },
+  mb66: { placeholder: "https://mb66live.../live/…", hint: "Dán link live hoặc mã phòng MB66." },
+  coichua: { placeholder: "https://coichua.tv/…", hint: "Dán link live hoặc matchId:profileId." },
+  telegram: { placeholder: "https://t.me/tenkenh", hint: "Dán link kênh/nhóm Telegram đang livestream." },
+};
+
 let viewbotJobs = [];
 let viewbotTimer = null;
 let viewbotBusy = false;
+let viewbotTargetsSig = "";
 
 function viewbotPlatform() {
   return $('input[name="viewbot-platform"]:checked')?.value || "qq88";
 }
+
+const isTelegramViewbot = () => viewbotPlatform() === "telegram";
 
 function viewbotProxyLines(text) {
   return String(text || "")
@@ -2534,69 +2807,214 @@ function viewbotProxyLines(text) {
 function refreshViewbotProxyCount() {
   if (!viewbotEl.proxyCount) return;
   const lines = viewbotProxyLines(viewbotEl.proxies?.value);
-  viewbotEl.proxyCount.textContent = lines.length ? `${lines.length} proxy` : "0 proxy";
+  viewbotEl.proxyCount.textContent = lines.length ? `${fmt(lines.length)} proxy` : "0 proxy";
 }
 
 function viewbotUptime(seconds) {
   const total = Math.max(0, Math.floor(seconds || 0));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (v) => String(v).padStart(2, "0");
-  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (value) => String(value).padStart(2, "0");
+  return hours ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${pad(minutes)}:${pad(secs)}`;
+}
+
+// acc Telegram còn dùng được theo tuổi/hạn mức đang nhập ở form
+function telegramEligibleCount({ minAge, dailyLimit, field = "joinsToday" }) {
+  const busy = new Set();
+  const now = Date.now();
+  let ready = 0;
+  for (const account of tgAccounts) {
+    if (!account.hasSession && !account.hasJson) continue;
+    if (account.dead || account.cooldownUntil > now) continue;
+    if ((account.ageDays ?? 0) < minAge) continue;
+    if (dailyLimit > 0 && (account[field] ?? 0) >= dailyLimit) continue;
+    if (busy.has(account.phone)) continue;
+    ready += 1;
+  }
+  return ready;
+}
+
+function renderViewbotEligible() {
+  if (!viewbotEl.tgEligible) return;
+  const telegram = isTelegramViewbot();
+  viewbotEl.tgEligible.hidden = !telegram;
+  if (!telegram) return;
+  const ready = telegramEligibleCount({
+    minAge: Number(viewbotEl.tgAge?.value) || 0,
+    dailyLimit: Number(viewbotEl.tgDaily?.value) || 0,
+  });
+  const busy = tgStatus.busy || 0;
+  viewbotEl.tgEligible.textContent = tgAccounts.length
+    ? `Mỗi mắt là 1 tài khoản Telegram · ${fmt(ready)}/${fmt(tgAccounts.length)} acc đủ điều kiện${busy ? ` · ${fmt(busy)} acc đang bận` : ""}.`
+    : "Chưa có tài khoản Telegram — nhập ở màn Tài khoản › Telegram.";
+}
+
+function applyViewbotPlatform() {
+  const platform = viewbotPlatform();
+  const telegram = platform === "telegram";
+  const copy = VIEWBOT_PLATFORM_COPY[platform] || VIEWBOT_PLATFORM_COPY.qq88;
+  if (viewbotEl.url) viewbotEl.url.placeholder = copy.placeholder;
+  if (viewbotEl.urlHint) viewbotEl.urlHint.textContent = copy.hint;
+  if (viewbotEl.rampField) viewbotEl.rampField.hidden = telegram;
+  if (viewbotEl.tgFields) viewbotEl.tgFields.hidden = !telegram;
+  if (viewbotEl.loadStreams) viewbotEl.loadStreams.hidden = telegram;
+  if (viewbotEl.tgCheck) viewbotEl.tgCheck.hidden = !telegram;
+  if (viewbotEl.tgCheckResult && !telegram) viewbotEl.tgCheckResult.hidden = true;
+  if (viewbotEl.sub) {
+    viewbotEl.sub.textContent = telegram
+      ? "Mỗi mắt là một tài khoản Telegram vào phòng livestream — giữ kết nối để số người xem tăng."
+      : "Mỗi mắt là một socket vào phòng chat của livestream — số người xem hiển thị trên site tăng theo.";
+  }
+  if (viewbotEl.proxyHint) {
+    viewbotEl.proxyHint.innerHTML = telegram
+      ? "Mỗi dòng một proxy dạng ip:port:user:pass (hoặc socks5://…). Mỗi tài khoản giữ cố định một proxy; dùng <code>{i}</code> trong user để mỗi acc một IP riêng. Trống = dùng IP máy chạy."
+      : "Mỗi dòng một proxy dạng ip:port:user:pass (hoặc ip:port, socks5://…). Dùng <code>{i}</code> trong user để mỗi mắt một session/IP riêng (Geonode: <code>user-session-{i}</code>, hoặc <code>{rand}</code>). Trống = dùng IP máy.";
+  }
+  if (viewbotEl.checkHub) viewbotEl.checkHub.placeholder = telegram ? "Link kênh Telegram" : "Mã phòng";
+  if (viewbotEl.check) viewbotEl.check.textContent = telegram ? "Đọc số người xem" : "Đọc số mắt trên site";
+  renderViewbotEligible();
+  syncViewbotTargets(true);
+}
+
+function viewbotJobValues(job) {
+  const telegram = job.platform === "telegram";
+  const live = Number(job.live) || 0;
+  const target = Number(job.target) || 0;
+  return {
+    percent: target ? Math.min(100, Math.round((live / target) * 100)) : 0,
+    onsite: `${job.count == null ? "—" : fmt(job.count)} ${telegram ? "người xem" : "mắt trên site"}`,
+    live: `${fmt(live)}/${fmt(target)}`,
+    second: fmt(telegram ? job.total : job.joined),
+    drops: fmt(job.drops),
+    errors: fmt(job.errors),
+    proxies: fmt(job.proxies),
+    uptime: viewbotUptime(job.uptimeSeconds),
+    accountsCount: `Tài khoản (${fmt(job.accounts?.length || 0)})`,
+    accountsList: (job.accounts || [])
+      .slice(0, 300)
+      .map((row) => tgRow(
+        row.phone,
+        escapeHtml(row.name || "—"),
+        escapeHtml(row.state === "joined" ? "trong phòng" : row.error || row.state || "—"),
+        row.state === "joined" ? "is-joined" : row.state === "error" ? "is-error" : "",
+      ))
+      .join(""),
+  };
+}
+
+// phần khung của thẻ: chỉ dựng lại khi những thứ này đổi, số liệu thì cập nhật tại chỗ
+function viewbotJobShape(job) {
+  const offline = job.state === "offline" || job.hubOnline === false;
+  return JSON.stringify([job.platform, job.hub, job.hubName, offline, job.lastError || "", Boolean(job.accounts?.length)]);
+}
+
+function viewbotJobCard(job) {
+  const telegram = job.platform === "telegram";
+  const values = viewbotJobValues(job);
+  const offline = job.state === "offline" || job.hubOnline === false;
+  const id = escapeHtml(job.id);
+  const adjust = telegram
+    ? `<div class="viewbot-adjust" role="group" aria-label="Đổi số mắt">
+        ${[-10, -1, 1, 10].map((step) => `<button class="tg-step" type="button" data-viewbot-adjust="${id}" data-step="${step}">${step > 0 ? "+" : "−"}${Math.abs(step)}</button>`).join("")}
+      </div>`
+    : "";
+  const error = job.lastError ? `<p class="progress-error">${escapeHtml(job.lastError)}</p>` : "";
+  const accounts = telegram && job.accounts?.length
+    ? `<details class="viewbot-accounts"><summary data-f="accountsCount">${values.accountsCount}</summary><div class="tg-list" data-f="accountsList">${values.accountsList}</div></details>`
+    : "";
+  return `<article class="viewbot-job${offline ? " is-offline" : ""}" data-job-id="${id}">
+      <div class="viewbot-job-head">
+        <strong>${escapeHtml(job.platformName || job.platform)}</strong>
+        <span class="mono">${escapeHtml(job.hub || "")}</span>
+        <span class="tag">${escapeHtml(job.hubName || "Máy chính")}${offline ? " · offline" : ""}</span>
+        <span class="tag" data-f="onsite">${values.onsite}</span>
+      </div>
+      <div class="meter"><span data-f="percent" style="width:${values.percent}%"></span></div>
+      <dl class="viewbot-stats">
+        <div><dt>${telegram ? "Acc trong phòng" : "Trong phòng"}</dt><dd data-f="live">${values.live}</dd></div>
+        <div><dt>${telegram ? "Acc phân bổ" : "Join OK"}</dt><dd data-f="second">${values.second}</dd></div>
+        <div><dt>Rớt</dt><dd data-f="drops">${values.drops}</dd></div>
+        <div><dt>Lỗi</dt><dd data-f="errors">${values.errors}</dd></div>
+        <div><dt>Proxy</dt><dd data-f="proxies">${values.proxies}</dd></div>
+        <div><dt>Chạy</dt><dd data-f="uptime">${values.uptime}</dd></div>
+      </dl>
+      ${error}
+      <div class="viewbot-job-actions">
+        ${adjust}
+        <button class="btn btn-ghost btn-sm" type="button" data-viewbot-stop="${id}">Dừng phiên</button>
+      </div>
+      ${accounts}
+    </article>`;
+}
+
+function updateViewbotJobCard(card, job) {
+  const values = viewbotJobValues(job);
+  for (const node of card.querySelectorAll("[data-f]")) {
+    const key = node.dataset.f;
+    if (key === "percent") {
+      const width = `${values.percent}%`;
+      if (node.style.width !== width) node.style.width = width;
+    } else if (key === "accountsList") {
+      if (node.parentElement?.open && node.innerHTML !== values.accountsList) node.innerHTML = values.accountsList;
+    } else if (node.textContent !== values[key]) {
+      node.textContent = values[key];
+    }
+  }
 }
 
 function renderViewbot() {
   if (!viewbotEl.jobs) return;
-  const totalLive = viewbotJobs.reduce((sum, job) => sum + (job.live || 0), 0);
-  if (viewbotEl.count) viewbotEl.count.textContent = `${viewbotJobs.length} phiên · ${totalLive} mắt`;
+  const totalLive = viewbotJobs.reduce((sum, job) => sum + (Number(job.live) || 0), 0);
+  if (viewbotEl.count) viewbotEl.count.textContent = `${viewbotJobs.length} phiên · ${fmt(totalLive)} mắt`;
   if (viewbotEl.navMeta) {
     viewbotEl.navMeta.hidden = !viewbotJobs.length;
-    viewbotEl.navMeta.textContent = String(totalLive);
+    viewbotEl.navMeta.textContent = fmt(totalLive);
   }
   if (viewbotEl.tag) {
     viewbotEl.tag.textContent = viewbotJobs.length ? "Đang chạy" : "Sẵn sàng";
     viewbotEl.tag.classList.toggle("tag-live", viewbotJobs.length > 0);
   }
   viewbotEl.empty.hidden = viewbotJobs.length > 0;
-  viewbotEl.jobs.innerHTML = "";
+
+  const existing = new Map([...viewbotEl.jobs.children].map((node) => [node.dataset.jobId, node]));
+  let previous = null;
   for (const job of viewbotJobs) {
-    const row = document.createElement("article");
-    row.className = "viewbot-job";
-    const percent = job.target ? Math.min(100, Math.round((job.live / job.target) * 100)) : 0;
-    row.innerHTML = `
-      <div class="viewbot-job-head">
-        <strong>${job.platformName}</strong>
-        <span class="mono">${job.hub}</span>
-        <span class="tag">${job.hubName || "Máy chính"}</span>
-        <span class="tag">${job.count ?? "-"} mắt trên site</span>
-      </div>
-      <div class="meter"><span style="width:${percent}%"></span></div>
-      <dl class="viewbot-stats">
-        <div><dt>Trong phòng</dt><dd>${job.live}/${job.target}</dd></div>
-        <div><dt>Join OK</dt><dd>${job.joined}</dd></div>
-        <div><dt>Rớt</dt><dd>${job.drops}</dd></div>
-        <div><dt>Lỗi</dt><dd>${job.errors}</dd></div>
-        <div><dt>Proxy</dt><dd>${job.proxies}</dd></div>
-        <div><dt>Chạy</dt><dd>${viewbotUptime(job.uptimeSeconds)}</dd></div>
-      </dl>
-      <div class="viewbot-job-actions">
-        <button class="btn btn-ghost btn-sm" type="button" data-viewbot-stop="${job.id}">Dừng phiên</button>
-      </div>`;
-    viewbotEl.jobs.append(row);
+    let card = existing.get(job.id);
+    existing.delete(job.id);
+    const shape = viewbotJobShape(job);
+    if (!card || card.dataset.shape !== shape) {
+      const holder = document.createElement("div");
+      holder.innerHTML = viewbotJobCard(job);
+      const fresh = holder.firstElementChild;
+      fresh.dataset.shape = shape;
+      if (card?.querySelector("details[open]")) fresh.querySelector("details")?.setAttribute("open", "");
+      if (card) card.replaceWith(fresh);
+      card = fresh;
+    } else {
+      updateViewbotJobCard(card, job);
+    }
+    const expectedPosition = previous ? previous.nextElementSibling : viewbotEl.jobs.firstElementChild;
+    if (card !== expectedPosition) viewbotEl.jobs.insertBefore(card, expectedPosition);
+    previous = card;
   }
+  for (const stale of existing.values()) stale.remove();
+}
+
+function applyViewbotData(data) {
+  viewbotJobs = Array.isArray(data.jobs) ? data.jobs : [];
+  if (Array.isArray(data.hubs)) {
+    hubList = data.hubs;
+    hubLoaded = true;
+    hubLoadError = "";
+    renderHubs();
+  }
+  renderViewbot();
 }
 
 async function loadViewbot() {
   try {
-    const data = await api("/api/viewbot/status");
-    viewbotJobs = Array.isArray(data.jobs) ? data.jobs : [];
-    if (Array.isArray(data.hubs)) {
-      hubList = data.hubs;
-      renderHubs();
-      syncViewbotTargets();
-    }
-    renderViewbot();
+    applyViewbotData(await api("/api/viewbot/status"));
     if (viewbotJobs.length) startViewbotPolling();
   } catch (error) {
     notify(error.message);
@@ -2606,39 +3024,54 @@ async function loadViewbot() {
 function startViewbotPolling() {
   if (viewbotTimer) return;
   viewbotTimer = window.setInterval(() => {
-    if (currentView !== "viewbot" || document.hidden) return;
+    if (realtimeConnected || currentView !== "viewbot" || document.hidden) return;
     void loadViewbot();
-  }, 2000);
+  }, 2500);
+}
+
+function viewbotPayload() {
+  const platform = viewbotPlatform();
+  const payload = {
+    platform,
+    url: String(viewbotEl.url?.value || "").trim(),
+    bots: Number(viewbotEl.bots?.value) || 50,
+    proxies: viewbotProxyLines(viewbotEl.proxies?.value).join("\n"),
+    targets: viewbotSelectedTargets(),
+  };
+  if (platform === "telegram") {
+    Object.assign(payload, {
+      delayMin: Number(viewbotEl.tgDelayMin?.value) || 0,
+      delayMax: Number(viewbotEl.tgDelayMax?.value) || 20,
+      minAgeDays: Number(viewbotEl.tgAge?.value) || 0,
+      dailyLimit: Number(viewbotEl.tgDaily?.value) || 0,
+    });
+  } else {
+    payload.ramp = Number(viewbotEl.ramp?.value) || 5;
+  }
+  return payload;
 }
 
 async function submitViewbot(event) {
   event.preventDefault();
   if (viewbotBusy) return;
-  const url = String(viewbotEl.url?.value || "").trim();
-  if (!url) {
-    notify("Dán link livestream hoặc mã phòng trước đã.");
+  const payload = viewbotPayload();
+  if (!payload.url) {
+    notify(payload.platform === "telegram" ? "Dán link livestream Telegram trước đã." : "Dán link livestream hoặc mã phòng trước đã.");
     return;
   }
   viewbotBusy = true;
-  viewbotEl.submit.disabled = true;
+  setBusy(viewbotEl.submit, true, "Đang khởi động…");
   try {
-    const payload = {
-      platform: viewbotPlatform(),
-      url,
-      bots: Number(viewbotEl.bots?.value) || 50,
-      ramp: Number(viewbotEl.ramp?.value) || 5,
-      proxies: viewbotProxyLines(viewbotEl.proxies?.value).join("\n"),
-      targets: viewbotSelectedTargets(),
-    };
+    flushDrafts();
     const result = await api("/api/viewbot/start", { method: "POST", body: JSON.stringify(payload) });
-    const mode = result.mode === "auto" || result.mode === "multi" ? ` — ${result.note || "chia theo máy"}` : "";
-    notify(`Đã bắt đầu ${payload.bots} mắt cho ${payload.platform.toUpperCase()}${mode}.`, "info");
-    await loadViewbot();
+    const label = payload.platform === "telegram" ? "Telegram" : payload.platform.toUpperCase();
+    notify(`Đã bắt đầu ${fmt(payload.bots)} mắt cho ${label}${result.note ? ` — ${result.note}` : ""}`, "success");
+    if (!realtimeConnected) await loadViewbot();
   } catch (error) {
     notify(error.message);
   } finally {
     viewbotBusy = false;
-    viewbotEl.submit.disabled = false;
+    setBusy(viewbotEl.submit, false);
   }
 }
 
@@ -2646,32 +3079,79 @@ async function stopViewbot(id) {
   try {
     await api("/api/viewbot/stop", { method: "POST", body: JSON.stringify({ id }) });
     notify("Đã dừng phiên.", "info");
-    await loadViewbot();
+    if (!realtimeConnected) await loadViewbot();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function adjustViewbot(id, step) {
+  const job = viewbotJobs.find((row) => row.id === id);
+  if (!job) return;
+  const target = Math.max(0, Math.min(Number(job.total) || Infinity, (Number(job.target) || 0) + step));
+  job.target = target;
+  renderViewbot();
+  try {
+    await api("/api/viewbot/adjust", { method: "POST", body: JSON.stringify({ id, target }) });
   } catch (error) {
     notify(error.message);
   }
 }
 
 async function stopAllViewbot() {
+  if (!viewbotJobs.length) return notify("Không có phiên nào đang chạy.", "info");
+  const confirmed = await confirmAction({
+    title: "Dừng mọi phiên mắt xem?",
+    message: `${viewbotJobs.length} phiên trên mọi máy sẽ dừng, kể cả Telegram.`,
+    confirmLabel: "Dừng tất cả",
+    danger: true,
+  });
+  if (!confirmed) return;
   try {
     await api("/api/viewbot/stop-all", { method: "POST", body: "{}" });
     notify("Đã dừng tất cả phiên.", "info");
-    await loadViewbot();
+    if (!realtimeConnected) await loadViewbot();
   } catch (error) {
     notify(error.message);
+  }
+}
+
+async function checkTelegramLink(link, output) {
+  if (!link) return notify("Dán link kênh Telegram trước đã.");
+  output.hidden = false;
+  output.textContent = "Đang kiểm tra…";
+  try {
+    const info = await api("/api/telegram/check", { method: "POST", body: JSON.stringify({ link }) });
+    if (info.ok === false) {
+      output.textContent = `Không kiểm tra được: ${info.error}`;
+      return null;
+    }
+    output.textContent = [
+      `${info.title || info.username || "?"} (${info.type}${info.megagroup ? " · supergroup" : ""})`,
+      info.call ? `đang LIVE · ${fmt(info.participants)} người xem` : "chưa có livestream",
+      info.canSend === undefined ? "" : info.canSend ? "gửi tin được" : `không gửi tin được (${info.sendError || "không rõ"})`,
+    ].filter(Boolean).join(" — ");
+    return info;
+  } catch (error) {
+    output.textContent = `Lỗi: ${error.message}`;
+    return null;
   }
 }
 
 async function checkViewbotViewer() {
   const hub = String(viewbotEl.checkHub?.value || viewbotEl.url?.value || "").trim();
   if (!hub) {
-    notify("Nhập mã phòng để kiểm tra.");
+    notify(isTelegramViewbot() ? "Nhập link kênh Telegram để kiểm tra." : "Nhập mã phòng để kiểm tra.");
+    return;
+  }
+  if (isTelegramViewbot()) {
+    await checkTelegramLink(hub, viewbotEl.checkResult);
     return;
   }
   viewbotEl.checkResult.textContent = "Đang đọc…";
   try {
     const info = await api(`/api/viewbot/viewer?platform=${viewbotPlatform()}&hub=${encodeURIComponent(hub)}`);
-    viewbotEl.checkResult.textContent = `${info.viewer} mắt · ${info.isStreaming ? "đang live" : "chưa live"}`;
+    viewbotEl.checkResult.textContent = `${fmt(info.viewer)} mắt · ${info.isStreaming ? "đang live" : "chưa live"}`;
   } catch (error) {
     viewbotEl.checkResult.textContent = "—";
     notify(error.message);
@@ -2688,8 +3168,8 @@ async function loadViewbotStreams() {
     }
     const live = streams.filter((item) => item.isStreaming);
     const chosen = live[0] || streams[0];
-    if (viewbotEl.url) viewbotEl.url.value = chosen.hub;
-    if (viewbotEl.checkHub) viewbotEl.checkHub.value = chosen.hub;
+    setSyncedValue(viewbotEl.url, chosen.hub);
+    setSyncedValue(viewbotEl.checkHub, chosen.hub);
     notify(`${streams.length} phòng, ${live.length} đang live. Đã chọn ${chosen.name}.`, "info");
   } catch (error) {
     notify(error.message);
@@ -2703,13 +3183,14 @@ async function checkViewbotProxies() {
     return;
   }
   viewbotEl.proxyResult.hidden = false;
-  viewbotEl.proxyResult.textContent = `Đang kiểm tra ${lines.length} proxy…`;
+  viewbotEl.proxyResult.textContent = `Đang kiểm tra ${fmt(lines.length)} proxy…`;
   try {
     const data = await api("/api/viewbot/proxies/check", {
       method: "POST",
       body: JSON.stringify({ proxies: lines.join("\n"), limit: 500 }),
     });
-    viewbotEl.proxyResult.textContent = `${data.alive}/${data.checked} proxy sống · ${data.uniqueIps} IP khác nhau → tối đa ${data.uniqueIps} mắt mỗi phòng.`;
+    const unit = isTelegramViewbot() ? "acc" : "mắt mỗi phòng";
+    viewbotEl.proxyResult.textContent = `${fmt(data.alive)}/${fmt(data.checked)} proxy sống · ${fmt(data.uniqueIps)} IP khác nhau → tối đa ${fmt(data.uniqueIps)} ${unit} không trùng IP.`;
   } catch (error) {
     viewbotEl.proxyResult.textContent = "—";
     notify(error.message);
@@ -2725,22 +3206,40 @@ if (viewbotEl.form) {
     const hubs = [...box.querySelectorAll("input[value^='hub_']:not([disabled])")];
     for (const input of box.querySelectorAll("input")) input.checked = false;
     for (const input of hubs) input.checked = true;
-    if (!hubs.length) notify("Chưa có hub nào online.", "info");
+    if (!hubs.length) {
+      const main = box.querySelector("input[value='main']");
+      if (main) main.checked = true;
+      notify(isTelegramViewbot() ? "Chưa có hub online nào có Telegram." : "Chưa có hub nào online.", "info");
+    }
+    queueDraft("viewbot.targets", viewbotSelectedTargets());
   });
+  viewbotEl.targets?.addEventListener("change", () => queueDraft("viewbot.targets", viewbotSelectedTargets()));
   viewbotEl.stop?.addEventListener("click", stopAllViewbot);
   viewbotEl.check?.addEventListener("click", checkViewbotViewer);
   viewbotEl.loadStreams?.addEventListener("click", loadViewbotStreams);
+  viewbotEl.tgCheck?.addEventListener("click", () => {
+    void checkTelegramLink(String(viewbotEl.url?.value || "").trim(), viewbotEl.tgCheckResult);
+  });
   viewbotEl.proxies?.addEventListener("input", refreshViewbotProxyCount);
+  for (const input of [viewbotEl.tgAge, viewbotEl.tgDaily]) input?.addEventListener("input", renderViewbotEligible);
+  for (const radio of $$('input[name="viewbot-platform"]')) radio.addEventListener("change", applyViewbotPlatform);
   for (const button of $$("[data-viewbot-preset]")) {
-    button.addEventListener("click", () => {
-      if (viewbotEl.bots) viewbotEl.bots.value = button.dataset.viewbotPreset;
-    });
+    button.addEventListener("click", () => setSyncedValue(viewbotEl.bots, button.dataset.viewbotPreset));
   }
+  viewbotEl.jobs?.addEventListener("toggle", (event) => {
+    const details = event.target;
+    if (!details.open) return;
+    const job = viewbotJobs.find((row) => row.id === details.closest("[data-job-id]")?.dataset.jobId);
+    if (job) updateViewbotJobCard(details.closest("[data-job-id]"), job);
+  }, true);
   viewbotEl.jobs?.addEventListener("click", (event) => {
+    const adjust = event.target.closest("[data-viewbot-adjust]");
+    if (adjust) return void adjustViewbot(adjust.dataset.viewbotAdjust, Number(adjust.dataset.step));
     const trigger = event.target.closest("[data-viewbot-stop]");
     if (trigger) void stopViewbot(trigger.dataset.viewbotStop);
   });
   refreshViewbotProxyCount();
+  applyViewbotPlatform();
   renderViewbot();
 }
 
@@ -2757,11 +3256,8 @@ const hubEl = {
   refresh: $("#hub-refresh"),
 };
 
-let hubList = [];
 let hubBusy = false;
 let hubTimer = null;
-let hubLoadError = "";
-let hubLoaded = false;
 
 function hubStatusText(hub) {
   if (!hub.online) return "offline";
@@ -2786,12 +3282,39 @@ function hubMeta(hub) {
 function startHubPolling() {
   if (hubTimer) return;
   hubTimer = window.setInterval(() => {
-    if (document.hidden) return;
+    if (realtimeConnected || document.hidden) return;
     void loadHubs();
   }, 4000);
 }
 
 let hubLastError = "";
+let hubListHtml = "";
+// lệnh cài đang mở của từng hub, giữ lại khi danh sách được vẽ lại
+const hubInstallOpen = new Map();
+
+function hubCardHtml(hub) {
+  const jobRows = (hub.jobs || [])
+    .map((job) => `<li>${escapeHtml(job.platform)} · ${escapeHtml(job.hub)} · ${fmt(job.live)}/${fmt(job.target)} mắt · ${fmt(job.errors)} lỗi</li>`)
+    .concat(hub.telegram?.running ? [`<li>Telegram · ${escapeHtml(hub.telegram.link || "")} · ${fmt(hub.telegram.joined)}/${fmt(hub.telegram.target)} acc</li>`] : [])
+    .join("");
+  const telegramTag = hub.stats?.telegram ? '<span class="tag tag-quiet">Telegram</span>' : "";
+  return `<article class="hub-card${hub.online ? " is-online" : ""}" data-hub-card="${escapeHtml(hub.id)}">
+      <div class="hub-head">
+        <span class="hub-dot" aria-hidden="true"></span>
+        <strong>${escapeHtml(hub.name)}</strong>
+        <span class="tag">${escapeHtml(hubStatusText(hub))}</span>
+        ${telegramTag}
+        <span class="hub-meta">${escapeHtml(hubMeta(hub))}</span>
+      </div>
+      <div class="hub-actions">
+        <button class="link-btn" type="button" data-hub-install="${escapeHtml(hub.id)}">Lệnh cài</button>
+        <button class="link-btn" type="button" data-hub-rotate="${escapeHtml(hub.id)}">Đổi token</button>
+        <button class="link-btn danger" type="button" data-hub-delete="${escapeHtml(hub.id)}">Xóa</button>
+      </div>
+      <div class="hub-install" id="hub-install-${escapeHtml(hub.id)}" hidden></div>
+      ${jobRows ? `<ul class="hub-jobs">${jobRows}</ul>` : ""}
+    </article>`;
+}
 
 function renderHubs() {
   if (!hubEl.list) return;
@@ -2806,52 +3329,69 @@ function renderHubs() {
         ? `Không tải được danh sách hub: ${hubLoadError} — thử tải lại trang hoặc khởi động lại server.`
         : "Chưa có hub nào. Tạo một cái ở bên trái.";
   }
-  hubEl.list.innerHTML = "";
-  for (const hub of hubList) {
-    const card = document.createElement("article");
-    card.className = `hub-card${hub.online ? " is-online" : ""}`;
-    const jobRows = (hub.jobs || [])
-      .map((job) => `<li>${job.platform} · ${job.hub} · ${job.live}/${job.target} mắt · ${job.errors} lỗi</li>`)
-      .join("");
-    card.innerHTML = `
-      <div class="hub-head">
-        <span class="hub-dot" aria-hidden="true"></span>
-        <strong>${hub.name}</strong>
-        <span class="tag">${hubStatusText(hub)}</span>
-        <span class="hub-meta">${hubMeta(hub)}</span>
-      </div>
-      <div class="hub-actions">
-        <button class="link-btn" type="button" data-hub-install="${hub.id}">Lệnh cài</button>
-        <button class="link-btn" type="button" data-hub-rotate="${hub.id}">Đổi token</button>
-        <button class="link-btn danger" type="button" data-hub-delete="${hub.id}">Xóa</button>
-      </div>
-      <div class="hub-install" id="hub-install-${hub.id}" hidden></div>
-      ${jobRows ? `<ul class="hub-jobs">${jobRows}</ul>` : ""}`;
-    hubEl.list.append(card);
+  const html = hubList.map(hubCardHtml).join("");
+  if (html !== hubListHtml) {
+    hubListHtml = html;
+    hubEl.list.innerHTML = html;
+    for (const [hubId, installHtml] of hubInstallOpen) {
+      const box = document.getElementById(`hub-install-${hubId}`);
+      if (!box) {
+        hubInstallOpen.delete(hubId);
+        continue;
+      }
+      box.innerHTML = installHtml;
+      box.hidden = false;
+    }
   }
   syncViewbotTargets();
 }
 
-function syncViewbotTargets() {
+function viewbotTargetRows() {
+  const telegram = isTelegramViewbot();
+  return [
+    { id: "main", label: "Máy chính", available: true, note: "" },
+    ...hubList.map((hub) => {
+      const missingTelegram = telegram && !hub.stats?.telegram;
+      return {
+        id: hub.id,
+        label: hub.name,
+        available: hub.online && !missingTelegram,
+        note: !hub.online ? "offline" : missingTelegram ? "thiếu telethon" : "",
+      };
+    }),
+  ];
+}
+
+function syncViewbotTargets(force = false) {
   const box = viewbotEl.targets;
   if (!box) return;
-  const previous = new Set([...box.querySelectorAll("input:checked")].map((input) => input.value));
+  const rows = viewbotTargetRows();
+  const sig = JSON.stringify(rows);
+  if (!force && sig === viewbotTargetsSig) return;
+  viewbotTargetsSig = sig;
+  const wanted = Array.isArray(draftValues["viewbot.targets"]) ? draftValues["viewbot.targets"] : null;
+  const previous = new Set(wanted || [...box.querySelectorAll("input:checked")].map((input) => input.value));
   if (!previous.size) previous.add("main");
-  const rows = [
-    { id: "main", label: "Máy chính", online: true },
-    ...hubList.map((hub) => ({ id: hub.id, label: hub.name, online: hub.online })),
-  ];
   box.innerHTML = rows
     .map((row) => {
-      const checked = previous.has(row.id) ? "checked" : "";
-      const disabled = row.online ? "" : "disabled";
-      const note = row.online ? "" : '<span class="target-note">offline</span>';
-      return `<label class="target-item${row.online ? "" : " is-offline"}">
-        <input type="checkbox" value="${row.id}" ${checked} ${disabled} />
-        <span>${row.label}</span>${note}
+      const checked = previous.has(row.id) && row.available ? "checked" : "";
+      const disabled = row.available ? "" : "disabled";
+      const note = row.note ? `<span class="target-note">${escapeHtml(row.note)}</span>` : "";
+      return `<label class="target-item${row.available ? "" : " is-offline"}">
+        <input type="checkbox" value="${escapeHtml(row.id)}" ${checked} ${disabled} />
+        <span>${escapeHtml(row.label)}</span>${note}
       </label>`;
     })
     .join("");
+}
+
+function applyViewbotTargetDraft(list) {
+  const box = viewbotEl.targets;
+  if (!box) return;
+  const wanted = new Set(list.length ? list : ["main"]);
+  for (const input of box.querySelectorAll("input")) {
+    if (!input.disabled) input.checked = wanted.has(input.value);
+  }
 }
 
 function viewbotSelectedTargets() {
@@ -2883,6 +3423,7 @@ async function hubInstall(hubId) {
   if (!box) return;
   if (!box.hidden) {
     box.hidden = true;
+    hubInstallOpen.delete(hubId);
     return;
   }
   try {
@@ -2891,15 +3432,16 @@ async function hubInstall(hubId) {
     box.innerHTML = `
       <div class="hub-cmd">
         <span class="field-label">macOS / Linux</span>
-        <pre class="mono">${sh}</pre>
+        <pre class="mono">${escapeHtml(sh)}</pre>
         <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(sh)}">Copy</button>
       </div>
       <div class="hub-cmd">
         <span class="field-label">Windows (PowerShell)</span>
-        <pre class="mono">${ps}</pre>
+        <pre class="mono">${escapeHtml(ps)}</pre>
         <button class="link-btn" type="button" data-hub-copy="${encodeURIComponent(ps)}">Copy</button>
       </div>`;
     box.hidden = false;
+    hubInstallOpen.set(hubId, box.innerHTML);
   } catch (error) {
     notify(error.message);
   }
@@ -2983,340 +3525,244 @@ if (hubEl.form) {
 }
 
 
-/* ---------- Telegram: tăng mắt + bình luận ---------- */
+/* ---------- Telegram: bình luận (màn Chiến dịch) + tài khoản (màn Tài khoản) ---------- */
 
 const tgEl = {
-  tab: $(".tg-tabs"),
-  panels: $$("[data-tg-panel]"),
-  tag: $("#tg-tag"),
-  // tăng mắt
-  form: $("#tg-form"),
-  link: $("#tg-link"),
-  targetCount: $("#tg-target-count"),
-  participants: $("#tg-participants"),
-  bar: $("#tg-bar"),
-  checkView: $("#tg-check-view"),
-  checkViewResult: $("#tg-check-view-result"),
-  submit: $("#tg-submit"),
-  stop: $("#tg-stop"),
-  viewState: $("#tg-view-state"),
-  joined: $("#tg-joined"),
-  skip: $("#tg-skip"),
-  viewList: $("#tg-view-list"),
-  viewEmpty: $("#tg-view-empty"),
-  // bình luận
+  // chiến dịch
   commentInput: $("#tg-comment-input"),
-  commentAdd: $("#tg-comment-add"),
+  composer: $("#tg-composer"),
   commentShuffle: $("#tg-comment-shuffle"),
   commentClear: $("#tg-comment-clear"),
   commentList: $("#tg-comment-list"),
   commentEmpty: $("#tg-comment-empty"),
-  commentCount: $("#tg-comment-count"),
   commentLink: $("#tg-comment-link"),
+  check: $("#tg-check"),
+  checkResult: $("#tg-check-result"),
   commentAccounts: $("#tg-comment-accounts"),
   commentPer: $("#tg-comment-per"),
   commentDaily: $("#tg-comment-daily"),
   commentAge: $("#tg-comment-age"),
   commentDelayMin: $("#tg-comment-delay-min"),
   commentDelayMax: $("#tg-comment-delay-max"),
+  commentContinuous: $("#tg-comment-continuous"),
+  commentRound: $("#tg-comment-round"),
+  commentRoundField: $("#tg-comment-round-field"),
+  commentRounds: $("#tg-comment-rounds"),
   commentStart: $("#tg-comment-start"),
   commentStop: $("#tg-comment-stop"),
   commentSent: $("#tg-comment-sent"),
-  commentContinuous: $("#tg-comment-continuous"),
-  commentRound: $("#tg-comment-round"),
-  commentRounds: $("#tg-comment-rounds"),
-  commentNote: $("#tg-comment-note"),
-  check: $("#tg-check"),
-  checkResult: $("#tg-check-result"),
   commentErrors: $("#tg-comment-errors"),
+  commentNote: $("#tg-comment-note"),
   commentState: $("#tg-comment-state"),
   commentResult: $("#tg-comment-result"),
+  commentLogCard: $("#tg-comment-log-card"),
+  checkLink: $("#tg-check-link"),
+  checkKho: $("#tg-check-kho"),
+  checkAcc: $("#tg-check-acc"),
+  tabMeta: $('[data-tab-meta="telegram"]'),
   // tài khoản
+  accountsGosh: $("#accounts-gosh"),
+  accountsTelegram: $("#accounts-telegram"),
+  accountsTitle: $("#accounts-title"),
+  kindButtons: $$("[data-account-kind]"),
+  kindCountGosh: $("#kind-count-gosh"),
+  kindCountTelegram: $("#kind-count-telegram"),
+  goshActions: [$("#open-import-btn"), $("#open-autoreg-btn")],
   upload: $("#tg-upload"),
   path: $("#tg-path"),
   importPath: $("#tg-import-path"),
+  search: $("#tg-account-search"),
   list: $("#tg-account-list"),
   empty: $("#tg-empty"),
-  count: $("#tg-account-count"),
   total: $("#tg-total"),
-  navMeta: $("#nav-telegram"),
+  statReady: $("#tg-acc-ready"),
+  statBusy: $("#tg-acc-busy"),
+  statYoung: $("#tg-acc-young"),
+  statDead: $("#tg-acc-dead"),
 };
 
-let tgAccounts = [];
-let tgComments = [];
-let tgStatus = { running: false, joined: 0, errors: 0, comments: { running: false, sent: 0, errors: 0 } };
-let tgTimer = null;
+const TG_ACCOUNT_RENDER_LIMIT = 500;
 let tgBusy = false;
-let tgTab = localStorage.getItem("tgTab") || "view";
-let tgAccountsSig = "";
-let tgViewSig = "";
 let tgCommentSig = "";
+let tgAccountsSig = "";
+let accountKind = readPref("alc-account-kind", "gosh") === "telegram" ? "telegram" : "gosh";
 
-function switchTgTab(tab) {
-  tgTab = ["view", "comment", "accounts"].includes(tab) ? tab : "view";
-  localStorage.setItem("tgTab", tgTab);
-  for (const button of $$("[data-tg-tab]")) {
-    const active = button.dataset.tgTab === tgTab;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-selected", String(active));
+function selectAccountKind(kind) {
+  accountKind = kind === "telegram" ? "telegram" : "gosh";
+  writePref("alc-account-kind", accountKind);
+  for (const button of tgEl.kindButtons) button.setAttribute("aria-selected", String(button.dataset.accountKind === accountKind));
+  const telegram = accountKind === "telegram";
+  if (tgEl.accountsGosh) tgEl.accountsGosh.hidden = telegram;
+  if (tgEl.accountsTelegram) tgEl.accountsTelegram.hidden = !telegram;
+  for (const button of tgEl.goshActions) if (button) button.hidden = telegram;
+  if (tgEl.accountsTitle) tgEl.accountsTitle.textContent = telegram ? "Tài khoản Telegram" : "Tài khoản Gosh";
+  if (telegram) renderTgAccounts(true);
+  renderAccountSummary();
+}
+
+function renderAccountSummary() {
+  if (tgEl.kindCountTelegram) tgEl.kindCountTelegram.textContent = tgAccounts.length ? fmt(tgAccounts.length) : "";
+  if (tgEl.kindCountGosh && state?.accounts) tgEl.kindCountGosh.textContent = fmt(state.accounts.length);
+  const summary = $("#account-summary");
+  if (!summary) return;
+  if (accountKind === "telegram") {
+    summary.textContent = `${fmt(tgAccounts.length)} tài khoản Telegram · ${fmt(tgStatus.busy || 0)} đang dùng`;
+  } else if (state?.accounts) {
+    const ready = state.accounts.filter(isReady).length;
+    const enabled = state.accounts.filter((account) => account.enabled).length;
+    summary.textContent = `${fmt(state.accounts.length)} tài khoản · ${fmt(ready)} có token · ${fmt(enabled)} đang tham gia`;
   }
-  for (const panel of tgEl.panels) panel.hidden = panel.dataset.tgPanel !== tgTab;
 }
 
-function tgRow(phone, left, right, cls = "") {
-  return `<div class="tg-row ${cls}"><span class="mono">${phone}</span><span>${left}</span><span class="tg-state">${right}</span></div>`;
+function tgDailyLimit() {
+  return tgStatus.safety?.dailyLimit ?? 3;
 }
 
-function renderTgAccounts() {
+function renderTgAccounts(force = false) {
   if (!tgEl.list) return;
-  const sig = `${tgAccounts.length}|${tgAccounts.map((a) => `${a.phone}:${a.ageDays}:${a.joinsToday}`).join(",")}|${tgStatus.safety?.dailyLimit}`;
-  if (sig === tgAccountsSig) return;
+  const query = String(tgEl.search?.value || "").trim().toLowerCase();
+  const limit = tgDailyLimit();
+  const sig = JSON.stringify([tgAccounts.length, query, limit, tgStatus.busy, tgAccounts.map((a) => `${a.phone}:${a.joinsToday}:${a.commentsToday}:${a.dead ? 1 : 0}:${a.cooldownUntil}`).join(",")]);
+  renderAccountSummary();
+  if (!force && sig === tgAccountsSig) return;
   tgAccountsSig = sig;
-  tgEl.count.textContent = String(tgAccounts.length);
-  tgEl.total.textContent = String(tgAccounts.length);
-  tgEl.empty.hidden = tgAccounts.length > 0;
-  const limit = tgStatus.safety?.dailyLimit ?? 3;
-  tgEl.list.innerHTML = tgAccounts
+  const now = Date.now();
+  let ready = 0;
+  let young = 0;
+  let dead = 0;
+  for (const account of tgAccounts) {
+    if (account.dead) dead += 1;
+    else if ((account.ageDays ?? 0) < 7) young += 1;
+    else if ((account.hasSession || account.hasJson) && !(account.cooldownUntil > now)) ready += 1;
+  }
+  if (tgEl.statReady) tgEl.statReady.textContent = fmt(ready);
+  if (tgEl.statBusy) tgEl.statBusy.textContent = fmt(tgStatus.busy || 0);
+  if (tgEl.statYoung) tgEl.statYoung.textContent = fmt(young);
+  if (tgEl.statDead) tgEl.statDead.textContent = fmt(dead);
+  if (tgEl.total) tgEl.total.textContent = fmt(tgAccounts.length);
+
+  const rows = query
+    ? tgAccounts.filter((account) => `${account.phone} ${account.name || ""} ${account.username || ""}`.toLowerCase().includes(query))
+    : tgAccounts;
+  tgEl.empty.hidden = rows.length > 0;
+  tgEl.empty.textContent = tgAccounts.length ? "Không có tài khoản nào khớp." : "Chưa có tài khoản nào.";
+  const shown = rows.slice(0, TG_ACCOUNT_RENDER_LIMIT);
+  tgEl.list.innerHTML = shown
     .map((account) => {
-      const age = account.ageDays != null ? `${account.ageDays}d` : "?";
-      const used = `${account.joinsToday ?? 0}/${limit}`;
-      const name = account.name || account.username || "—";
-      const ready = account.hasSession || account.hasJson;
-      return tgRow(account.phone, `${name} · ${age} · hôm nay ${used}`, ready ? "sẵn sàng" : "thiếu session", ready ? "" : "is-error");
+      const age = account.ageDays != null ? `${account.ageDays} ngày` : "?";
+      const name = escapeHtml(account.name || account.username || "—");
+      const usage = `vào ${account.joinsToday ?? 0}${limit > 0 ? `/${limit}` : ""} · cmt ${account.commentsToday ?? 0}`;
+      let stateText = "sẵn sàng";
+      let cls = "";
+      if (account.dead) {
+        stateText = "chết session";
+        cls = "is-error";
+      } else if (!account.hasSession && !account.hasJson) {
+        stateText = "thiếu session";
+        cls = "is-error";
+      } else if (account.cooldownUntil > now) {
+        stateText = `chờ ${Math.ceil((account.cooldownUntil - now) / 60000)} phút`;
+        cls = "is-error";
+      }
+      return tgRow(account.phone, `${name} · ${age} · ${usage}`, stateText, cls);
     })
-    .join("");
+    .join("") + (rows.length > shown.length ? `<p class="field-hint">… và ${fmt(rows.length - shown.length)} tài khoản nữa — gõ để tìm.</p>` : "");
 }
 
-function tgHubState() {
-  const hubId = tgEl.target?.value || "main";
-  if (hubId === "main") return null;
-  return (tgStatus.hubTelegram || []).find((row) => row.hubId === hubId) || null;
-}
-
-function syncTgTargets() {
-  const select = tgEl.target;
-  if (!select) return;
-  const current = select.value;
-  const hubs = hubList || [];
-  select.innerHTML = [
-    '<option value="main">Máy chính</option>',
-    ...hubs.map((hub) => {
-      const ready = hub.stats?.telegram;
-      const label = `${hub.name}${hub.online ? "" : " (offline)"}${ready ? "" : " · thiếu python/telethon"}`;
-      return `<option value="${hub.id}" ${ready ? "" : "disabled"}>${label}</option>`;
-    }),
-  ].join("");
-  select.value = [...select.options].some((option) => option.value === current) ? current : "main";
-}
-
-function renderTgView() {
-  if (!tgEl.joined) return;
-  const joined = tgStatus.joined || 0;
-  const target = tgStatus.target || 0;
-  const participants = tgStatus.participants;
-  tgEl.joined.textContent = `${joined}/${target || 0}`;
-  if (tgEl.participants) tgEl.participants.textContent = participants == null ? "—" : String(participants);
-  if (tgEl.bar) tgEl.bar.style.width = `${target ? Math.min(100, Math.round((joined / target) * 100)) : 0}%`;
-  tgEl.viewState.textContent = tgStatus.running ? "Đang chạy" : "Chưa chạy";
-  tgEl.viewState.classList.toggle("tag-live", Boolean(tgStatus.running));
-
-  if (tgEl.skip) {
-    const notes = [];
-    if (tgStatus.lastError) notes.push(`Lỗi gần nhất: ${tgStatus.lastError}`);
-    if (tgStatus.skipped && tgStatus.skipped.dead) notes.push(`${tgStatus.skipped.dead} acc chết session (đã bỏ qua)`);
-    tgEl.skip.hidden = notes.length === 0;
-    tgEl.skip.textContent = notes.join(" — ");
-  }
-
-  const rows = tgStatus.accounts || [];
-  tgEl.viewEmpty.hidden = rows.length > 0;
-  tgEl.viewList.innerHTML = rows
-    .map((row) =>
-      tgRow(
-        row.phone,
-        row.name || "—",
-        row.state === "joined" ? "trong phòng" : row.state === "cooldown" ? row.error || "cooldown" : row.error || "lỗi",
-        row.state === "joined" ? "is-joined" : "is-error",
-      ),
-    )
-    .join("");
-}
-
-function renderTgComments() {
+function renderTgComments(force = false) {
   if (!tgEl.commentList) return;
-  const linkValue = String(tgEl.commentLink?.value || "").trim();
-  const csig = JSON.stringify([
-    tgStatus.comments?.sent,
-    tgStatus.comments?.errors,
-    tgStatus.comments?.running,
-    tgStatus.comments?.accounts?.length,
-    tgComments.length,
-    linkValue,
-    Number(tgEl.commentAge?.value) || 0,
-    tgAccounts.length,
-  ]);
-  if (csig === tgCommentSig) return;
-  tgCommentSig = csig;
   const data = tgStatus.comments || {};
-  tgEl.commentSent.textContent = String(data.sent || 0);
-  tgEl.commentErrors.textContent = String(data.errors || 0);
-  tgEl.commentState.textContent = data.running ? (data.running && tgEl.commentContinuous?.checked ? "Đang chạy (liên tục)" : "Đang chạy") : "Chưa chạy";
-  if (tgEl.commentRounds) tgEl.commentRounds.textContent = String(data.rounds || 0);
-  if (tgEl.commentNote) {
-    if (data.lastError) {
-      tgEl.commentNote.hidden = false;
-      tgEl.commentNote.textContent = data.lastError;
-    } else if (!data.running && data.rounds) {
-      tgEl.commentNote.hidden = false;
-      tgEl.commentNote.textContent = `Đã chạy ${data.rounds} đợt, gửi ${data.sent || 0} câu. Bật “Chạy liên tục” để tự sang đợt mới.`;
-    } else {
-      tgEl.commentNote.hidden = true;
-    }
+  const linkValue = String(tgEl.commentLink?.value || "").trim();
+  const sig = JSON.stringify([
+    data.sent, data.errors, data.running, data.rounds, data.lastError, data.accounts?.length,
+    tgComments, linkValue, tgEl.commentAge?.value, tgEl.commentDaily?.value, tgEl.commentContinuous?.checked,
+    tgAccounts.length, tgStatus.busy,
+  ]);
+  if (!force && sig === tgCommentSig) return;
+  tgCommentSig = sig;
+
+  const running = Boolean(data.running);
+  tgEl.commentSent.textContent = fmt(data.sent || 0);
+  tgEl.commentErrors.textContent = fmt(data.errors || 0);
+  tgEl.commentRounds.textContent = fmt(data.rounds || 0);
+  tgEl.commentState.textContent = running ? (data.continuous ? "Đang chạy liên tục" : "Đang chạy") : "Chưa chạy";
+  tgEl.commentState.classList.toggle("tag-live", running);
+  tgEl.commentStart.disabled = running || tgBusy;
+  tgEl.commentStop.disabled = !running;
+  if (tgEl.commentRoundField) tgEl.commentRoundField.hidden = !tgEl.commentContinuous?.checked;
+  if (tgEl.tabMeta) tgEl.tabMeta.textContent = running ? "Đang chạy" : tgComments.length ? `${tgComments.length} mẫu` : "";
+
+  if (data.lastError) {
+    tgEl.commentNote.hidden = false;
+    tgEl.commentNote.textContent = data.lastError;
+  } else if (!running && data.rounds) {
+    tgEl.commentNote.hidden = false;
+    tgEl.commentNote.textContent = `Đã chạy ${data.rounds} đợt, gửi ${fmt(data.sent || 0)} câu.`;
+  } else {
+    tgEl.commentNote.hidden = true;
   }
-  tgEl.commentState.classList.toggle("tag-live", Boolean(data.running));
+
   const rows = data.accounts || [];
+  tgEl.commentLogCard.hidden = rows.length === 0;
   tgEl.commentResult.innerHTML = rows
-    .map((row) =>
-      tgRow(
-        row.phone,
-        row.state === "sent" ? row.text || "đã gửi" : "—",
-        row.state === "sent" ? `đã gửi ${row.sent ?? ""}` : row.error || row.state,
-        row.state === "sent" ? "is-joined" : "is-error",
-      ),
-    )
+    .map((row) => tgRow(
+      row.phone,
+      escapeHtml(row.state === "sent" ? row.text || "đã gửi" : "—"),
+      escapeHtml(row.state === "sent" ? `đã gửi ${row.sent ?? ""}` : row.error || row.state),
+      row.state === "sent" ? "is-joined" : "is-error",
+    ))
     .join("");
-  const logCard = document.getElementById("tg-comment-log-card");
-  if (logCard) logCard.hidden = rows.length === 0;
-  tgEl.commentCount.textContent = `${tgComments.length} câu`;
+
   tgEl.commentEmpty.hidden = tgComments.length > 0;
-  tgEl.commentList.innerHTML = tgComments
-    .map(
-      (text, index) =>
-        `<li><span>${escapeHtml(text)}</span><button class="link-btn danger" type="button" data-tg-comment-del="${index}">xóa</button></li>`,
-    )
-    .join("");
+  tgEl.commentShuffle.disabled = tgComments.length < 2;
+  tgEl.commentClear.disabled = !tgComments.length;
+  tgEl.commentList.replaceChildren(...tgComments.map((text, index) => h("li", {},
+    h("span", { class: "queue-index" }, String(index + 1).padStart(2, "0")),
+    h("span", { class: "queue-text" }, text),
+    h("span"),
+    h("button", {
+      class: "icon-btn queue-delete",
+      type: "button",
+      title: "Xóa mẫu",
+      "aria-label": `Xóa mẫu “${text}”`,
+      onclick: () => deleteTelegramComment(index),
+    }, icon("trash-2")),
+  )));
 
-  renderTgCommentChecklist(linkValue);
-}
-
-function renderTgCommentChecklist(linkValue) {
+  setCheck(tgEl.checkLink, linkValue ? "ok" : "warn", linkValue ? linkValue.replace(/^https?:\/\//, "") : "Chưa dán link");
+  setCheck(tgEl.checkKho, tgComments.length ? "ok" : "warn", tgComments.length ? `${fmt(tgComments.length)} mẫu trong kho` : "Thêm ít nhất 1 mẫu");
   const minAge = Number(tgEl.commentAge?.value) || 0;
-  const limit = tgStatus.safety?.dailyLimit ?? 3;
-  const link = document.getElementById("tg-check-link");
-  const kho = document.getElementById("tg-check-kho");
-  const acc = document.getElementById("tg-check-acc");
-  if (link) {
-    const ok = linkValue.length > 0;
-    link.classList.toggle("is-ok", ok);
-    link.classList.toggle("is-warn", !ok);
-    link.querySelector(".check-detail").textContent = ok ? linkValue.replace(/^https?:\/\//, "") : "Chưa dán link";
-  }
-  if (kho) {
-    const ok = tgComments.length > 0;
-    kho.classList.toggle("is-ok", ok);
-    kho.classList.toggle("is-warn", !ok);
-    kho.querySelector(".check-detail").textContent = ok ? `${tgComments.length} câu trong kho` : "Thêm ít nhất 1 câu";
-  }
-  if (acc) {
-    const eligible = tgAccounts.filter((a) => (a.hasSession || a.hasJson) && (a.ageDays ?? 0) >= minAge && (a.joinsToday ?? 0) < limit);
-    const ok = eligible.length > 0;
-    acc.classList.toggle("is-ok", ok);
-    acc.classList.toggle("is-warn", !ok);
-    acc.querySelector(".check-detail").textContent = ok
-      ? `${eligible.length} acc đủ tuổi · còn lượt hôm nay`
-      : tgAccounts.length === 0
-        ? "Chưa có tài khoản — nhập zip ở tab Tài khoản"
-        : `0/${tgAccounts.length} đủ điều kiện (tuổi ≥ ${minAge} ngày, lượt < ${limit}/ngày)`;
-  }
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+  const daily = Number(tgEl.commentDaily?.value) || 0;
+  const eligible = telegramEligibleCount({ minAge, dailyLimit: daily, field: "commentsToday" });
+  setCheck(
+    tgEl.checkAcc,
+    eligible ? "ok" : "warn",
+    tgAccounts.length
+      ? `${fmt(eligible)}/${fmt(tgAccounts.length)} acc (tuổi ≥ ${minAge} ngày, còn lượt)`
+      : "Chưa có tài khoản — nhập ở Tài khoản › Telegram",
+  );
 }
 
 function renderTelegram() {
   renderTgAccounts();
-  renderTgView();
   renderTgComments();
-  const running = Boolean(tgStatus.running || tgStatus.comments?.running);
-  if (tgEl.tag) {
-    tgEl.tag.textContent = running ? "Đang chạy" : "Sẵn sàng";
-    tgEl.tag.classList.toggle("tag-live", running);
-  }
-  if (tgEl.navMeta) {
-    tgEl.navMeta.hidden = !running;
-    tgEl.navMeta.textContent = running ? `${tgStatus.joined || 0}` : "";
-  }
-}
-
-function tgCacheKey() {
-  return "tgCacheV1";
-}
-
-function renderFromCache() {
-  try {
-    const raw = localStorage.getItem(tgCacheKey());
-    if (!raw) return false;
-    const cached = JSON.parse(raw);
-    if (Array.isArray(cached.accounts) && cached.accounts.length) tgAccounts = cached.accounts;
-    if (Array.isArray(cached.comments)) tgComments = cached.comments;
-    tgAccountsSig = "";
-    tgCommentSig = "";
-    renderTelegram();
-    return true;
-  } catch {
-    return false;
-  }
+  renderViewbotEligible();
+  renderAccountSummary();
 }
 
 async function loadTelegram() {
-  if (!tgAccounts.length) renderFromCache();
   try {
-    const [accounts, comments, status] = await Promise.all([
-      api("/api/telegram/accounts"),
-      api("/api/telegram/comments"),
-      api("/api/telegram/status"),
-    ]);
+    const [accounts, status] = await Promise.all([api("/api/telegram/accounts"), api("/api/telegram/status")]);
     tgAccounts = Array.isArray(accounts.accounts) ? accounts.accounts : [];
-    tgComments = Array.isArray(comments.messages) ? comments.messages : [];
     tgStatus = status || tgStatus;
-    try {
-      localStorage.setItem(tgCacheKey(), JSON.stringify({ accounts: tgAccounts, comments: tgComments }));
-    } catch {
-      // localStorage đầy thì thôi
-    }
-    tgAccountsSig = "";
-    tgViewSig = "";
-    tgCommentSig = "";
-    renderTelegram();
-    syncTgTargets();
+    const comments = await api("/api/telegram/comments");
+    tgComments = Array.isArray(comments.messages) ? comments.messages : [];
+    renderTgAccounts(true);
+    renderTgComments(true);
+    renderViewbotEligible();
   } catch (error) {
     notify(error.message);
   }
-}
-
-let tgAccountsTick = 0;
-
-function startTelegramPolling() {
-  if (tgTimer) return;
-  tgTimer = window.setInterval(async () => {
-    if (currentView !== "telegram" || document.hidden || tgBusy) return;
-    try {
-      tgStatus = await api("/api/telegram/status");
-      tgAccountsTick += 1;
-      // mỗi 5s đồng bộ lại danh sách acc (thiết bị khác vừa nhập thêm)
-      if (tgAccountsTick % 2 === 0) {
-        const accounts = await api("/api/telegram/accounts");
-        tgAccounts = Array.isArray(accounts.accounts) ? accounts.accounts : tgAccounts;
-        renderTgAccounts();
-      }
-      renderTgView();
-      renderTgComments();
-      renderTelegram();
-    } catch {
-      // nhịp lỗi bỏ qua
-    }
-  }, 2500);
 }
 
 async function importTelegramZip(file) {
@@ -3336,64 +3782,16 @@ async function importTelegramZip(file) {
   return body;
 }
 
-async function startTelegram(event) {
-  event?.preventDefault?.();
-  if (tgBusy) return;
-  const link = String(tgEl.link?.value || "").trim();
-  if (!link) return notify("Dán link livestream Telegram trước đã.");
-  tgBusy = true;
-  tgEl.submit.disabled = true;
-  try {
-    await api("/api/telegram/boost/start", {
-      method: "POST",
-      body: JSON.stringify({
-        link,
-        concurrency: 25,
-        targetCount: Number(tgEl.targetCount?.value) || 0,
-      }),
-    });
-    notify("Đã bắt đầu đưa tài khoản vào phòng.", "info");
-    await loadTelegram();
-  } catch (error) {
-    notify(error.message);
-  } finally {
-    tgBusy = false;
-    tgEl.submit.disabled = false;
-  }
-}
-
-async function adjustTelegram(target) {
-  const value = Math.max(0, Math.floor(Number(target) || 0));
-  if (tgEl.targetCount) tgEl.targetCount.value = String(value);
-  if (!tgStatus.running) return; // chưa chạy thì chỉ đổi số trong form
-  try {
-    await api("/api/telegram/boost/adjust", { method: "POST", body: JSON.stringify({ target: value }) });
-    await loadTelegram();
-  } catch (error) {
-    notify(error.message);
-  }
-}
-
-async function stopTelegram(mode = "view") {
-  try {
-    await api("/api/telegram/boost/stop", { method: "POST", body: JSON.stringify({ mode }) });
-    notify("Đã dừng phiên Telegram.", "info");
-    await new Promise((r) => setTimeout(r, 800));
-    await loadTelegram();
-  } catch (error) {
-    notify(error.message);
-  }
-}
-
 async function startTelegramComments() {
   if (tgBusy) return;
   const link = String(tgEl.commentLink?.value || "").trim();
   if (!link) return notify("Dán link kênh/nhóm Telegram trước đã.");
-  if (!tgComments.length) return notify("Kho bình luận đang rỗng — thêm câu trước đã.");
+  if (!tgComments.length) return notify("Kho bình luận đang trống — thêm mẫu trước đã.");
   tgBusy = true;
-  tgEl.commentStart.disabled = true;
+  setBusy(tgEl.commentStart, true, "Đang bắt đầu…");
   try {
-    await api("/api/telegram/comments/start", {
+    flushDrafts();
+    tgStatus = await api("/api/telegram/comments/start", {
       method: "POST",
       body: JSON.stringify({
         link,
@@ -3407,24 +3805,37 @@ async function startTelegramComments() {
         roundDelay: Number(tgEl.commentRound?.value) || 60,
       }),
     });
-    notify("Đã bắt đầu gửi bình luận.", "info");
-    await loadTelegram();
+    notify("Đã bắt đầu gửi bình luận Telegram.", "success");
   } catch (error) {
     notify(error.message);
   } finally {
     tgBusy = false;
-    tgEl.commentStart.disabled = false;
+    setBusy(tgEl.commentStart, false);
+    renderTgComments(true);
   }
+}
+
+async function stopTelegramComments() {
+  try {
+    await api("/api/telegram/boost/stop", { method: "POST", body: JSON.stringify({ mode: "comment" }) });
+    notify("Đã dừng gửi bình luận Telegram.", "info");
+    if (!realtimeConnected) await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function setTelegramComments(data) {
+  tgComments = Array.isArray(data?.messages) ? data.messages : tgComments;
+  renderTgComments(true);
 }
 
 async function addTelegramComments() {
   const text = String(tgEl.commentInput?.value || "").trim();
   if (!text) return notify("Nhập nội dung trước đã.");
   try {
-    const data = await api("/api/telegram/comments", { method: "POST", body: JSON.stringify({ text }) });
-    tgComments = data.messages || [];
-    tgEl.commentInput.value = "";
-    renderTgComments();
+    setTelegramComments(await api("/api/telegram/comments", { method: "POST", body: JSON.stringify({ text }) }));
+    setSyncedValue(tgEl.commentInput, "");
   } catch (error) {
     notify(error.message);
   }
@@ -3432,9 +3843,7 @@ async function addTelegramComments() {
 
 async function deleteTelegramComment(index) {
   try {
-    const data = await api(`/api/telegram/comments/${index}`, { method: "DELETE" });
-    tgComments = data.messages || [];
-    renderTgComments();
+    setTelegramComments(await api(`/api/telegram/comments/${index}`, { method: "DELETE" }));
   } catch (error) {
     notify(error.message);
   }
@@ -3442,132 +3851,99 @@ async function deleteTelegramComment(index) {
 
 async function shuffleTelegramComments() {
   try {
-    const data = await api("/api/telegram/comments/shuffle", { method: "POST", body: "{}" });
-    tgComments = data.messages || [];
-    renderTgComments();
+    setTelegramComments(await api("/api/telegram/comments/shuffle", { method: "POST", body: "{}" }));
   } catch (error) {
     notify(error.message);
   }
 }
 
 async function clearTelegramComments() {
+  const confirmed = await confirmAction({
+    title: "Xóa hết kho bình luận Telegram?",
+    message: `${tgComments.length} mẫu sẽ bị xóa trên mọi thiết bị.`,
+    confirmLabel: "Xóa hết",
+    danger: true,
+  });
+  if (!confirmed) return;
   try {
-    await api("/api/telegram/comments/clear", { method: "POST", body: "{}" });
-    tgComments = [];
-    renderTgComments();
+    setTelegramComments(await api("/api/telegram/comments/clear", { method: "POST", body: "{}" }));
   } catch (error) {
     notify(error.message);
   }
 }
 
-if (tgEl.form) {
-  tgEl.form.addEventListener("submit", startTelegram);
-  tgEl.stop?.addEventListener("click", () => stopTelegram("view"));
+if (tgEl.commentList) {
   tgEl.commentStart?.addEventListener("click", startTelegramComments);
-  tgEl.check?.addEventListener("click", async () => {
-    const link = String(tgEl.commentLink?.value || tgEl.link?.value || "").trim();
-    if (!link) return notify("Dán link kênh trước đã.");
-    tgEl.checkResult.hidden = false;
-    tgEl.checkResult.textContent = "Đang kiểm tra…";
-    try {
-      const info = await api("/api/telegram/check", { method: "POST", body: JSON.stringify({ link }) });
-      if (info.ok === false) {
-        tgEl.checkResult.textContent = `Không kiểm tra được: ${info.error}`;
-        return;
-      }
-      const bits = [
-        `${info.title || info.username || "?"} (${info.type}${info.megagroup ? " · supergroup" : ""})`,
-        info.call ? `livestream: có · ${info.participants} người xem` : "livestream: KHÔNG có call đang chạy",
-        info.canSend ? "gửi tin: được" : `gửi tin: KHÔNG (${info.sendError || "không rõ"})`,
-      ];
-      tgEl.checkResult.textContent = bits.join(" — ");
-    } catch (error) {
-      tgEl.checkResult.textContent = `Lỗi: ${error.message}`;
+  tgEl.commentStop?.addEventListener("click", stopTelegramComments);
+  tgEl.check?.addEventListener("click", () => {
+    void checkTelegramLink(String(tgEl.commentLink?.value || "").trim(), tgEl.checkResult);
+  });
+  tgEl.composer?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void addTelegramComments();
+  });
+  tgEl.commentInput?.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      tgEl.composer?.requestSubmit();
     }
   });
-  tgEl.commentStop?.addEventListener("click", () => stopTelegram("comment"));
-  tgEl.commentAdd?.addEventListener("click", addTelegramComments);
   tgEl.commentShuffle?.addEventListener("click", shuffleTelegramComments);
   tgEl.commentClear?.addEventListener("click", clearTelegramComments);
-  tgEl.commentList?.addEventListener("click", (event) => {
-    const trigger = event.target.closest("[data-tg-comment-del]");
-    if (trigger) void deleteTelegramComment(trigger.dataset.tgCommentDel);
-  });
-  const rerenderCheck = () => {
-    tgCommentSig = "";
-    renderTgComments();
-  };
-  tgEl.commentLink?.addEventListener("input", rerenderCheck);
-  tgEl.commentAge?.addEventListener("input", rerenderCheck);
-  tgEl.commentContinuous?.addEventListener("change", rerenderCheck);
-  for (const button of $$("[data-tg-preset]")) {
-    button.addEventListener("click", () => void adjustTelegram(Number(button.dataset.tgPreset)));
+  for (const field of [tgEl.commentLink, tgEl.commentAge, tgEl.commentDaily, tgEl.commentContinuous]) {
+    field?.addEventListener(field?.type === "checkbox" ? "change" : "input", () => renderTgComments(true));
   }
-  tgEl.checkView?.addEventListener("click", async () => {
-    const link = String(tgEl.link?.value || "").trim();
-    if (!link) return notify("Dán link livestream trước đã.");
-    tgEl.checkViewResult.hidden = false;
-    tgEl.checkViewResult.textContent = "Đang kiểm tra…";
-    try {
-      const info = await api("/api/telegram/check", { method: "POST", body: JSON.stringify({ link }) });
-      tgEl.checkViewResult.textContent = info.ok === false
-        ? `Lỗi: ${info.error}`
-        : `${info.title || info.username} · ${info.call ? `LIVE · ${info.participants} người xem` : "chưa có livestream"}`;
-      if (info.call) tgStatus.participants = info.participants;
-      renderTgView();
-    } catch (error) {
-      tgEl.checkViewResult.textContent = `Lỗi: ${error.message}`;
-    }
-  });
-  for (const button of $$("[data-tg-step]")) {
-    button.addEventListener("click", () => {
-      const current = Number(tgEl.targetCount?.value) || 0;
-      void adjustTelegram(current + Number(button.dataset.tgStep));
-    });
-  }
-  tgEl.tab?.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-tg-tab]");
-    if (button) switchTgTab(button.dataset.tgTab);
-  });
-  tgEl.upload?.addEventListener("change", async () => {
-    const file = tgEl.upload.files?.[0];
-    if (!file) return;
-    try {
-      const data = await importTelegramZip(file);
-      notify(`Đã nhập ${data.imported} tài khoản.`, "info");
-      await loadTelegram();
-    } catch (error) {
-      notify(error.message);
-    } finally {
-      tgEl.upload.value = "";
-    }
-  });
-  tgEl.importPath?.addEventListener("click", async () => {
-    const path = String(tgEl.path?.value || "").trim();
-    if (!path) return notify("Nhập đường dẫn zip hoặc thư mục.");
-    try {
-      const data = await api("/api/telegram/accounts/import", { method: "POST", body: JSON.stringify({ path }) });
-      notify(`Đã nhập ${data.imported} tài khoản.`, "info");
-      await loadTelegram();
-    } catch (error) {
-      notify(error.message);
-    }
-  });
-  switchTgTab(tgTab);
-  renderTelegram();
 }
+
+for (const button of tgEl.kindButtons) button.addEventListener("click", () => selectAccountKind(button.dataset.accountKind));
+tgEl.search?.addEventListener("input", () => renderTgAccounts(true));
+tgEl.upload?.addEventListener("change", async () => {
+  const file = tgEl.upload.files?.[0];
+  if (!file) return;
+  notify(`Đang tải lên ${file.name}…`, "info");
+  try {
+    const data = await importTelegramZip(file);
+    notify(`Đã nhập ${fmt(data.imported)} tài khoản Telegram.`, "success");
+    if (!realtimeConnected) await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    tgEl.upload.value = "";
+  }
+});
+tgEl.importPath?.addEventListener("click", async () => {
+  const path = String(tgEl.path?.value || "").trim();
+  if (!path) return notify("Nhập đường dẫn zip hoặc thư mục.");
+  setBusy(tgEl.importPath, true, "Đang nhập…");
+  try {
+    const data = await api("/api/telegram/accounts/import", { method: "POST", body: JSON.stringify({ path }) });
+    notify(`Đã nhập ${fmt(data.imported)} tài khoản Telegram.`, "success");
+    if (!realtimeConnected) await loadTelegram();
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    setBusy(tgEl.importPath, false);
+  }
+});
+selectAccountKind(accountKind);
+renderTelegram();
 
 buildPlatformPanels();
 renderFollowHistory();
 startHubPolling();
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
+  if (document.hidden || !webAuthenticated) return;
+  // quay lại tab: nối lại realtime nếu đã rớt, chỉ tự tải khi không có realtime
+  if (!eventSource) connectRealtime();
+  if (!realtimeConnected) {
     void loadHubs();
     if (currentView === "viewbot") void loadViewbot();
-    if (currentView === "telegram") void loadTelegram();
   }
 });
-switchView(VIEWS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "live");
+{
+  const initialView = window.location.hash.slice(1);
+  switchView(VIEWS.includes(initialView) || VIEW_ALIASES[initialView] ? initialView : "live");
+}
 void updateVersionDisplay();
 window.setInterval(tickClock, 1000);
 
@@ -3582,8 +3958,9 @@ api("/api/auth/status")
   })
   .catch((error) => notify(error.message));
 
+// chỉ tự hỏi máy chủ khi kênh realtime đang rớt
 window.setInterval(async () => {
-  if (!webAuthenticated || document.hidden || statusRefreshRunning || isRunning()) return;
+  if (realtimeConnected || !webAuthenticated || document.hidden || statusRefreshRunning || isRunning()) return;
   const focused = document.activeElement;
   if (!state?.autoReg?.running && (currentView === "accounts" || !el.drawer.hidden) && ["INPUT", "TEXTAREA"].includes(focused?.tagName)) return;
   statusRefreshRunning = true;

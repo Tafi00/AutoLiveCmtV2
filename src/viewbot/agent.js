@@ -165,6 +165,9 @@ async function startTelegramJob(message) {
     }
     const scriptPath = join(dir, "telegram_boost.py");
     writeFileSync(scriptPath, bundle.script, "utf8");
+    const proxyMap = message.proxies && typeof message.proxies === "object" ? message.proxies : {};
+    const proxyFile = join(dir, "proxies.json");
+    if (Object.keys(proxyMap).length) writeFileSync(proxyFile, JSON.stringify(proxyMap), "utf8");
     const args = [
       scriptPath,
       "--accounts", dir,
@@ -174,6 +177,7 @@ async function startTelegramJob(message) {
       "--delay-min", String(message.delayMin || 4),
       "--delay-max", String(message.delayMax || 20),
     ];
+    if (Object.keys(proxyMap).length) args.push("--proxies", proxyFile);
     const child = spawn(TELEGRAM_PY, args, { stdio: ["pipe", "pipe", "pipe"] });
     tgProcess = child;
     tgJob = message.id;

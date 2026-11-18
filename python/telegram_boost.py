@@ -24,6 +24,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from telethon import TelegramClient, functions
 from telethon.errors import FloodWaitError
@@ -75,6 +76,38 @@ def load_account(path: str) -> Optional[dict]:
     return None
 
 
+def parse_proxy(url: str) -> Optional[dict]:
+    """http://user:pass@host:port | socks5://... -> dict proxy cho Telethon (cần python-socks)."""
+    if not url:
+        return None
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "http").lower()
+    if scheme.startswith("socks5"):
+        kind = "socks5"
+    elif scheme.startswith("socks4"):
+        kind = "socks4"
+    else:
+        kind = "http"
+    if not parsed.hostname or not parsed.port:
+        return None
+    proxy = {"proxy_type": kind, "addr": parsed.hostname, "port": int(parsed.port), "rdns": True}
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    return proxy
+
+
+def load_proxy_map(path: str) -> dict:
+    if not path:
+        return {}
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def make_client(acc: dict) -> TelegramClient:
     app_id = int(acc.get("app_id") or 2040)
     app_hash = acc.get("app_hash") or "b18441a1ff607e10a989891a5462e627"
@@ -83,6 +116,10 @@ def make_client(acc: dict) -> TelegramClient:
     app_version = (acc.get("app_version") or "10.0.0").strip()
     lang = acc.get("lang_code") or "en"
     session = StringSession(acc["session_str"]) if acc.get("session_str") else acc.get("_file_session")
+    kwargs = {}
+    proxy = acc.get("_proxy")
+    if proxy:
+        kwargs["proxy"] = proxy
     return TelegramClient(
         session,
         app_id,
@@ -91,6 +128,7 @@ def make_client(acc: dict) -> TelegramClient:
         system_version=sdk,
         app_version=app_version,
         lang_code=lang,
+        **kwargs,
     )
 
 
@@ -328,6 +366,7 @@ async def main() -> None:
     parser.add_argument("--per-account", type=int, default=1)
     parser.add_argument("--send-delay-min", type=float, default=25.0)
     parser.add_argument("--send-delay-max", type=float, default=90.0)
+    parser.add_argument("--proxies", default="")
     args = parser.parse_args()
 
     entries = sorted(os.listdir(args.accounts))
@@ -335,9 +374,26 @@ async def main() -> None:
     if wanted:
         entries = [name for name in entries if name in wanted]
     paths = [os.path.join(args.accounts, name) for name in entries]
-    accounts = [acc for acc in (load_account(p) for p in paths) if acc]
+    accounts = []
+    for path in paths:
+        acc = load_account(path)
+        if acc:
+            acc["_folder"] = os.path.basename(path)
+            accounts.append(acc)
     if args.limit:
         accounts = accounts[: args.limit]
+    proxy_map = load_proxy_map(args.proxies)
+    if proxy_map:
+        try:
+            import python_socks  # noqa: F401  Telethon cần thư viện này để đi qua proxy
+        except ImportError:
+            emit(event="error", phone="", error="Thiếu python-socks để dùng proxy (pip install python-socks[asyncio])")
+            return
+        for acc in accounts:
+            url = proxy_map.get(str(acc.get("phone") or "")) or proxy_map.get(acc["_folder"])
+            proxy = parse_proxy(url) if url else None
+            if proxy:
+                acc["_proxy"] = proxy
     emit(event="ready", accounts=len(accounts))
     if not accounts:
         emit(event="error", phone="", error="Không tìm thấy tài khoản trong thư mục")

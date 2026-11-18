@@ -21,6 +21,7 @@ export class HubManager {
   #wss = null;
   #heartbeat = null;
   #listeners = new Set();
+  #telegramListeners = new Set();
 
   constructor({ dataDirectory }) {
     this.#file = join(dataDirectory, "hubs.json");
@@ -57,6 +58,21 @@ export class HubManager {
   onChange(listener) {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  onTelegramEvent(listener) {
+    this.#telegramListeners.add(listener);
+    return () => this.#telegramListeners.delete(listener);
+  }
+
+  #emitTelegram(hub, event) {
+    for (const listener of this.#telegramListeners) {
+      try {
+        listener(hub.id, event);
+      } catch {
+        // bỏ qua listener lỗi
+      }
+    }
   }
 
   #emit() {
@@ -198,6 +214,11 @@ export class HubManager {
     hub.online = false;
     hub.socket = null;
     for (const job of hub.jobs.values()) job.state = "offline";
+    if (hub.telegram?.running) {
+      hub.telegram.running = false;
+      hub.telegram.lastError = "Máy phụ mất kết nối";
+      this.#emitTelegram(hub, { event: "done" });
+    }
     this.#emit();
   }
 
@@ -210,12 +231,15 @@ export class HubManager {
           if (event.joined != null) hub.telegram.joined = Number(event.joined);
           if (event.target != null) hub.telegram.target = Number(event.target);
           hub.telegram.errors = Number(event.errors) || hub.telegram.errors || 0;
+        } else if (event.event === "participants") {
+          hub.telegram.participants = Number(event.count) || 0;
         } else if (event.event === "done") {
           hub.telegram.running = false;
         } else if (event.event === "error") {
           hub.telegram.errors = (hub.telegram.errors || 0) + 1;
           hub.telegram.lastError = String(event.error || "").slice(0, 200);
         }
+        this.#emitTelegram(hub, event);
         this.#emit();
         break;
       }
@@ -332,20 +356,26 @@ export class HubManager {
     return Boolean(existing);
   }
 
-  startTelegramJob(hubId, { link, phones, target, concurrency = 10, delayMin = 4, delayMax = 20 }) {
+  startTelegramJob(hubId, { link, phones, folders, target, concurrency = 10, delayMin = 4, delayMax = 20, proxies = {}, proxyCount = 0 }) {
     const hub = this.#hubs.get(hubId);
     if (!hub) throw new Error("Hub không tồn tại");
     if (!hub.online || !hub.socket) throw new Error(`Hub ${hub.name} đang offline`);
     if (!hub.stats?.telegram) {
-      throw new Error(`Hub ${hub.name} chưa có python + telethon (cài: pip install telethon)`);
+      throw new Error(`Hub ${hub.name} chưa có python + telethon (cài: pip install telethon python-socks)`);
     }
     const id = `tg:${hubId}`;
+    const total = phones.length;
     hub.telegram = {
       running: true,
       link,
       joined: 0,
-      target: Number(target) || phones.length,
+      target: Math.min(Number(target) || total, total),
+      total,
+      phones: [...phones],
+      proxies: proxyCount,
+      participants: null,
       errors: 0,
+      lastError: "",
       startedAt: Date.now(),
     };
     hub.socket.send(
@@ -353,11 +383,12 @@ export class HubManager {
         type: "tg_start",
         id,
         link,
-        phones,
-        target: Number(target) || phones.length,
+        phones: folders || phones,
+        target: hub.telegram.target,
         concurrency,
         delayMin,
         delayMax,
+        proxies,
       }),
     );
     this.#emit();
@@ -367,7 +398,7 @@ export class HubManager {
   adjustTelegram(hubId, target) {
     const hub = this.#hubs.get(hubId);
     if (!hub || !hub.telegram?.running) throw new Error("Hub chưa chạy phiên Telegram nào");
-    hub.telegram.target = Math.max(0, Number(target) || 0);
+    hub.telegram.target = Math.max(0, Math.min(hub.telegram.total || Infinity, Number(target) || 0));
     hub.socket?.send(JSON.stringify({ type: "tg_adjust", target: hub.telegram.target }));
     this.#emit();
     return hub.telegram.target;
@@ -376,7 +407,11 @@ export class HubManager {
   stopTelegramJob(hubId) {
     const hub = this.#hubs.get(hubId);
     if (!hub) return false;
-    hub.socket?.send(JSON.stringify({ type: "tg_stop" }));
+    try {
+      hub.socket?.send(JSON.stringify({ type: "tg_stop" }));
+    } catch {
+      // hub đã rớt
+    }
     if (hub.telegram) hub.telegram.running = false;
     this.#emit();
     return true;

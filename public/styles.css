@@ -1389,3 +1389,51 @@ legend.field-label { margin-bottom: 8px; padding: 0; }
 .tg-bigstat-label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
 .tg-bigstat strong { font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .tg-meter { height: 6px; margin: 10px 0 8px; }
+
+/* ---------- Telegram gộp vào Chiến dịch / Mắt xem / Tài khoản ---------- */
+
+.pf-dot.telegram { background: #2aabee; }
+.segmented > button[aria-selected="true"] {
+  background: var(--seg-active);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+}
+.segmented-wrap { flex-wrap: wrap; }
+.segmented-wrap > label { min-width: 96px; }
+.account-kind > button { gap: 6px; }
+.account-kind .tabular { color: var(--text-3); font-size: 12px; }
+
+.tg-launch .field { margin-top: 12px; }
+.tg-launch .checklist { margin-bottom: 14px; }
+.tg-launch .field-inline .switch-field { flex: 1; }
+.delay-range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.delay-range .input-affix { width: auto; }
+.delay-range .input-affix input { padding-right: 64px; }
+#tg-comment-progress { margin-top: 14px; }
+#tg-comment-link { width: 100%; }
+
+.viewbot-job.is-offline { opacity: .6; }
+.viewbot-job-actions { gap: 8px; align-items: center; flex-wrap: wrap; }
+.viewbot-adjust { display: flex; gap: 4px; margin-right: auto; }
+.viewbot-adjust .tg-step { min-width: 0; padding: 4px 10px; font-size: 12.5px; }
+.viewbot-job .progress-error { margin: 6px 0 0; }
+.viewbot-accounts { margin-top: 8px; }
+.viewbot-accounts > summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; }
+.viewbot-accounts .tg-list { margin-top: 6px; max-height: 260px; }
+.tg-account-list { max-height: 560px; }
+#accounts-telegram .toolbar { margin: 4px 0 8px; }
+
+/* chấm nhỏ cạnh nút làm mới: xanh khi đang đồng bộ realtime */
+#refresh-status { position: relative; }
+#refresh-status::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.is-realtime #refresh-status::after { background: var(--green); }
+#viewbot-tg-fields:not([hidden]) { display: grid; gap: 20px; }

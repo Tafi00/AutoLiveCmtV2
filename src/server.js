@@ -4,7 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { AccountSessionManager } from "./session-manager.js";
 import { SESSION_COOKIE_NAME, WebAuthManager } from "./auth.js";
 import { JsonStore } from "./store.js";
-import { compactJsonResponses } from "./state-transfer.js";
+import { accountsRevision, compactJsonResponses } from "./state-transfer.js";
+import { Realtime } from "./realtime.js";
+import { DraftStore } from "./drafts.js";
 import { startMemoryGuard } from "./memory-guard.js";
 import { checkApiHealth, healthTargets } from "./api-health.js";
 import { PLATFORMS } from "./platforms.js";
@@ -24,7 +26,7 @@ import {
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const rootDirectory = dirname(currentDirectory);
@@ -236,8 +238,10 @@ const app = express();
 const viewbot = new ViewbotManager();
 const hubs = new HubManager({ dataDirectory });
 await hubs.init();
-const deployments = new Deployments({ viewbot, hubs });
 const telegram = new TelegramBoostManager({ dataDirectory });
+const deployments = new Deployments({ viewbot, hubs, telegram });
+const drafts = await new DraftStore({ dataDirectory }).init();
+const realtime = new Realtime();
 
 // 0 là giá trị hợp lệ (minAgeDays = 0), nên không dùng `|| fallback`
 function numOr(value, fallback) {
@@ -246,8 +250,21 @@ function numOr(value, fallback) {
 }
 const agentFilesDirectory = join(rootDirectory, "src", "viewbot");
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(compactJsonResponses());
+// mọi thao tác ghi xong thì báo cho các thiết bị khác lấy dữ liệu mới
+app.use("/api", (request, response, next) => {
+  if (request.method !== "GET" && request.path !== "/drafts") {
+    response.on("finish", () => {
+      if (response.statusCode >= 400) return;
+      const path = request.path;
+      if (path.startsWith("/telegram")) realtime.invalidate("telegram", "telegramAccounts");
+      else if (path.startsWith("/viewbot") || path.startsWith("/hubs")) realtime.invalidate("viewbot");
+      else realtime.invalidate("state");
+    });
+  }
+  next();
+});
 app.use("/vendor/lucide", express.static(lucideDirectory));
 app.use(express.static(publicDirectory));
 
@@ -853,6 +870,79 @@ app.post("/api/auth/password", asyncRoute(async (request, response) => {
 app.get("/api/state", asyncRoute(async (_request, response) => {
   response.json(await dashboardState());
 }));
+
+/* ---------- Đồng bộ realtime giữa các thiết bị ---------- */
+
+let lastAccountsRev = "";
+let stateBuiltAt = 0;
+realtime.register(
+  "state",
+  async () => {
+    const full = await dashboardState();
+    stateBuiltAt = Date.now();
+    const rev = accountsRevision(full.accounts);
+    if (rev !== lastAccountsRev) {
+      lastAccountsRev = rev;
+      realtime.publish("accounts", { rev, accounts: full.accounts });
+    }
+    return { ...full, accounts: undefined, accountsRev: rev };
+  },
+  {
+    throttleMs: 200,
+    liveEveryMs: 1500,
+    // đang gửi/reg/follow thì cập nhật đều; bình thường vẫn làm mới mỗi 15s phòng dữ liệu đổi từ nơi khác
+    liveWhile: () => bulkSend.running || autoReg.running || followRun.running || Date.now() - stateBuiltAt > 15000,
+  },
+);
+realtime.register("viewbot", async () => ({ jobs: deployments.status(), hubs: hubs.list() }), {
+  throttleMs: 300,
+  liveEveryMs: 2000,
+  liveWhile: () => deployments.hasRunning(),
+});
+realtime.register(
+  "telegram",
+  async () => ({ ...telegram.status(), messages: telegram.commentList(), hubTelegram: hubs.telegramStates() }),
+  { throttleMs: 300, liveEveryMs: 3000, liveWhile: () => telegram.status().comments.running },
+);
+realtime.register(
+  "telegramAccounts",
+  async () => ({ accounts: telegram.listAccounts().map(publicTelegramAccount), dailyLimit: telegram.safety.dailyLimit }),
+  { throttleMs: 1500 },
+);
+realtime.register("drafts", async () => drafts.snapshot());
+hubs.onChange(() => realtime.invalidate("viewbot"));
+telegram.onChange((kind) => {
+  if (kind === "accounts") realtime.invalidate("telegramAccounts");
+  else if (kind === "comments") realtime.invalidate("telegram");
+  else realtime.invalidate("telegram", "viewbot");
+});
+
+function publicTelegramAccount(account) {
+  return {
+    phone: account.phone,
+    name: account.name,
+    username: account.username,
+    ageDays: account.ageDays,
+    joinsToday: account.joinsToday,
+    commentsToday: account.commentsToday,
+    cooldownUntil: account.cooldownUntil,
+    dead: account.dead,
+    hasSession: account.hasSession,
+    hasJson: account.hasJson,
+  };
+}
+
+app.get("/api/events", realtime.handler());
+
+app.get("/api/drafts", (_request, response) => {
+  response.json(drafts.snapshot());
+});
+
+app.put("/api/drafts", (request, response) => {
+  const snapshot = drafts.patch(request.body?.values, request.body?.clientId);
+  realtime.publish("drafts", snapshot);
+  response.json({ rev: snapshot.rev });
+});
 app.post("/api/accounts", asyncRoute(async (request, response) => {
   if (rejectDuringBulk(response)) return;
   await store.addAccount(request.body?.name, request.body?.platform);
@@ -1203,7 +1293,7 @@ app.post("/api/telegram/comments/shuffle", (_request, response) => {
 app.post("/api/telegram/comments/start", asyncRoute(async (request, response) => {
   const body = request.body || {};
   if (!body.link) return response.status(400).json({ error: "Thiếu link kênh/nhóm Telegram." });
-  const status = telegram.startComments({
+  const status = await telegram.startComments({
     link: String(body.link),
     perAccount: Number(body.perAccount) || 1,
     accountLimit: Number(body.accountLimit) || 10,
@@ -1225,39 +1315,23 @@ app.get("/api/telegram/status", (_request, response) => {
 app.post("/api/telegram/boost/start", asyncRoute(async (request, response) => {
   const body = request.body || {};
   if (!body.link) return response.status(400).json({ error: "Thiếu link livestream Telegram." });
-
-  const target = String(body.target || "main");
-  if (target !== "main") {
-    // đẩy sang hub: chọn acc đủ điều kiện rồi gửi danh sách phone
-    const picked = telegram.pickPhones({
-      dailyLimit: Number(body.dailyLimit) || 3,
-      minAgeDays: Number(body.minAgeDays) || 7,
-      limit: numOr(body.limit, 0),
+  try {
+    const result = await deployments.start({
+      platform: "telegram",
+      url: String(body.link),
+      bots: Number(body.targetCount) || Number(body.limit) || 20,
+      proxies: body.proxies,
+      target: String(body.target || "main"),
+      dailyLimit: body.dailyLimit,
+      minAgeDays: body.minAgeDays,
+      delayMin: body.delayMin,
+      delayMax: body.delayMax,
+      concurrency: body.concurrency,
     });
-    if (!picked.phones.length) {
-      return response.status(400).json({
-        error: `Không còn tài khoản an toàn (acc quá mới: ${picked.skipped.young}, hết lượt: ${picked.skipped.quota}, cooldown: ${picked.skipped.cooldown}).`,
-      });
-    }
-    const state = hubs.startTelegramJob(target, {
-      link: String(body.link),
-      phones: picked.phones,
-      target: Number(body.targetCount) || picked.phones.length,
-      concurrency: Number(body.concurrency) || 10,
-    });
-    return response.json({ mode: "hub", hubId: target, telegram: state, phones: picked.phones.length, skipped: picked.skipped });
+    response.json({ ...telegram.status(), jobs: result.jobs, note: result.note });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
   }
-
-  const status = telegram.start({
-    link: String(body.link),
-    concurrency: Number(body.concurrency) || 10,
-    limit: Number(body.targetCount) || Number(body.limit) || 0,
-    dailyLimit: numOr(body.dailyLimit, 0),
-    minAgeDays: numOr(body.minAgeDays, 0),
-    delayMin: numOr(body.delayMin, 4),
-    delayMax: Number(body.delayMax) || 20,
-  });
-  response.json(status);
 }));
 
 app.post("/api/telegram/boost/stop", (request, response) => {
@@ -1379,13 +1453,20 @@ app.get("/api/hubs/telegram/bundle", asyncRoute(async (request, response) => {
     .filter(Boolean);
   const base = join(dataDirectory, "telegram-accounts");
   const files = {};
-  for (const phone of phones) {
-    const folder = join(base, phone);
-    for (const name of [`${phone}.json`, `${phone}.session`]) {
-      const full = join(folder, name);
+  for (const folderName of phones) {
+    if (folderName.includes("/") || folderName.includes("\\") || folderName.startsWith(".")) continue;
+    const folder = join(base, folderName);
+    let names = [];
+    try {
+      names = await readdir(folder);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!/\.(json|session|txt)$/i.test(name)) continue;
       try {
-        const raw = await readFile(full);
-        files[`${phone}/${name}`] = name.endsWith(".session")
+        const raw = await readFile(join(folder, name));
+        files[`${folderName}/${name}`] = name.endsWith(".session")
           ? { encoding: "base64", data: raw.toString("base64") }
           : { encoding: "text", data: raw.toString("utf8") };
       } catch {
@@ -1501,24 +1582,52 @@ app.get("/api/viewbot/status", (_request, response) => {
 app.post("/api/viewbot/start", asyncRoute(async (request, response) => {
   const body = request.body || {};
   try {
+    const targets = Array.isArray(body.targets) ? body.targets : undefined;
+    if (String(body.platform || "") === "telegram") {
+      const result = await deployments.start({
+        platform: "telegram",
+        url: String(body.url || "").trim(),
+        bots: body.bots,
+        proxies: body.proxies,
+        target: body.target,
+        targets,
+        dailyLimit: body.dailyLimit,
+        minAgeDays: body.minAgeDays,
+        delayMin: body.delayMin,
+        delayMax: body.delayMax,
+        concurrency: body.concurrency,
+      });
+      realtime.invalidate("viewbot", "telegram", "telegramAccounts");
+      return response.json({ jobs: result.jobs, mode: result.mode, note: result.note || "" });
+    }
     const platform = resolvePlatform(body.platform, body.url);
-    if (!platform) throw new Error("Nền tảng không hợp lệ (qq88 | hi88 | mb66)");
+    if (!platform) throw new Error("Nền tảng không hợp lệ (qq88 | hi88 | mb66 | coichua | telegram)");
     const room = String(body.hub || "").trim() || extractHub(body.url, platform);
     if (!room) throw new Error("Thiếu link live hoặc mã phòng (hub)");
-    const result = deployments.start({
+    const result = await deployments.start({
       platform: platform.id,
       hub: room,
       bots: body.bots,
       ramp: body.ramp,
       proxies: body.proxies,
       target: body.target,
-      targets: Array.isArray(body.targets) ? body.targets : undefined,
+      targets,
     });
     response.json({ jobs: result.jobs, mode: result.mode, note: result.note || "" });
   } catch (error) {
     response.status(400).json({ error: error.message });
   }
 }));
+
+app.post("/api/viewbot/adjust", (request, response) => {
+  const target = Number(request.body?.target);
+  if (!Number.isFinite(target)) return response.status(400).json({ error: "Thiếu số mắt cần đặt." });
+  try {
+    response.json({ target: deployments.adjust(request.body?.id, target) });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
 
 app.post("/api/viewbot/stop", (request, response) => {
   const id = String(request.body?.id || "");
@@ -2031,8 +2140,12 @@ scheduler.timer.unref();
     bulkSend,
     runScheduleTick,
     isBusy: () => Boolean(bulkSend.running || followRun.running || autoReg.running || manualSendRunning),
+    realtime,
     close: async () => {
       clearInterval(scheduler.timer);
+      realtime.close();
+      await drafts.flush().catch(() => {});
+      telegram.flushCooldown();
       viewbot.stopAll();
       hubs.stopAllJobs();
       telegram.stopAll();
@@ -2052,7 +2165,7 @@ export async function startServer({
   host = "127.0.0.1",
   requireAuth = false,
 } = {}) {
-  const { app, store, sessions, hubs, bulkSend, runScheduleTick, isBusy, close: closeSessions } = await createServerApp({
+  const { app, store, sessions, hubs, bulkSend, runScheduleTick, isBusy, realtime, close: closeSessions } = await createServerApp({
     dataDirectory,
     requireAuth,
   });
@@ -2072,6 +2185,8 @@ export async function startServer({
         hubs,
         close: async () => {
           hubs.close();
+          realtime.close();
+          server.closeIdleConnections?.();
           await new Promise((res) => server.close(res));
           await closeSessions();
         },
