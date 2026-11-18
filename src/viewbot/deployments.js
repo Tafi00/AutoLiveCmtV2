@@ -116,7 +116,11 @@ export class Deployments {
         `Không còn tài khoản Telegram an toàn (quá mới: ${s.young || 0}, hết lượt hôm nay: ${s.quota || 0}, cooldown: ${s.cooldown || 0}, đang bận: ${s.busy || 0}, thiếu session: ${s.nosession || 0}).`,
       );
     }
-    const phones = picked.phones;
+    // 18/11: acc Telegram mượn từ kho chung code-tele (máy chính + hub phụ đều dùng phiên kho giao, không dùng bản sao)
+    const phones = await telegram.leasePhones(picked.phones);
+    if (!phones.length) {
+      throw new Error("Kho acc chung (code-tele) chưa giao acc nào — các acc đang bận ở tool code-tele / hub, thử lại sau ít phút.");
+    }
     targets = targets.slice(0, phones.length);
     const shares = Deployments.#split(phones.length, targets.length);
     const proxyText = String(input.proxies || "");

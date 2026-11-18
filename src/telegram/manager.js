@@ -7,6 +7,7 @@ import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileSync } from "node:fs";
 import { expandProxies, parseProxyList } from "../viewbot/manager.js";
+import { CodeTelePool, POOL_NAME, digits } from "./codetele-pool.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Thư mục gốc dự án (src/telegram/manager.js -> ../../)
@@ -128,10 +129,26 @@ export class TelegramBoostManager {
   #safety = { dailyLimit: 3, minAgeDays: 7, delayMin: 4, delayMax: 20, concurrency: 10 };
   #listeners = new Set();
   #remotePhones = new Map(); // hubId -> Set(phone) đang chạy trên máy phụ
+  #pool; // kho acc Telegram dùng chung với code-tele-v4 (mượn acc thay vì dùng bản sao phiên)
+  #legacyDirectory; // data/telegram-accounts: bản sao phiên cũ — chỉ đọc thông tin (ngày đăng ký), không dùng phiên
+  #legacyMeta = { at: 0, map: new Map() };
 
   constructor({ dataDirectory }) {
     this.#dataDirectory = dataDirectory;
-    this.#accountsDirectory = join(dataDirectory, "telegram-accounts");
+    this.#legacyDirectory = join(dataDirectory, "telegram-accounts");
+    // 18/11: data/telegram-accounts là BẢN SAO phiên của acc kho code-tele-v4 (cùng auth key) — hai tool cùng mở một acc thì Telegram
+    // vô hiệu phiên. Có kho code-tele trên máy thì mượn acc từ kho (CODE_TELE_POOL=0 mới quay lại dùng bản sao).
+    this.#pool = new CodeTelePool({
+      leaseDirectory: join(dataDirectory, "telegram-leased"),
+      heldPhones: () => this.busyPhones(),
+      log: (message) => this.#logEvent(message),
+    });
+    if (this.#pool.enabled) {
+      this.#accountsDirectory = this.#pool.leaseDirectory;
+      this.#pool.start();
+    } else {
+      this.#accountsDirectory = this.#legacyDirectory;
+    }
     mkdirSync(this.#accountsDirectory, { recursive: true });
     this.#cooldownFile = join(dataDirectory, "telegram-cooldown.json");
     this.#commentsFile = join(dataDirectory, "telegram-comments.json");
@@ -380,6 +397,10 @@ export class TelegramBoostManager {
         skipped.dead = (skipped.dead || 0) + 1;
         continue;
       }
+      if (account.heldBy && account.heldBy !== POOL_NAME) {
+        skipped.elsewhere = (skipped.elsewhere || 0) + 1; // đang ở hub code-tele (hỏi kênh XX88): không mượn được lúc này
+        continue;
+      }
       if (account.cooldownUntil > now) {
         skipped.cooldown += 1;
         continue;
@@ -438,6 +459,18 @@ export class TelegramBoostManager {
   }
 
   // các acc đang được dùng ở bất kỳ phiên nào (máy chính hoặc máy phụ)
+  // Xin kho chung giao các acc (số ĐT) trước khi mở; trả các số đã giao. Không có kho chung: trả nguyên danh sách (bản sao cũ).
+  async leasePhones(phones) {
+    if (!this.#pool.enabled) return phones;
+    const ready = await this.#pool.acquire(phones);
+    this.#accountsCache = null;
+    return ready;
+  }
+
+  get poolEnabled() {
+    return this.#pool.enabled;
+  }
+
   busyPhones() {
     const busy = new Set([...this.#viewPhones, ...this.#commentPhones]);
     for (const set of this.#remotePhones.values()) for (const phone of set) busy.add(phone);
@@ -447,6 +480,7 @@ export class TelegramBoostManager {
   setRemotePhones(hubId, phones) {
     if (phones?.length) this.#remotePhones.set(hubId, new Set(phones));
     else this.#remotePhones.delete(hubId);
+    this.#pool.release(); // báo kho chung acc đang giữ (hub phụ dừng -> trả acc)
   }
 
   // sự kiện từ worker chạy trên máy phụ: cập nhật hạn mức/cooldown của từng acc
@@ -471,7 +505,68 @@ export class TelegramBoostManager {
 
   // quét thư mục tài khoản: mỗi thư mục con chứa <phone>.session/.json
   // quét thư mục (nặng) được cache lâu; hạn mức hôm nay ghép vào mỗi lần đọc
+  // thông tin acc trong bản sao cũ (chỉ để biết ngày đăng ký), theo số ĐT
+  #legacyMetaMap() {
+    if (Date.now() - this.#legacyMeta.at < 600000) return this.#legacyMeta.map;
+    const map = new Map();
+    try {
+      for (const entry of readdirSync(this.#legacyDirectory)) {
+        const full = join(this.#legacyDirectory, entry);
+        try {
+          const jsonFile = readdirSync(full).find((name) => name.endsWith(".json"));
+          if (!jsonFile) continue;
+          const meta = JSON.parse(readFileSync(join(full, jsonFile), "utf8"));
+          map.set(digits(meta.phone || entry), meta);
+        } catch {
+          // không phải thư mục acc
+        }
+      }
+    } catch {
+      // chưa có bản sao cũ
+    }
+    this.#legacyMeta = { at: Date.now(), map };
+    return map;
+  }
+
+  #poolAccounts() {
+    const cached = this.#accountsCache;
+    if (cached && cached.dir === "pool" && Date.now() - cached.at < 3000) return cached.rows;
+    const legacy = this.#legacyMetaMap();
+    const rows = [];
+    for (const acc of this.#pool.accounts()) {
+      const phone = digits(acc.phone);
+      if (!phone) continue;
+      const meta = legacy.get(phone) || {};
+      const created = Number(acc.created_at) || 0;
+      const ageDays = this.#accountAgeDays(meta) || (created ? Math.floor((Date.now() - created * 1000) / 86400000) : 0);
+      rows.push({
+        phone,
+        name: acc.name || meta.first_name || "",
+        username: /^\d+$/.test(String(acc.tag || "")) ? "" : String(acc.tag || ""),
+        appId: null,
+        device: "",
+        ageDays,
+        folder: join(this.#accountsDirectory, phone),
+        folderName: phone,
+        hasJson: true,
+        hasSession: !acc.dead && !acc.frozen,
+        pool: true,
+        poolId: acc.id,
+        poolStatus: acc.status || "",
+        poolDead: Boolean(acc.dead),
+        frozen: Boolean(acc.frozen),
+        limited: Boolean(acc.limited),
+        heldBy: acc.held_by || "",
+        note: acc.note || "",
+      });
+    }
+    const sorted = rows.sort((a, b) => a.phone.localeCompare(b.phone));
+    this.#accountsCache = { dir: "pool", at: Date.now(), rows: sorted };
+    return sorted;
+  }
+
   #scanAccounts(directory) {
+    if (this.#pool.enabled) return this.#poolAccounts();
     const cached = this.#accountsCache;
     if (cached && cached.dir === directory && Date.now() - cached.at < 60000) return cached.rows;
     if (!existsSync(directory)) return [];
@@ -522,7 +617,8 @@ export class TelegramBoostManager {
         joinsToday: stored.day === today ? stored.joins || 0 : 0,
         commentsToday: stored.day === today ? stored.comments || 0 : 0,
         cooldownUntil: stored.cooldownUntil || 0,
-        dead: Boolean(stored.dead),
+        // kho chung: chết / đóng băng theo kho code-tele (giống trang /telegram); bản sao cũ: theo lỗi tự ghi
+        dead: Boolean(stored.dead && !row.pool) || Boolean(row.poolDead) || Boolean(row.frozen),
       };
     });
   }
@@ -533,6 +629,9 @@ export class TelegramBoostManager {
   }
 
   importDirectory(directory) {
+    if (this.#pool.enabled) {
+      throw new Error("Acc Telegram dùng chung kho với code-tele: nhập acc ở trang Acc Telegram (/telegram) của code-tele, bên này tự thấy.");
+    }
     const source = resolve(directory);
     if (!existsSync(source)) throw new Error("Thư mục không tồn tại");
     cpSync(source, this.#accountsDirectory, { recursive: true, force: true });
@@ -542,6 +641,9 @@ export class TelegramBoostManager {
   }
 
   async importZip(zipPath) {
+    if (this.#pool.enabled) {
+      throw new Error("Acc Telegram dùng chung kho với code-tele: nhập acc ở trang Acc Telegram (/telegram) của code-tele, bên này tự thấy.");
+    }
     try {
       await runCommand("unzip", ["-q", "-o", zipPath, "-d", this.#accountsDirectory], { timeoutMs: 180000 });
     } catch (error) {
@@ -572,6 +674,7 @@ export class TelegramBoostManager {
       participants: this.#state.participants ?? null,
       lastError: this.#state.lastError || "",
       total,
+      pool: this.#pool.enabled ? { name: POOL_NAME, leased: Object.keys(this.#pool.grant()).length } : null,
       comments: {
         running: this.#commentState.running,
         link: this.#commentState.link,
@@ -631,11 +734,11 @@ export class TelegramBoostManager {
       rounds: 0,
       continuous: this.#commentContinuous,
     };
-    this.#runCommentRound();
+    this.#startCommentRound();
     return this.status();
   }
 
-  #runCommentRound() {
+  async #runCommentRound() {
     if (this.#commentStopped) return;
     const opts = this.#commentOpts;
     if (!opts) return;
@@ -647,7 +750,12 @@ export class TelegramBoostManager {
     const busy = this.busyPhones();
     const freeRows = rows.filter((account) => !busy.has(account.phone));
     if (busy.size) skipped.busy = rows.length - freeRows.length;
-    const picked = freeRows.slice(0, Math.max(1, Number(opts.accountLimit) || 10));
+    let picked = freeRows.slice(0, Math.max(1, Number(opts.accountLimit) || 10));
+    if (picked.length && this.#pool.enabled) {
+      const leased = new Set(await this.leasePhones(picked.map((account) => account.phone)));
+      if (this.#commentStopped) return;
+      picked = picked.filter((account) => leased.has(account.phone));
+    }
     if (!picked.length) {
       this.#commentState.running = false;
       this.#commentState.skipped = skipped;
@@ -716,6 +824,15 @@ export class TelegramBoostManager {
     this.#wire(child, this.#commentState, "comment");
   }
 
+  #startCommentRound() {
+    this.#runCommentRound().catch((error) => {
+      this.#commentState.running = false;
+      this.#commentState.lastError = error.message;
+      this.#commentStopped = true;
+      this.#emit();
+    });
+  }
+
   #wire(child, state, kind = "view") {
     let buffer = "";
     child.stdout.on("data", (chunk) => {
@@ -745,14 +862,16 @@ export class TelegramBoostManager {
         this.#viewChild = null;
         this.#recordWorker("view", null);
         this.#viewPhones = new Set();
+        this.#pool.release();
         return;
       }
       this.#recordWorker("comment", null);
       this.#commentChild = null;
       this.#commentPhones = new Set();
+      this.#pool.release();
       if (this.#commentContinuous && !this.#commentStopped) {
         const delay = this.#commentRoundDelay + Math.floor(Math.random() * 15000);
-        this.#commentTimer = setTimeout(() => this.#runCommentRound(), delay);
+        this.#commentTimer = setTimeout(() => this.#startCommentRound(), delay);
         this.#commentTimer.unref?.();
         state.running = true;
       } else {
@@ -805,9 +924,11 @@ export class TelegramBoostManager {
     if (!picked.length) {
       const s = skipped || {};
       throw new Error(
-        `Không còn tài khoản an toàn để chạy (acc quá mới: ${s.young || 0}, hết lượt hôm nay: ${s.quota || 0}, cooldown: ${s.cooldown || 0}, đang bận: ${s.busy || 0}).`,
+        `Không còn tài khoản an toàn để chạy (acc quá mới: ${s.young || 0}, hết lượt hôm nay: ${s.quota || 0}, cooldown: ${s.cooldown || 0}, đang bận: ${s.busy || 0}${s.elsewhere ? `, đang ở hub code-tele: ${s.elsewhere}` : ""}).`,
       );
     }
+    picked = await this.leasePhones(picked);
+    if (!picked.length) throw new Error("Kho acc chung (code-tele) chưa giao acc nào — các acc đang bận ở tool code-tele / hub, thử lại sau ít phút.");
 
     const folders = this.folderNames(picked);
     const proxyMap = buildProxyMap(picked, proxies);
@@ -885,6 +1006,9 @@ export class TelegramBoostManager {
       throw new Error("Tất cả acc đang bận ở phiên khác — dừng bớt một phiên rồi kiểm tra (tránh dùng trùng session).");
     }
     const python = await this.ensurePython();
+    if (this.#pool.enabled && !(await this.leasePhones([account.phone])).length) {
+      throw new Error("Kho acc chung (code-tele) chưa giao acc để kiểm tra — thử lại sau ít phút.");
+    }
     const scriptPath = this.#scriptPath();
     return new Promise((resolve, reject) => {
       const child = spawn(

@@ -1451,7 +1451,8 @@ app.get("/api/hubs/telegram/bundle", asyncRoute(async (request, response) => {
     .split(",")
     .map((phone) => phone.trim())
     .filter(Boolean);
-  const base = join(dataDirectory, "telegram-accounts");
+  // 18/11: kho chung code-tele -> thư mục phiên MƯỢN (data/telegram-leased, chỉ acc kho đã giao); không gửi bản sao phiên cũ
+  const base = telegram.accountsDirectory;
   const files = {};
   for (const folderName of phones) {
     if (folderName.includes("/") || folderName.includes("\\") || folderName.startsWith(".")) continue;
