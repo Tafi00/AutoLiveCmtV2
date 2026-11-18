@@ -2148,7 +2148,8 @@ scheduler.timer.unref();
       telegram.flushCooldown();
       viewbot.stopAll();
       hubs.stopAllJobs();
-      telegram.stopAll();
+      // máy chủ sắp thoát: không chờ worker tự dừng, tránh để lại worker mồ côi giữ session
+      telegram.stopAll({ force: true });
       bulkSend.stopRequested = true;
       bulkSend.wakeWaiter?.();
       notifyBulkStop();

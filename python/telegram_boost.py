@@ -139,19 +139,25 @@ def rand_id(n: int = 12) -> str:
 async def resolve_call(client: TelegramClient, link: str):
     """Trả về (entity, InputGroupCall) của livestream/voice chat trong nhóm."""
     entity = None
+    resolve_error = None
     try:
         entity = await client.get_entity(link)
-    except Exception:
+    except FloodWaitError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        resolve_error = error
         # link mời dạng t.me/+hash
         if "+" in link:
-            invite = await client(functions.messages.CheckChatInviteRequest(link))
+            invite_hash = link.rstrip("/").split("/")[-1].lstrip("+")
+            invite = await client(functions.messages.CheckChatInviteRequest(invite_hash))
             if getattr(invite, "chat", None) is not None:
                 entity = invite.chat
             else:
-                joined = await client(functions.messages.ImportChatInviteRequest(link.split("/")[-1]))
+                joined = await client(functions.messages.ImportChatInviteRequest(invite_hash))
                 entity = joined.chats[0]
     if entity is None:
-        raise RuntimeError("Không mở được link livestream")
+        detail = f": {str(resolve_error)[:160]}" if resolve_error else ""
+        raise RuntimeError(f"Không mở được link livestream{detail}")
     chat = None
     try:
         if isinstance(entity, Channel):
@@ -179,14 +185,47 @@ def dummy_params(ssrc: int) -> DataJSON:
     return DataJSON(data=json.dumps(payload))
 
 
+async def sleep_or_stop(seconds: float) -> bool:
+    """Ngủ nhưng thức dậy ngay khi có lệnh dừng. Trả True nếu đã bị dừng."""
+    # STOP được tạo trước vòng lặp asyncio nên Python 3.9 không cho await trực tiếp: ngủ từng nhịp ngắn
+    deadline = time.monotonic() + max(0.0, seconds)
+    while not STOP.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.5, remaining))
+    return True
+
+
+class SendPacer:
+    """Giãn cách TOÀN BỘ các câu gửi đi trong đợt (mọi acc dùng chung),
+    để "Nghỉ giữa các câu" đúng nghĩa thay vì nhiều acc gửi dồn cùng lúc."""
+
+    def __init__(self, low: float, high: float):
+        self.low = max(0.0, low)
+        self.high = max(self.low, high)
+        self.next_at = 0.0
+        self.lock = asyncio.Lock()
+
+    async def wait_turn(self) -> bool:
+        async with self.lock:
+            wait = self.next_at - time.monotonic()
+            if await sleep_or_stop(wait):
+                return False
+            self.next_at = time.monotonic() + random.uniform(self.low, self.high)
+            return True
+
+
 async def send_comments_one(acc: dict, link: str, messages: list, per_account: int,
-                           delay: tuple, send_delay: tuple, cursor: list, lock: asyncio.Lock) -> bool:
+                           delay: tuple, pacer: "SendPacer", cursor: list, lock: asyncio.Lock) -> bool:
     phone = str(acc.get("phone") or acc.get("_path", "?"))
     client = make_client(acc)
     sent = 0
     try:
-        if delay[1] > 0:
-            await asyncio.sleep(random.uniform(*delay))
+        if delay[1] > 0 and await sleep_or_stop(random.uniform(*delay)):
+            return False
+        if STOP.is_set():
+            return False
         await connect_with_retry(client)
         if not await client.is_user_authorized():
             emit(event="error", phone=phone, error="session hết hiệu lực")
@@ -197,23 +236,26 @@ async def send_comments_one(acc: dict, link: str, messages: list, per_account: i
         except Exception:
             pass  # đã là thành viên
         for _ in range(max(1, per_account)):
+            # chờ tới lượt theo nhịp chung; bị dừng thì không gửi thêm câu nào
+            if not await pacer.wait_turn():
+                break
             async with lock:
+                # kho đã được máy chủ xoay sẵn từ câu chưa dùng; hết vòng thì quay lại đầu, giữ nguyên thứ tự
                 if cursor[0] >= len(messages):
                     cursor[0] = 0
-                    random.shuffle(messages)
-                text = messages[cursor[0]]
+                index = cursor[0]
+                text = messages[index]
                 cursor[0] += 1
             try:
                 await client.send_message(entity, text)
                 sent += 1
-                emit(event="commented", phone=phone, sent=sent, text=text[:80])
+                emit(event="commented", phone=phone, sent=sent, text=text[:80], index=index)
             except FloodWaitError as flood:
                 emit(event="cooldown", phone=phone, seconds=int(flood.seconds), reason="floodwait")
                 return sent > 0
             except Exception as error:  # noqa: BLE001
                 emit(event="error", phone=phone, error=str(error)[:200])
                 break
-            await asyncio.sleep(random.uniform(*send_delay))
         return sent > 0
     except FloodWaitError as flood:
         emit(event="cooldown", phone=phone, seconds=int(flood.seconds), reason="floodwait")
@@ -254,15 +296,56 @@ async def leave_call(client: TelegramClient, call, ssrc: int) -> None:
         pass
 
 
-async def join_one(acc: dict, link: str, keepalive: int, delay: float = 0.0, stop_event=None, slot=None) -> bool:
+TRANSIENT_CALL_ERRORS = ("InterdcCall", "MsgidDecreaseRetry", "Timeout", "RPC_CALL_FAIL", "internal issues")
+
+
+async def join_group_call(client: TelegramClient, call, join_as, ssrc: int, tries: int = 3) -> None:
+    """Vào group call chỉ nghe; lỗi tạm thời phía Telegram (DC bận) thì thử lại vài lần."""
+    for attempt in range(tries):
+        try:
+            try:
+                await client(functions.phone.JoinGroupCallRequest(
+                    call=call, join_as=join_as, params=dummy_params(ssrc), muted=True, video_stopped=True,
+                ))
+            except Exception as first_error:
+                if "GROUPCALL_ALREADY_PARTICIPANT" in str(first_error):
+                    return
+                if any(mark in str(first_error) or mark in type(first_error).__name__ for mark in TRANSIENT_CALL_ERRORS):
+                    raise
+                # fallback cho bản server không nhận video_stopped
+                try:
+                    await client(functions.phone.JoinGroupCallRequest(
+                        call=call, join_as=join_as, params=dummy_params(ssrc), muted=True,
+                    ))
+                except Exception:
+                    raise first_error
+            return
+        except FloodWaitError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            transient = any(mark in str(error) or mark in type(error).__name__ for mark in TRANSIENT_CALL_ERRORS)
+            if not transient or attempt == tries - 1:
+                raise
+            await asyncio.sleep(3 + attempt * 4 + random.uniform(0, 2))
+
+
+async def join_one(acc: dict, link: str, keepalive: int, delay: float = 0.0, stop_event=None, slot=None,
+                   gate=None, on_joined=None) -> bool:
     phone = str(acc.get("phone") or acc.get("_path", "?"))
     stop = stop_event or STOP
     client = make_client(acc)
+    gate_held = False
     try:
         if delay > 0:
             await asyncio.sleep(delay)
         if stop.is_set():
             return False
+        # gate giới hạn số acc ĐANG VÀO cùng lúc; vào xong thì nhả để acc khác vào tiếp
+        if gate is not None:
+            await gate.acquire()
+            gate_held = True
+            if stop.is_set():
+                return False
         await connect_with_retry(client)
         if not await client.is_user_authorized():
             emit(event="error", phone=phone, error="session hết hiệu lực (cần đăng nhập lại)")
@@ -277,32 +360,14 @@ async def join_one(acc: dict, link: str, keepalive: int, delay: float = 0.0, sto
         ssrc = random.randint(1, 2**31 - 1)
         call_params = dummy_params(ssrc)
         join_as = await client.get_input_entity("me")
-        try:
-            await client(
-                functions.phone.JoinGroupCallRequest(
-                    call=call,
-                    join_as=join_as,
-                    params=call_params,
-                    muted=True,
-                    video_stopped=True,
-                )
-            )
-        except Exception as first_error:
-            if "GROUPCALL_ALREADY_PARTICIPANT" not in str(first_error):
-                # fallback cho bản server không nhận video_stopped
-                try:
-                    await client(
-                        functions.phone.JoinGroupCallRequest(
-                            call=call,
-                            join_as=await client.get_input_entity("me"),
-                            params=dummy_params(ssrc),
-                            muted=True,
-                        )
-                    )
-                except Exception:
-                    raise first_error
+        await join_group_call(client, call, join_as, ssrc)
 
         emit(event="joined", phone=phone, user_id=me.id, name=me.first_name or "", username=me.username or "")
+        if gate_held:
+            gate.release()
+            gate_held = False
+        if on_joined is not None:
+            on_joined(phone, True)
 
         joined_call, joined_ssrc = call, ssrc
         while not stop.is_set():
@@ -335,6 +400,10 @@ async def join_one(acc: dict, link: str, keepalive: int, delay: float = 0.0, sto
         emit(event="error", phone=phone, error=str(error)[:300])
         return False
     finally:
+        if gate_held:
+            gate.release()
+        if on_joined is not None:
+            on_joined(phone, False)
         if slot is not None and slot.get("client") is client:
             slot.pop("client", None)
             slot.pop("call", None)
@@ -492,6 +561,7 @@ async def run_comments(args, accounts) -> None:
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
     cursor = [0]
     lock = asyncio.Lock()
+    pacer = SendPacer(args.send_delay_min, args.send_delay_max)
     joined = 0
     errors = 0
 
@@ -503,7 +573,7 @@ async def run_comments(args, accounts) -> None:
             delay = random.uniform(args.delay_min, args.delay_max)
             ok = await send_comments_one(
                 acc, args.link, messages, args.per_account,
-                (delay, delay), (args.send_delay_min, args.send_delay_max), cursor, lock,
+                (delay, delay), pacer, cursor, lock,
             )
             if ok:
                 joined += 1
@@ -533,17 +603,27 @@ async def run_view(args, accounts) -> None:
     threading.Thread(target=reader, daemon=True).start()
 
     active: dict[str, dict] = {}
+    in_room: set = set()
     slot: dict = {}
     pending = list(accounts)
     target = max(1, len(accounts) if not args.limit else min(args.limit, len(accounts)))
     errors = 0
+    # chỉ giới hạn số acc đang trong bước vào phòng, không giới hạn số acc đang ngồi trong phòng
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
+    refill_lock = asyncio.Lock()
 
     def phone_of(acc: dict) -> str:
         return str(acc.get("phone") or acc.get("_path", "?"))
 
     def emit_stats() -> None:
-        emit(event="stats", joined=len(active), errors=errors, target=target)
+        emit(event="stats", joined=len(in_room), errors=errors, target=target, pending=len(pending))
+
+    def mark_room(phone: str, joined: bool) -> None:
+        if joined:
+            in_room.add(phone)
+        else:
+            in_room.discard(phone)
+        emit_stats()
 
     async def spawn(acc: dict) -> None:
         phone = phone_of(acc)
@@ -554,12 +634,16 @@ async def run_view(args, accounts) -> None:
 
         async def runner() -> None:
             nonlocal errors
-            async with semaphore:
-                ok = await join_one(acc, args.link, args.keepalive, delay, event, slot)
-            if not ok and not event.is_set():
+            ok = await join_one(acc, args.link, args.keepalive, delay, event, slot, gate=semaphore, on_joined=mark_room)
+            dropped = not event.is_set() and not STOP.is_set()
+            if not ok and dropped:
                 errors += 1
-            active.pop(phone, None)
+            if active.get(phone, {}).get("stop") is event:
+                active.pop(phone, None)
             emit_stats()
+            # acc rớt/lỗi ngoài ý muốn: lấy acc dự phòng bù vào cho đủ số mắt
+            if dropped:
+                asyncio.ensure_future(refill())
 
         task = asyncio.create_task(runner())
         active[phone] = {"task": task, "stop": event}
@@ -576,9 +660,13 @@ async def run_view(args, accounts) -> None:
         emit_stats()
 
     async def fill() -> None:
-        while pending and len(active) + 0 < target:
+        while pending and len(active) < target and not STOP.is_set():
             await spawn(pending.pop(0))
             await asyncio.sleep(0.4)
+
+    async def refill() -> None:
+        async with refill_lock:
+            await fill()
 
     # chờ lệnh set đầu tiên từ master (tối đa 2s) để không mở quá số mắt yêu cầu
     try:

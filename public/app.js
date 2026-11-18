@@ -3297,7 +3297,10 @@ function hubCardHtml(hub) {
     .map((job) => `<li>${escapeHtml(job.platform)} · ${escapeHtml(job.hub)} · ${fmt(job.live)}/${fmt(job.target)} mắt · ${fmt(job.errors)} lỗi</li>`)
     .concat(hub.telegram?.running ? [`<li>Telegram · ${escapeHtml(hub.telegram.link || "")} · ${fmt(hub.telegram.joined)}/${fmt(hub.telegram.target)} acc</li>`] : [])
     .join("");
-  const telegramTag = hub.stats?.telegram ? '<span class="tag tag-quiet">Telegram</span>' : "";
+  const telegramTag = hub.stats?.telegram
+    ? '<span class="tag tag-quiet">Telegram</span>'
+    : hub.online ? `<span class="tag tag-quiet" title="${escapeHtml(hubTelegramDetail(hub))}">Telegram: ${escapeHtml(hubTelegramShort(hub))}</span>` : "";
+  const telegramHelp = hub.online && !hub.stats?.telegram ? `<p class="field-hint">${escapeHtml(hubTelegramDetail(hub))}</p>` : "";
   return `<article class="hub-card${hub.online ? " is-online" : ""}" data-hub-card="${escapeHtml(hub.id)}">
       <div class="hub-head">
         <span class="hub-dot" aria-hidden="true"></span>
@@ -3311,6 +3314,7 @@ function hubCardHtml(hub) {
         <button class="link-btn" type="button" data-hub-rotate="${escapeHtml(hub.id)}">Đổi token</button>
         <button class="link-btn danger" type="button" data-hub-delete="${escapeHtml(hub.id)}">Xóa</button>
       </div>
+      ${telegramHelp}
       <div class="hub-install" id="hub-install-${escapeHtml(hub.id)}" hidden></div>
       ${jobRows ? `<ul class="hub-jobs">${jobRows}</ul>` : ""}
     </article>`;
@@ -3346,6 +3350,20 @@ function renderHubs() {
   syncViewbotTargets();
 }
 
+// trạng thái Telegram của hub: agent mới tự cài python + telethon và báo tiến độ
+function hubTelegramDetail(hub) {
+  if (hub.stats?.telegram) return "Telegram sẵn sàng";
+  return hub.stats?.telegramNote || "Agent bản cũ — chạy lại lệnh cài hub để tự cài Telegram";
+}
+
+function hubTelegramShort(hub) {
+  const note = hub.stats?.telegramNote || "";
+  if (!note) return "cần cập nhật agent";
+  if (/đang/.test(note)) return "đang cài telethon…";
+  if (/chưa có Python/i.test(note)) return "chưa có Python";
+  return "lỗi cài telethon";
+}
+
 function viewbotTargetRows() {
   const telegram = isTelegramViewbot();
   return [
@@ -3356,7 +3374,8 @@ function viewbotTargetRows() {
         id: hub.id,
         label: hub.name,
         available: hub.online && !missingTelegram,
-        note: !hub.online ? "offline" : missingTelegram ? "thiếu telethon" : "",
+        note: !hub.online ? "offline" : missingTelegram ? hubTelegramShort(hub) : "",
+        title: missingTelegram ? hubTelegramDetail(hub) : "",
       };
     }),
   ];
@@ -3377,7 +3396,7 @@ function syncViewbotTargets(force = false) {
       const checked = previous.has(row.id) && row.available ? "checked" : "";
       const disabled = row.available ? "" : "disabled";
       const note = row.note ? `<span class="target-note">${escapeHtml(row.note)}</span>` : "";
-      return `<label class="target-item${row.available ? "" : " is-offline"}">
+      return `<label class="target-item${row.available ? "" : " is-offline"}"${row.title ? ` title="${escapeHtml(row.title)}"` : ""}>
         <input type="checkbox" value="${escapeHtml(row.id)}" ${checked} ${disabled} />
         <span>${escapeHtml(row.label)}</span>${note}
       </label>`;

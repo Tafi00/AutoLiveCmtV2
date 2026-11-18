@@ -260,8 +260,17 @@ export class HubManager {
           platform: message.platform || "",
           cpu: message.cpu ?? null,
           telegram: Boolean(message.telegram),
+          telegramNote: String(message.telegramNote || "").slice(0, 200),
         };
         void this.#persist();
+        this.#emit();
+        break;
+      case "caps":
+        hub.stats = {
+          ...(hub.stats || {}),
+          telegram: Boolean(message.telegram),
+          telegramNote: String(message.telegramNote || "").slice(0, 200),
+        };
         this.#emit();
         break;
       case "stats":
@@ -361,7 +370,8 @@ export class HubManager {
     if (!hub) throw new Error("Hub không tồn tại");
     if (!hub.online || !hub.socket) throw new Error(`Hub ${hub.name} đang offline`);
     if (!hub.stats?.telegram) {
-      throw new Error(`Hub ${hub.name} chưa có python + telethon (cài: pip install telethon python-socks)`);
+      const note = hub.stats?.telegramNote ? ` (${hub.stats.telegramNote})` : "";
+      throw new Error(`Hub ${hub.name} chưa sẵn sàng cho Telegram${note}. Nếu hub chạy bản agent cũ, chạy lại lệnh cài hub ở màn Máy phụ.`);
     }
     const id = `tg:${hubId}`;
     const total = phones.length;

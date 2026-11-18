@@ -4,9 +4,10 @@
 // Master đẩy job xuống qua WebSocket /api/hubs/ws.
 import os from "node:os";
 import process from "node:process";
-import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { ViewbotManager } from "./src/viewbot/manager.js";
 
@@ -37,14 +38,129 @@ if (!MASTER || !TOKEN) {
 const manager = new ViewbotManager();
 
 // ---- Telegram runner (cần python + telethon trên máy hub) ----
-const TELEGRAM_PY = (() => {
-  const candidates = [process.env.TELEGRAM_PYTHON, "python3", "python"].filter(Boolean);
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate, ["-c", "import telethon"], { timeout: 6000 });
-    if (probe.status === 0) return candidate;
+// Telegram cần python có telethon + python-socks. Máy phụ thường chưa có: agent tự tạo
+// môi trường riêng (tg-venv cạnh agent.js) và cài vào đó, chạy nền để không chặn kết nối.
+const HUB_DIR = dirname(fileURLToPath(import.meta.url));
+const IS_WINDOWS = process.platform === "win32";
+const VENV_DIR = join(HUB_DIR, "tg-venv");
+const VENV_PY = IS_WINDOWS ? join(VENV_DIR, "Scripts", "python.exe") : join(VENV_DIR, "bin", "python");
+let TELEGRAM_PY = "";
+let telegramNote = "đang kiểm tra Python…";
+let telegramSetup = null;
+
+function runQuiet(command, commandArgs, timeoutMs = 600000) {
+  return new Promise((resolveRun) => {
+    let output = "";
+    let child;
+    try {
+      child = spawn(command, commandArgs, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      resolveRun({ ok: false, output: error.message });
+      return;
+    }
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    const collect = (chunk) => {
+      output = (output + chunk.toString()).slice(-2000);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolveRun({ ok: false, output: error.message });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolveRun({ ok: code === 0, output });
+    });
+  });
+}
+
+// [lệnh, tham số đầu] — "py -3" là trình chọn Python chuẩn trên Windows
+function pythonCandidates() {
+  const list = [];
+  if (process.env.TELEGRAM_PYTHON) list.push([process.env.TELEGRAM_PYTHON, []]);
+  if (existsSync(VENV_PY)) list.push([VENV_PY, []]);
+  if (IS_WINDOWS) list.push(["py", ["-3"]]);
+  list.push(["python3", []], ["python", []]);
+  return list;
+}
+
+// trả đường dẫn python thật (sys.executable) nếu import được các module, ngược lại ""
+async function pythonWith([command, prefix], modules = "telethon, python_socks") {
+  const probe = await runQuiet(command, [...prefix, "-c", `import sys, ${modules}; print("PY3=" + sys.executable if sys.version_info[0] == 3 else "")`], 30000);
+  const match = probe.ok ? /PY3=(.+)/.exec(probe.output) : null;
+  return match ? match[1].trim() : "";
+}
+
+function announceTelegram() {
+  send({ type: "caps", telegram: Boolean(TELEGRAM_PY), telegramNote });
+}
+
+async function setupTelegram() {
+  for (const candidate of pythonCandidates()) {
+    const exe = await pythonWith(candidate);
+    if (exe) {
+      TELEGRAM_PY = exe;
+      telegramNote = "sẵn sàng";
+      announceTelegram();
+      return;
+    }
   }
-  return "";
-})();
+  // chưa có: tìm một Python 3 bất kỳ để tạo venv riêng
+  let base = null;
+  for (const candidate of pythonCandidates()) {
+    if (candidate[0] === VENV_PY) continue;
+    const exe = await pythonWith(candidate, "venv");
+    if (exe) {
+      base = [exe, []];
+      break;
+    }
+  }
+  if (!base) {
+    telegramNote = IS_WINDOWS
+      ? "chưa có Python 3 — cài từ python.org (tick Add to PATH) rồi chạy lại lệnh cài hub"
+      : "chưa có Python 3 — cài python3 (kèm python3-venv) rồi chạy lại lệnh cài hub";
+    announceTelegram();
+    return;
+  }
+  telegramNote = "đang cài telethon (1–2 phút)…";
+  announceTelegram();
+  console.log("[hub] chuẩn bị Python cho Telegram trong", VENV_DIR);
+  if (!existsSync(VENV_PY)) {
+    const venv = await runQuiet(base[0], [...base[1], "-m", "venv", VENV_DIR]);
+    if (!venv.ok) {
+      telegramNote = `tạo venv lỗi: ${venv.output.trim().slice(-160)}`;
+      announceTelegram();
+      return;
+    }
+  }
+  const pip = await runQuiet(VENV_PY, ["-m", "pip", "install", "--disable-pip-version-check", "-q", "telethon", "python-socks[asyncio]"]);
+  if (!pip.ok || !(await pythonWith([VENV_PY, []]))) {
+    telegramNote = `cài telethon lỗi: ${pip.output.trim().slice(-160)}`;
+    announceTelegram();
+    return;
+  }
+  TELEGRAM_PY = VENV_PY;
+  telegramNote = "sẵn sàng";
+  console.log("[hub] Telegram sẵn sàng:", TELEGRAM_PY);
+  announceTelegram();
+}
+
+function ensureTelegram() {
+  if (TELEGRAM_PY) return Promise.resolve(TELEGRAM_PY);
+  if (!telegramSetup) {
+    telegramSetup = setupTelegram()
+      .catch((error) => {
+        telegramNote = `lỗi chuẩn bị Python: ${String(error.message || error).slice(0, 160)}`;
+        announceTelegram();
+      })
+      .finally(() => {
+        telegramSetup = null;
+      });
+  }
+  return telegramSetup.then(() => TELEGRAM_PY);
+}
+
 let tgProcess = null;
 let tgJob = null;
 const localJobs = new Map(); // jobId (master) -> jobId (local manager)
@@ -85,6 +201,7 @@ function connect() {
       platform: `${os.platform()} ${os.arch()}`,
       cpu: os.cpus()?.length || 0,
       telegram: Boolean(TELEGRAM_PY),
+      telegramNote,
     });
   });
 
@@ -147,6 +264,7 @@ function stopJob(id) {
 
 async function startTelegramJob(message) {
   stopTelegram();
+  await ensureTelegram();
   if (!TELEGRAM_PY) {
     send({ type: "tg_error", error: "Hub chưa có python + telethon (pip install telethon)" });
     return;
@@ -269,4 +387,5 @@ function shutdown() {
 }
 
 connect();
+void ensureTelegram();
 console.log(`[hub] ${NAME} sẵn sàng, master ${MASTER}`);

@@ -121,7 +121,9 @@ export class TelegramBoostManager {
   #eventLog = null;
   #workerFile;
   #commentsFile;
-  #comments = { messages: [] };
+  #comments = { messages: [], cursor: 0 };
+  #roundStart = 0; // câu đầu tiên của đợt đang chạy (vị trí trong kho)
+  #roundSize = 0;
   #cooldown = { phones: {} };
   #safety = { dailyLimit: 3, minAgeDays: 7, delayMin: 4, delayMax: 20, concurrency: 10 };
   #listeners = new Set();
@@ -140,8 +142,9 @@ export class TelegramBoostManager {
     try {
       const parsed = JSON.parse(readFileSync(this.#commentsFile, "utf8"));
       if (Array.isArray(parsed?.messages)) this.#comments.messages = parsed.messages.filter(Boolean);
+      this.#comments.cursor = Number(parsed?.cursor) || 0;
     } catch {
-      this.#comments = { messages: [] };
+      this.#comments = { messages: [], cursor: 0 };
     }
     try {
       this.#cooldown = JSON.parse(readFileSync(this.#cooldownFile, "utf8"));
@@ -171,12 +174,27 @@ export class TelegramBoostManager {
   }
 
   #saveComments() {
+    const total = this.#comments.messages.length;
+    if (!Number.isInteger(this.#comments.cursor) || this.#comments.cursor < 0 || this.#comments.cursor >= total) {
+      this.#comments.cursor = 0;
+    }
     try {
       writeFileSync(this.#commentsFile, `${JSON.stringify(this.#comments, null, 2)}\n`, "utf8");
     } catch {
       // ghi lỗi không chặn thao tác
     }
     this.#emit("comments");
+  }
+
+  #commentsTimer = null;
+
+  #saveCommentsSoon() {
+    if (this.#commentsTimer) return;
+    this.#commentsTimer = setTimeout(() => {
+      this.#commentsTimer = null;
+      this.#saveComments();
+    }, 1000);
+    this.#commentsTimer.unref?.();
   }
 
   addComments(text) {
@@ -193,18 +211,21 @@ export class TelegramBoostManager {
     const i = Number(index);
     if (!Number.isInteger(i) || i < 0 || i >= this.#comments.messages.length) return this.#comments.messages;
     this.#comments.messages.splice(i, 1);
+    if (i < this.#comments.cursor) this.#comments.cursor -= 1;
     this.#saveComments();
     return this.#comments.messages;
   }
 
   clearComments() {
     this.#comments.messages = [];
+    this.#comments.cursor = 0;
     this.#saveComments();
     return [];
   }
 
   shuffleComments() {
     const list = this.#comments.messages;
+    this.#comments.cursor = 0;
     for (let i = list.length - 1; i > 0; i -= 1) {
       const j = Math.floor(Math.random() * (i + 1));
       [list[i], list[j]] = [list[j], list[i]];
@@ -221,7 +242,8 @@ export class TelegramBoostManager {
         if (!Number.isFinite(Number(pid))) continue;
         try {
           process.kill(Number(pid), 0);
-          process.kill(Number(pid), "SIGTERM");
+          // worker mồ côi không còn ai điều khiển: tắt hẳn để nhả session cho phiên mới
+          process.kill(Number(pid), "SIGKILL");
         } catch {
           // pid không còn tồn tại
         }
@@ -560,6 +582,7 @@ export class TelegramBoostManager {
         skipped: this.#commentState.skipped || null,
         accounts: [...this.#commentState.accounts.entries()].map(([phone, info]) => ({ phone, ...info })),
         library: this.#comments.messages.length,
+        cursor: this.#comments.cursor || 0,
         rounds: this.#commentState.rounds || 0,
         continuous: Boolean(this.#commentContinuous),
         lastError: this.#commentState.lastError || "",
@@ -643,7 +666,12 @@ export class TelegramBoostManager {
       return;
     }
     const messagesFile = join(this.#dataDirectory, "telegram-messages.txt");
-    writeFileSync(messagesFile, this.#comments.messages.join("\n"), "utf8");
+    const library = this.#comments.messages;
+    const start = library.length ? (this.#comments.cursor || 0) % library.length : 0;
+    this.#roundStart = start;
+    this.#roundSize = library.length;
+    // mỗi đợt nối tiếp câu đợt trước dừng lại, để dùng hết kho thay vì lặp mấy câu đầu
+    writeFileSync(messagesFile, [...library.slice(start), ...library.slice(0, start)].join("\n"), "utf8");
     const scriptPath = this.#scriptPath();
     const safety = this.safety;
 
@@ -674,8 +702,10 @@ export class TelegramBoostManager {
         "--delay-max",
         String(safety.delayMax),
       ],
-      { stdio: ["ignore", "pipe", "pipe"] },
+      // worker coi stdin bị đóng là máy chủ đã chết và tự dừng, nên phải giữ stdin mở
+      { stdio: ["pipe", "pipe", "pipe"] },
     );
+    child.stdin.on("error", () => {});
 
     this.#commentChild = child;
     this.#recordWorker("comment", child.pid);
@@ -940,6 +970,11 @@ export class TelegramBoostManager {
       const phoneState = this.#phoneState(phone);
       phoneState.comments = (phoneState.comments || 0) + 1;
       this.#saveCooldown();
+      const index = Number(message.index);
+      if (Number.isInteger(index) && this.#roundSize && this.#roundSize === this.#comments.messages.length) {
+        this.#comments.cursor = (this.#roundStart + index + 1) % this.#roundSize;
+        this.#saveCommentsSoon();
+      }
     } else if (message.event === "joined") {
       target.joined = (target.joined || 0) + 1;
       target.accounts.set(phone, { state: "joined", name: message.name || "", error: "" });
@@ -970,13 +1005,31 @@ export class TelegramBoostManager {
     }
   }
 
-  stopView() {
-    if (!this.#viewChild) return false;
+  // xin dừng nhẹ để acc rời phòng; quá 8s chưa thoát (hoặc máy chủ đang tắt) thì tắt hẳn
+  #terminate(child, { force = false } = {}) {
+    if (!child || child.exitCode !== null) return;
     try {
-      this.#viewChild.kill("SIGTERM");
+      child.kill(force ? "SIGKILL" : "SIGTERM");
     } catch {
-      // worker đã thoát
+      return;
     }
+    if (force) return;
+    const timer = setTimeout(() => {
+      if (child.exitCode === null) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // đã thoát
+        }
+      }
+    }, 8000);
+    timer.unref?.();
+    child.once("exit", () => clearTimeout(timer));
+  }
+
+  stopView({ force = false } = {}) {
+    if (!this.#viewChild) return false;
+    this.#terminate(this.#viewChild, { force });
     this.#state.running = false;
     this.#viewChild = null;
     this.#viewPhones = new Set();
@@ -984,7 +1037,7 @@ export class TelegramBoostManager {
     return true;
   }
 
-  stopComments() {
+  stopComments({ force = false } = {}) {
     this.#commentStopped = true;
     clearTimeout(this.#commentTimer);
     this.#commentTimer = null;
@@ -992,11 +1045,7 @@ export class TelegramBoostManager {
       this.#commentState.running = false;
       return false;
     }
-    try {
-      this.#commentChild.kill("SIGTERM");
-    } catch {
-      // worker đã thoát
-    }
+    this.#terminate(this.#commentChild, { force });
     this.#commentState.running = false;
     this.#commentChild = null;
     this.#commentPhones = new Set();
@@ -1008,9 +1057,9 @@ export class TelegramBoostManager {
     return mode === "comment" ? this.stopComments() : this.stopView();
   }
 
-  stopAll() {
-    const a = this.stopView();
-    const b = this.stopComments();
+  stopAll({ force = false } = {}) {
+    const a = this.stopView({ force });
+    const b = this.stopComments({ force });
     return a || b;
   }
 }
